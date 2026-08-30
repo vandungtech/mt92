@@ -37,6 +37,47 @@ append-only metric trail; LoRA runs also write an adapter. The reserve is never 
 by that run. After multiple hyperparameters are compared against the same reserve, its
 scores are selection evidence rather than an unbiased hidden-performance estimate.
 
+### Boundary-contrastive experiment
+
+Boundary contrastive training is an explicit, isolated experiment; all default invocations retain
+the ordinary causal-LM loader and loss. Enable it with raw gold and the fixed 512-token recipe:
+
+```bash
+python training/train_extract.py \
+  --corpus /path/to/public.json \
+  --base /path/to/Qwen3-0.6B \
+  --out runtime/training/experiments/boundary-contrastive-seed92 \
+  --boundary-contrastive
+```
+
+This mode requires `--seed 92` and first seals the historical 384-row seed-92 outer reserve.
+`load_rows` necessarily JSON-decodes the corpus container; after that, this path inspects only each
+outer row's ref and partition. It never semantically parses an outer prompt or gold target, tokenizes
+one, trains on one, or uses one to choose corruptions. Of the 4,432 remaining rows, the two existing
+over-length rows are rejected before a separately named SHA-256 rank split creates a 384-row inner
+validation fold and 4,046-row inner train fold. Training and pair generation use only inner-train;
+the outer reserve remains untouched for later assessment.
+
+Up to 512 inner-train rows receive one deterministic negative whose entity text is expanded or
+contracted by exactly one boundary code point. Expansion and contraction counts are equal, the
+positive is the corpus's raw gold string, and each negative retains its type and every other JSON
+field. The objective is ordinary positive causal CE plus
+`lambda * sum(pair_softplus) / positive_count`, where each pair term is
+`softplus(mean_logp_negative - mean_logp_positive + margin)`. Log probabilities are length-normalized
+over assistant tokens only; an unpaired positive contributes zero to the auxiliary numerator and
+still counts in the denominator, keeping its coefficient stable across batch composition. Lambda
+`0.1` (allowed range `[0, 1]`) and margin `0` (allowed range `[0, 20]`) apply only after
+`--boundary-contrastive` is supplied; non-finite controls or loss intermediates fail closed. These
+conservative bounds keep the auxiliary computation away from floating-point overflow.
+
+`boundary_contrastive_manifest.json` records the exact outer, inner-train, and inner-validation refs,
+all ref/target/pair digests, zero-overlap counts, skipped refs, corruption choices, and full objective
+settings. The training metadata embeds its digest and summary. Provenance publication must validate
+that manifest before presenting such a run as admitted evidence. Embedded ref/record digests use
+canonical UTF-8 JSON (`sha256_canonical_json_utf8_v1`), gold digests use the exact UTF-8 string
+(`sha256_utf8_text_v1`), and `manifest_digest` covers the exact pretty-printed manifest file bytes
+(`sha256_file_bytes_v1`).
+
 Convert with the pinned checkout:
 
 ```bash

@@ -43,6 +43,19 @@ BASE_TOKENIZER_DIGEST = "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed
 ENTITY_SUBSTITUTION_ALGORITHM = "literal_same_type_train_fold_v1"
 ENTITY_TYPES = ("Chemical", "Disease")
 MAX_ENTITY_SUBSTITUTION_EXAMPLES = 1_024
+BOUNDARY_OUTER_SPLIT_ALGORITHM = "python_random_mt19937_seed92_prefix384_v1"
+BOUNDARY_INNER_SPLIT_ALGORITHM = "sha256_rank_encoded_ref_seed92_v1"
+BOUNDARY_CORRUPTION_ALGORITHM = "single_entity_text_boundary_codepoint_v1"
+BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM = "sha256_canonical_json_utf8_v1"
+BOUNDARY_TEXT_DIGEST_ALGORITHM = "sha256_utf8_text_v1"
+BOUNDARY_FILE_DIGEST_ALGORITHM = "sha256_file_bytes_v1"
+BOUNDARY_OUTER_SEED = 92
+BOUNDARY_OUTER_EXAMPLES = 384
+BOUNDARY_INNER_VALIDATION_EXAMPLES = 384
+BOUNDARY_EXPECTED_ENCODED_EXAMPLES = 4_430
+MAX_BOUNDARY_CONTRASTIVE_EXAMPLES = 512
+MAX_BOUNDARY_CONTRASTIVE_LAMBDA = 1.0
+MAX_BOUNDARY_CONTRASTIVE_MARGIN = 20.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,32 @@ class BoundAugmentationRow:
 class EntitySubstitutionResult:
     rows: tuple[dict[str, Any], ...]
     manifest: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BoundaryFoldSplit:
+    train_indices: tuple[int, ...]
+    validation_indices: tuple[int, ...]
+    manifest: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BoundaryCorruption:
+    source_ref: str
+    negative_row: dict[str, Any]
+    record: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BoundaryCorruptionResult:
+    pairs: tuple[BoundaryCorruption, ...]
+    manifest: dict[str, Any]
+
+
+class _BoundaryIneligible(ValueError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class _AugmentationIneligible(ValueError):
@@ -210,6 +249,402 @@ def _bind_augmentation_row(row: dict[str, Any]) -> BoundAugmentationRow:
 def _stable_hash(*parts: object) -> str:
     encoded = json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _refs_digest(refs: Sequence[str]) -> str:
+    return _json_digest(sorted(refs))
+
+
+def boundary_outer_partition(
+    rows: Sequence[dict[str, Any]],
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """Seal the historical seed-92 reserve without inspecting row contents."""
+
+    if len(rows) != 4_816:
+        raise ValueError("boundary outer split requires exactly 4,816 rows")
+    refs: list[str] = []
+    for row in rows:
+        ref = row.get("ref")
+        if not isinstance(ref, str) or not ref or ref != ref.strip():
+            raise ValueError("boundary split requires non-empty, already stripped refs")
+        if row.get("partition") != "train":
+            raise ValueError(f"boundary split accepts only train-fold rows, got {ref}")
+        refs.append(ref)
+    if len(set(refs)) != len(refs):
+        raise ValueError("boundary split requires unique refs")
+    shuffled = list(rows)
+    random.Random(BOUNDARY_OUTER_SEED).shuffle(shuffled)
+    return tuple(shuffled[:BOUNDARY_OUTER_EXAMPLES]), tuple(shuffled[BOUNDARY_OUTER_EXAMPLES:])
+
+
+def split_boundary_encoded_refs(
+    encoded_refs: Sequence[str],
+    *,
+    outer_refs: Sequence[str],
+) -> BoundaryFoldSplit:
+    """Hash-rank encoded, non-reserve refs into a stable inner train/validation split."""
+
+    refs = list(encoded_refs)
+    reserved = list(outer_refs)
+    if len(refs) != BOUNDARY_EXPECTED_ENCODED_EXAMPLES or len(reserved) != BOUNDARY_OUTER_EXAMPLES:
+        raise ValueError("boundary inner split requires exactly 4,430 encoded and 384 outer refs")
+    if any(not isinstance(ref, str) or not ref or ref != ref.strip() for ref in refs):
+        raise ValueError("encoded refs must be non-empty, already stripped strings")
+    if any(not isinstance(ref, str) or not ref or ref != ref.strip() for ref in reserved):
+        raise ValueError("outer refs must be non-empty, already stripped strings")
+    if len(set(refs)) != len(refs) or len(set(reserved)) != len(reserved):
+        raise ValueError("boundary split refs must be unique")
+    outer_overlap = set(refs) & set(reserved)
+    if outer_overlap:
+        raise ValueError(f"encoded pool overlaps outer reserve: {sorted(outer_overlap)[0]}")
+
+    ranked = sorted(
+        refs,
+        key=lambda ref: (
+            _stable_hash(BOUNDARY_INNER_SPLIT_ALGORITHM, BOUNDARY_OUTER_SEED, ref),
+            ref,
+        ),
+    )
+    validation_refs = set(ranked[:BOUNDARY_INNER_VALIDATION_EXAMPLES])
+    validation_indices = tuple(
+        index for index, ref in enumerate(refs) if ref in validation_refs
+    )
+    train_indices = tuple(index for index, ref in enumerate(refs) if ref not in validation_refs)
+    train_refs = [refs[index] for index in train_indices]
+    inner_validation_refs = [refs[index] for index in validation_indices]
+    train_set = set(train_refs)
+    validation_set = set(inner_validation_refs)
+    outer_set = set(reserved)
+    overlaps = {
+        "outer_inner_train": len(outer_set & train_set),
+        "outer_inner_validation": len(outer_set & validation_set),
+        "inner_train_inner_validation": len(train_set & validation_set),
+    }
+    if any(overlaps.values()) or len(train_indices) + len(validation_indices) != len(refs):
+        raise ValueError("boundary split is not an exact disjoint partition")
+    return BoundaryFoldSplit(
+        train_indices,
+        validation_indices,
+        {
+            "refs_digest_algorithm": BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM,
+            "outer_algorithm": BOUNDARY_OUTER_SPLIT_ALGORITHM,
+            "outer_seed": BOUNDARY_OUTER_SEED,
+            "outer_examples": len(reserved),
+            "inner_algorithm": BOUNDARY_INNER_SPLIT_ALGORITHM,
+            "inner_seed": BOUNDARY_OUTER_SEED,
+            "encoded_examples": len(refs),
+            "inner_train_examples": len(train_refs),
+            "inner_validation_examples": len(inner_validation_refs),
+            "outer_refs": sorted(reserved),
+            "inner_train_refs": sorted(train_refs),
+            "inner_validation_refs": sorted(inner_validation_refs),
+            "outer_refs_digest": _refs_digest(reserved),
+            "encoded_refs_digest": _refs_digest(refs),
+            "inner_train_refs_digest": _refs_digest(train_refs),
+            "inner_validation_refs_digest": _refs_digest(inner_validation_refs),
+            "overlap_counts": overlaps,
+        },
+    )
+
+
+def _boundary_change_is_exact(
+    source: str, corrupted: str, direction: str, side: str
+) -> bool:
+    if direction == "expansion" and len(corrupted) == len(source) + 1:
+        return (side == "left" and corrupted[1:] == source) or (
+            side == "right" and corrupted[:-1] == source
+        )
+    if direction == "contraction" and len(corrupted) + 1 == len(source):
+        return (side == "left" and source[1:] == corrupted) or (
+            side == "right" and source[:-1] == corrupted
+        )
+    return False
+
+
+def _boundary_row_candidates(row: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    ref = row.get("ref")
+    if not isinstance(ref, str) or not ref:
+        raise ValueError("boundary corruption requires a non-empty ref")
+    if row.get("partition") != "train":
+        raise ValueError(f"boundary corruption accepts only train-fold rows, got {ref}")
+    inputs = row.get("inputs")
+    if not isinstance(inputs, Mapping):
+        raise ValueError(f"invalid inputs for {ref}")
+    input_text = inputs.get("text")
+    if not isinstance(input_text, str) or not input_text:
+        raise ValueError(f"invalid input text for {ref}")
+    prompt = row.get("prompt")
+    if not isinstance(prompt, str) or not prompt.endswith(input_text):
+        raise ValueError(f"prompt is not bound to its input text for {ref}")
+    if not prompt[: len(prompt) - len(input_text)].endswith("\n\nText: "):
+        raise ValueError(f"prompt has an unexpected input boundary for {ref}")
+    raw_gold = row.get("gold")
+    if not isinstance(raw_gold, str):
+        raise ValueError(f"boundary corruption requires raw gold text for {ref}")
+    payload = _strict_json_loads(raw_gold, ref)
+    if not isinstance(payload, Mapping) or set(payload) != {"entities"}:
+        raise ValueError(f"gold must contain only entities for {ref}")
+    raw_entities = payload["entities"]
+    if not isinstance(raw_entities, list):
+        raise ValueError(f"gold entities must be a list for {ref}")
+
+    entities: list[dict[str, str]] = []
+    pairs: set[tuple[str, str]] = set()
+    texts: set[str] = set()
+    for index, raw_entity in enumerate(raw_entities):
+        if not isinstance(raw_entity, Mapping) or set(raw_entity) != {"text", "type"}:
+            raise ValueError(f"malformed gold entity {index} for {ref}")
+        entity_text = raw_entity["text"]
+        entity_type = raw_entity["type"]
+        if (
+            not isinstance(entity_text, str)
+            or not isinstance(entity_type, str)
+            or not entity_text
+            or entity_text != entity_text.strip()
+            or entity_type not in ENTITY_TYPES
+            or any(ord(character) < 32 for character in entity_text)
+        ):
+            raise ValueError(f"invalid gold entity {index} for {ref}")
+        pair = (entity_text, entity_type)
+        if pair in pairs:
+            raise _BoundaryIneligible("duplicate_entity")
+        if entity_text in texts:
+            raise _BoundaryIneligible("ambiguous_entity_text")
+        pairs.add(pair)
+        texts.add(entity_text)
+        entities.append({"text": entity_text, "type": entity_type})
+    if not entities:
+        raise _BoundaryIneligible("no_entities")
+    if any(entity["text"] not in input_text for entity in entities):
+        raise _BoundaryIneligible("gold_surface_absent")
+
+    candidates: dict[str, list[dict[str, Any]]] = {"expansion": [], "contraction": []}
+    seen_negative_targets: set[str] = set()
+    for entity_index, entity in enumerate(entities):
+        source_text = entity["text"]
+        encoded_source = json.dumps(source_text, ensure_ascii=False)
+        literal_spans = _literal_occurrences(raw_gold, encoded_source)
+        if len(literal_spans) != 1:
+            continue
+        replacements: list[tuple[str, str, str]] = []
+        if len(source_text) > 1:
+            replacements.extend(
+                (("contraction", "left", source_text[1:]),
+                 ("contraction", "right", source_text[:-1]))
+            )
+        for start, end in _literal_occurrences(input_text, source_text):
+            if start > 0:
+                replacements.append(("expansion", "left", input_text[start - 1 : end]))
+            if end < len(input_text):
+                replacements.append(("expansion", "right", input_text[start : end + 1]))
+        for direction, side, corrupted_text in replacements:
+            if (
+                not corrupted_text
+                or corrupted_text != corrupted_text.strip()
+                or any(ord(character) < 32 for character in corrupted_text)
+                or corrupted_text not in input_text
+                or corrupted_text in texts
+                or not _boundary_change_is_exact(source_text, corrupted_text, direction, side)
+            ):
+                continue
+            literal_start, literal_end = literal_spans[0]
+            encoded_corrupted = json.dumps(corrupted_text, ensure_ascii=False)
+            negative_gold = raw_gold[:literal_start] + encoded_corrupted + raw_gold[literal_end:]
+            if negative_gold in seen_negative_targets:
+                continue
+            expected_entities = [dict(value) for value in entities]
+            expected_entities[entity_index]["text"] = corrupted_text
+            if _strict_json_loads(negative_gold, ref) != {"entities": expected_entities}:
+                raise ValueError(f"generated boundary corruption changed extra fields for {ref}")
+            seen_negative_targets.add(negative_gold)
+            candidates[direction].append(
+                {
+                    "direction": direction,
+                    "side": side,
+                    "entity_index": entity_index,
+                    "source_text": source_text,
+                    "corrupted_text": corrupted_text,
+                    "negative_gold": negative_gold,
+                }
+            )
+    if not candidates["expansion"] and not candidates["contraction"]:
+        raise _BoundaryIneligible("no_valid_boundary")
+    return candidates
+
+
+def _text_digest(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def generate_boundary_corruptions(
+    rows: Sequence[dict[str, Any]],
+    *,
+    heldout_refs: set[str],
+    seed: int,
+    max_examples: int,
+) -> BoundaryCorruptionResult:
+    """Create a balanced, deterministic set of raw-positive boundary pairs."""
+
+    if isinstance(max_examples, bool) or not isinstance(max_examples, int):
+        raise ValueError("boundary contrastive examples must be an integer")
+    if not 0 <= max_examples <= MAX_BOUNDARY_CONTRASTIVE_EXAMPLES or max_examples % 2:
+        raise ValueError(
+            "boundary contrastive examples must be an even integer in "
+            f"[0, {MAX_BOUNDARY_CONTRASTIVE_EXAMPLES}]"
+        )
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("boundary corruption seed must be an integer")
+    if any(not isinstance(ref, str) or not ref for ref in heldout_refs):
+        raise ValueError("held-out refs must be non-empty strings")
+    ordered_rows = sorted(rows, key=lambda row: str(row.get("ref", "")))
+    refs = [row.get("ref") for row in ordered_rows]
+    if any(not isinstance(ref, str) or not ref for ref in refs) or len(set(refs)) != len(refs):
+        raise ValueError("boundary corruption requires unique non-empty source refs")
+    source_refs = set(refs)
+    overlap = source_refs & heldout_refs
+    if overlap:
+        raise ValueError(f"boundary source and held-out refs overlap: {sorted(overlap)[0]}")
+
+    eligible: list[tuple[dict[str, Any], dict[str, dict[str, Any]]]] = []
+    ineligible: dict[str, int] = {}
+    for row in ordered_rows:
+        try:
+            candidates = _boundary_row_candidates(row)
+        except _BoundaryIneligible as exc:
+            ineligible[exc.reason] = ineligible.get(exc.reason, 0) + 1
+            continue
+        selected: dict[str, dict[str, Any]] = {}
+        for direction, values in candidates.items():
+            if values:
+                selected[direction] = min(
+                    values,
+                    key=lambda value: (
+                        _stable_hash(
+                            BOUNDARY_CORRUPTION_ALGORITHM, seed, row["ref"], direction,
+                            value["side"], value["entity_index"], value["corrupted_text"],
+                        ),
+                        value["side"], value["entity_index"], value["corrupted_text"],
+                    ),
+                )
+        eligible.append((row, selected))
+
+    expansion_only = [entry for entry in eligible if set(entry[1]) == {"expansion"}]
+    contraction_only = [entry for entry in eligible if set(entry[1]) == {"contraction"}]
+    both = [entry for entry in eligible if set(entry[1]) == {"expansion", "contraction"}]
+
+    def rank(entries: Sequence[tuple[dict[str, Any], dict[str, dict[str, Any]]]], label: str):
+        return sorted(
+            entries,
+            key=lambda entry: (
+                _stable_hash(
+                    BOUNDARY_CORRUPTION_ALGORITHM, seed, "source", label, entry[0]["ref"]
+                ),
+                entry[0]["ref"],
+            ),
+        )
+
+    expansion_only = rank(expansion_only, "expansion")
+    contraction_only = rank(contraction_only, "contraction")
+    both = rank(both, "balanced")
+    per_direction = max_examples // 2
+    while per_direction:
+        expansion_need = per_direction - min(per_direction, len(expansion_only))
+        contraction_need = per_direction - min(per_direction, len(contraction_only))
+        if expansion_need + contraction_need <= len(both):
+            break
+        per_direction -= 1
+    expansion_take = min(per_direction, len(expansion_only))
+    contraction_take = min(per_direction, len(contraction_only))
+    expansion_need = per_direction - expansion_take
+    contraction_need = per_direction - contraction_take
+    selected_expansions = [*expansion_only[:expansion_take], *both[:expansion_need]]
+    selected_contractions = [
+        *contraction_only[:contraction_take],
+        *both[expansion_need : expansion_need + contraction_need],
+    ]
+    selected_entries = [
+        (row, values["expansion"]) for row, values in selected_expansions
+    ] + [
+        (row, values["contraction"]) for row, values in selected_contractions
+    ]
+    selected_entries.sort(
+        key=lambda entry: (
+            _stable_hash(
+                BOUNDARY_CORRUPTION_ALGORITHM, seed, "pair", entry[0]["ref"],
+                entry[1]["direction"],
+            ),
+            entry[0]["ref"],
+        )
+    )
+
+    pairs: list[BoundaryCorruption] = []
+    records: list[dict[str, Any]] = []
+    for row, candidate in selected_entries:
+        source_ref = row["ref"]
+        positive_gold = row["gold"]
+        negative_gold = candidate["negative_gold"]
+        negative_id = _stable_hash(
+            BOUNDARY_CORRUPTION_ALGORITHM, seed, source_ref, candidate["direction"],
+            candidate["side"], candidate["entity_index"], candidate["corrupted_text"],
+        )[:16]
+        negative_ref = f"{source_ref}::boundary-negative::{negative_id}"
+        if negative_ref in source_refs or negative_ref in heldout_refs:
+            raise ValueError(f"generated boundary ref collides: {negative_ref}")
+        negative_row = dict(row)
+        negative_row["ref"] = negative_ref
+        negative_row["gold"] = negative_gold
+        record = {
+            "source_ref": source_ref,
+            "negative_ref": negative_ref,
+            "direction": candidate["direction"],
+            "side": candidate["side"],
+            "entity_index": candidate["entity_index"],
+            "source_text": candidate["source_text"],
+            "corrupted_text": candidate["corrupted_text"],
+            "positive_gold_digest": _text_digest(positive_gold),
+            "negative_gold_digest": _text_digest(negative_gold),
+        }
+        records.append(record)
+        pairs.append(BoundaryCorruption(source_ref, negative_row, record))
+
+    direction_counts = {
+        direction: sum(record["direction"] == direction for record in records)
+        for direction in ("expansion", "contraction")
+    }
+    if direction_counts["expansion"] != direction_counts["contraction"]:
+        raise ValueError("boundary pair selection is not direction-balanced")
+    manifest = {
+        "algorithm": BOUNDARY_CORRUPTION_ALGORITHM,
+        "refs_and_records_digest_algorithm": BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM,
+        "gold_text_digest_algorithm": BOUNDARY_TEXT_DIGEST_ALGORITHM,
+        "enabled": True,
+        "seed": seed,
+        "requested_examples": max_examples,
+        "source_training_rows": len(rows),
+        "eligible_source_rows": len(eligible),
+        "ineligible_source_rows": dict(sorted(ineligible.items())),
+        "generated_examples": len(pairs),
+        "direction_counts": direction_counts,
+        "source_refs_digest": _refs_digest(refs),
+        "heldout_refs_digest": _refs_digest(sorted(heldout_refs)),
+        "pair_source_refs_digest": _refs_digest([pair.source_ref for pair in pairs]),
+        "positive_targets_digest": _json_digest(
+            [{"ref": record["source_ref"], "digest": record["positive_gold_digest"]}
+             for record in records]
+        ),
+        "negative_targets_digest": _json_digest(
+            [{"ref": record["negative_ref"], "digest": record["negative_gold_digest"]}
+             for record in records]
+        ),
+        "pairs_digest": _json_digest(records),
+        "examples": records,
+    }
+    return BoundaryCorruptionResult(tuple(pairs), manifest)
 
 
 def augment_train_fold_entity_substitutions(
@@ -566,6 +1001,98 @@ def weighted_causal_lm_loss(
     return (token_losses * effective_weights).sum() / denominator
 
 
+def boundary_contrastive_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    positive_count: int | torch.Tensor,
+    pair_positive_indices: torch.Tensor,
+    pair_negative_indices: torch.Tensor,
+    pairwise_lambda: float,
+    margin: float,
+) -> torch.Tensor:
+    """Combine positive CE with a per-positive normalized pair-ranking penalty."""
+
+    if logits.ndim != 3 or labels.ndim != 2 or logits.shape[:2] != labels.shape:
+        raise ValueError("logits and labels must be aligned batch/sequence tensors")
+    if logits.shape[1] < 2:
+        raise ValueError("causal language-model loss requires at least two tokens")
+    if isinstance(positive_count, torch.Tensor):
+        if positive_count.numel() != 1:
+            raise ValueError("positive count must be scalar")
+        positive_count = int(positive_count.item())
+    if isinstance(positive_count, bool) or not isinstance(positive_count, int):
+        raise ValueError("positive count must be an integer")
+    if not 0 < positive_count <= logits.shape[0]:
+        raise ValueError("positive count is outside the flattened batch")
+    if (
+        not math.isfinite(pairwise_lambda)
+        or not 0 <= pairwise_lambda <= MAX_BOUNDARY_CONTRASTIVE_LAMBDA
+    ):
+        raise ValueError("pairwise lambda must be finite and in [0, 1]")
+    if (
+        not math.isfinite(margin)
+        or not 0 <= margin <= MAX_BOUNDARY_CONTRASTIVE_MARGIN
+    ):
+        raise ValueError("pairwise margin must be finite and in [0, 20]")
+    if pair_positive_indices.ndim != 1 or pair_negative_indices.ndim != 1:
+        raise ValueError("pair indices must be one-dimensional")
+    if pair_positive_indices.dtype != torch.long or pair_negative_indices.dtype != torch.long:
+        raise ValueError("pair indices must use torch.long")
+    if pair_positive_indices.numel() != pair_negative_indices.numel():
+        raise ValueError("positive and negative pair indices do not align")
+    pair_count = pair_positive_indices.numel()
+    if logits.shape[0] - positive_count != pair_count:
+        raise ValueError("every flattened negative must belong to exactly one pair")
+    if pair_count and (
+        bool((pair_positive_indices < 0).any())
+        or bool((pair_positive_indices >= positive_count).any())
+        or bool((pair_negative_indices < positive_count).any())
+        or bool((pair_negative_indices >= logits.shape[0]).any())
+        or torch.unique(pair_positive_indices).numel() != pair_count
+        or torch.unique(pair_negative_indices).numel() != pair_count
+    ):
+        raise ValueError("pair indices are duplicated or outside their aligned partitions")
+
+    shift_logits = logits[:, :-1, :].contiguous().float()
+    shift_labels = labels[:, 1:].contiguous()
+    valid = shift_labels.ne(-100)
+    token_losses = torch.nn.functional.cross_entropy(
+        shift_logits.view(-1, shift_logits.shape[-1]),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    ).view_as(shift_labels)
+    if not bool(torch.isfinite(token_losses).all()):
+        raise ValueError("boundary loss produced non-finite token losses")
+    token_counts = valid.sum(dim=1)
+    if bool((token_counts <= 0).any()):
+        raise ValueError("every flattened example must contain assistant target tokens")
+    positive_tokens = valid[:positive_count]
+    positive_denominator = positive_tokens.sum()
+    if not bool(positive_denominator > 0):
+        raise ValueError("positive CE has no supervised target tokens")
+    positive_ce = (
+        token_losses[:positive_count] * positive_tokens.to(token_losses.dtype)
+    ).sum() / positive_denominator
+    if not bool(torch.isfinite(positive_ce)):
+        raise ValueError("boundary positive CE is non-finite")
+    if pair_count == 0:
+        return positive_ce
+    sequence_scores = -(
+        token_losses * valid.to(token_losses.dtype)
+    ).sum(dim=1) / token_counts.to(token_losses.dtype)
+    pair_penalty = torch.nn.functional.softplus(
+        sequence_scores[pair_negative_indices]
+        - sequence_scores[pair_positive_indices]
+        + margin
+    ).sum() / positive_count
+    total = positive_ce + pairwise_lambda * pair_penalty
+    if not bool(torch.isfinite(total)):
+        raise ValueError("boundary contrastive loss is non-finite")
+    return total
+
+
 class EncodedDataset(Dataset[dict[str, torch.Tensor]]):
     def __init__(
         self,
@@ -583,6 +1110,8 @@ class EncodedDataset(Dataset[dict[str, torch.Tensor]]):
         if entity_text_token_weight > 1.0 and gold_canonicalization == "none":
             raise ValueError("entity token weighting requires canonicalized gold")
         self.items: list[dict[str, torch.Tensor]] = []
+        self.refs: list[str] = []
+        self.skipped_refs: list[str] = []
         self.skipped = 0
         for row in rows:
             user = {"role": "user", "content": str(row["prompt"])}
@@ -622,6 +1151,7 @@ class EncodedDataset(Dataset[dict[str, torch.Tensor]]):
                 offset_mapping = None
             if len(input_ids) > max_length:
                 self.skipped += 1
+                self.skipped_refs.append(str(row.get("ref", "")))
                 continue
             labels = [-100] * len(prefix_ids) + input_ids[len(prefix_ids) :]
             if len(labels) != len(input_ids) or all(value == -100 for value in labels):
@@ -645,11 +1175,61 @@ class EncodedDataset(Dataset[dict[str, torch.Tensor]]):
                 )
                 item["loss_weights"] = torch.tensor(weights, dtype=torch.float32)
             self.items.append(item)
+            self.refs.append(str(row.get("ref", "")))
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        return self.items[index]
+
+
+class EncodedItemsDataset(Dataset[dict[str, torch.Tensor]]):
+    def __init__(
+        self,
+        items: Sequence[dict[str, torch.Tensor]],
+        refs: Sequence[str],
+    ) -> None:
+        if len(items) != len(refs) or len(set(refs)) != len(refs):
+            raise ValueError("encoded items and unique refs must align")
+        self.items = list(items)
+        self.refs = list(refs)
+        self.skipped = 0
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        return self.items[index]
+
+
+class BoundaryContrastiveDataset(Dataset[dict[str, Any]]):
+    def __init__(
+        self,
+        positives: EncodedItemsDataset,
+        negative_by_source_ref: Mapping[str, dict[str, torch.Tensor]],
+    ) -> None:
+        unknown = set(negative_by_source_ref) - set(positives.refs)
+        if unknown:
+            raise ValueError(f"boundary pair has no aligned positive: {sorted(unknown)[0]}")
+        if any("loss_weights" in item for item in positives.items) or any(
+            "loss_weights" in item for item in negative_by_source_ref.values()
+        ):
+            raise ValueError("boundary contrastive examples must remain unweighted")
+        self.refs = list(positives.refs)
+        self.items = [
+            {
+                "positive": item,
+                "negative": negative_by_source_ref.get(ref),
+            }
+            for ref, item in zip(positives.refs, positives.items, strict=True)
+        ]
+        self.skipped = positives.skipped
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
         return self.items[index]
 
 
@@ -683,6 +1263,49 @@ class Collator:
         return batch
 
 
+class BoundaryContrastiveCollator:
+    def __init__(self, pad_token_id: int) -> None:
+        self.collator = Collator(pad_token_id)
+
+    def __call__(self, items: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        if not items:
+            raise ValueError("cannot collate an empty boundary batch")
+        positives: list[dict[str, torch.Tensor]] = []
+        negatives: list[dict[str, torch.Tensor]] = []
+        pair_positive_indices: list[int] = []
+        for index, item in enumerate(items):
+            if set(item) != {"positive", "negative"}:
+                raise ValueError("boundary batch items must contain positive and negative")
+            positive = item["positive"]
+            negative = item["negative"]
+            if not isinstance(positive, Mapping) or (
+                negative is not None and not isinstance(negative, Mapping)
+            ):
+                raise ValueError("boundary batch contains a malformed encoded pair")
+            positives.append(dict(positive))
+            if negative is not None:
+                pair_positive_indices.append(index)
+                negatives.append(dict(negative))
+        if any("loss_weights" in item for item in [*positives, *negatives]):
+            raise ValueError("boundary contrastive batches must remain unweighted")
+        batch = self.collator([*positives, *negatives])
+        positive_count = len(positives)
+        batch.update(
+            {
+                "boundary_positive_count": torch.tensor(positive_count, dtype=torch.long),
+                "boundary_pair_positive_indices": torch.tensor(
+                    pair_positive_indices, dtype=torch.long
+                ),
+                "boundary_pair_negative_indices": torch.arange(
+                    positive_count,
+                    positive_count + len(negatives),
+                    dtype=torch.long,
+                ),
+            }
+        )
+        return batch
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
@@ -709,7 +1332,69 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--entity-text-token-weight", type=float, default=1.0)
     parser.add_argument("--entity-substitution-examples", type=int, default=0)
+    parser.add_argument("--boundary-contrastive", action="store_true")
+    parser.add_argument(
+        "--boundary-contrastive-examples", type=int, default=MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+    )
+    parser.add_argument("--boundary-contrastive-lambda", type=float, default=0.1)
+    parser.add_argument("--boundary-contrastive-margin", type=float, default=0.0)
     return parser.parse_args(argv)
+
+
+def validate_boundary_contrastive_args(args: argparse.Namespace) -> None:
+    """Validate controls only when the isolated experiment is explicitly enabled."""
+
+    if not args.boundary_contrastive:
+        return
+    if args.seed != BOUNDARY_OUTER_SEED:
+        raise SystemExit("boundary contrastive mode requires --seed 92")
+    incompatible = (
+        args.validation_examples != BOUNDARY_OUTER_EXAMPLES
+        or args.max_length != 512
+        or args.disease_row_weight != 1.0
+        or args.gold_canonicalization != "none"
+        or args.entity_text_token_weight != 1.0
+        or args.entity_substitution_examples != 0
+    )
+    if incompatible:
+        raise SystemExit(
+            "boundary contrastive mode requires validation-examples=384, max-length=512, "
+            "disease-row-weight=1, raw gold, no entity token weighting, and no augmentation"
+        )
+    if (
+        not 0 <= args.boundary_contrastive_examples <= MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+        or args.boundary_contrastive_examples % 2
+    ):
+        raise SystemExit("--boundary-contrastive-examples must be an even integer in [0, 512]")
+    if (
+        not math.isfinite(args.boundary_contrastive_lambda)
+        or not 0 <= args.boundary_contrastive_lambda <= MAX_BOUNDARY_CONTRASTIVE_LAMBDA
+    ):
+        raise SystemExit(
+            "--boundary-contrastive-lambda must be finite and in "
+            f"[0, {MAX_BOUNDARY_CONTRASTIVE_LAMBDA:g}]"
+        )
+    if (
+        not math.isfinite(args.boundary_contrastive_margin)
+        or not 0 <= args.boundary_contrastive_margin <= MAX_BOUNDARY_CONTRASTIVE_MARGIN
+    ):
+        raise SystemExit(
+            "--boundary-contrastive-margin must be finite and in "
+            f"[0, {MAX_BOUNDARY_CONTRASTIVE_MARGIN:g}]"
+        )
+
+
+def boundary_training_setting_fields(args: argparse.Namespace) -> dict[str, Any]:
+    """Return enabled-only settings so legacy metadata remains byte-compatible."""
+
+    if not args.boundary_contrastive:
+        return {}
+    return {
+        "boundary_contrastive": True,
+        "boundary_contrastive_examples": args.boundary_contrastive_examples,
+        "boundary_contrastive_lambda": args.boundary_contrastive_lambda,
+        "boundary_contrastive_margin": args.boundary_contrastive_margin,
+    }
 
 
 def row_has_disease(row: dict[str, Any]) -> bool:
@@ -748,6 +1433,20 @@ def sha256(path: Path) -> str:
         while chunk := handle.read(4 * 1024 * 1024):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def write_boundary_manifest(path: Path, payload: Mapping[str, Any]) -> dict[str, str]:
+    """Write the JSON manifest and declare its digest as exact file bytes."""
+
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "manifest_file": path.name,
+        "manifest_digest_algorithm": BOUNDARY_FILE_DIGEST_ALGORITHM,
+        "manifest_digest": sha256(path),
+    }
 
 
 def verify_training_input(path: Path) -> dict[str, str]:
@@ -872,6 +1571,7 @@ def main() -> int:
             "--entity-substitution-examples must be in "
             f"[0, {MAX_ENTITY_SUBSTITUTION_EXAMPLES}]"
         )
+    validate_boundary_contrastive_args(args)
     random.seed(settings.seed)
     torch.manual_seed(settings.seed)
     torch.cuda.manual_seed_all(settings.seed)
@@ -885,59 +1585,192 @@ def main() -> int:
     training_input = verify_training_input(args.base)
     is_weight_soup = training_input["kind"] == "deterministic_weight_soup"
     rows = load_rows(args.corpus)
-    random.Random(settings.seed).shuffle(rows)
-    validation_rows = rows[: settings.validation_examples]
-    source_train_rows = rows[settings.validation_examples :]
-    base_train_rows, disease_source_examples, disease_extra_examples = oversample_disease_rows(
-        source_train_rows, settings.disease_row_weight, settings.seed
-    )
-    augmentation = augment_train_fold_entity_substitutions(
-        source_train_rows,
-        heldout_refs={row["ref"] for row in validation_rows},
-        seed=settings.seed,
-        max_examples=settings.entity_substitution_examples,
-    )
-    train_rows = [*base_train_rows, *augmentation.rows]
-    augmentation_metadata = {
-        key: value for key, value in augmentation.manifest.items() if key != "examples"
-    }
-    if augmentation.manifest["enabled"]:
-        augmentation_manifest_path = args.out / "entity_substitution_manifest.json"
-        augmentation_manifest_path.write_text(
-            json.dumps(augmentation.manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+    boundary_metadata: dict[str, Any] | None = None
+    if args.boundary_contrastive:
+        outer_rows, remaining_rows = boundary_outer_partition(rows)
+        if (
+            len(outer_rows) != BOUNDARY_OUTER_EXAMPLES
+            or len(remaining_rows) != 4_816 - BOUNDARY_OUTER_EXAMPLES
+        ):
+            raise ValueError("boundary outer split has unexpected cardinality")
+    else:
+        random.Random(settings.seed).shuffle(rows)
+        validation_rows = rows[: settings.validation_examples]
+        source_train_rows = rows[settings.validation_examples :]
+        base_train_rows, disease_source_examples, disease_extra_examples = oversample_disease_rows(
+            source_train_rows, settings.disease_row_weight, settings.seed
         )
-        augmentation_metadata.update(
-            {
-                "manifest_file": augmentation_manifest_path.name,
-                "manifest_digest": sha256(augmentation_manifest_path),
-            }
+        augmentation = augment_train_fold_entity_substitutions(
+            source_train_rows,
+            heldout_refs={row["ref"] for row in validation_rows},
+            seed=settings.seed,
+            max_examples=settings.entity_substitution_examples,
         )
+        train_rows = [*base_train_rows, *augmentation.rows]
+        augmentation_metadata = {
+            key: value for key, value in augmentation.manifest.items() if key != "examples"
+        }
+        augmentation_composition = "append_after_source_disease_oversampling"
+        if augmentation.manifest["enabled"]:
+            augmentation_manifest_path = args.out / "entity_substitution_manifest.json"
+            augmentation_manifest_path.write_text(
+                json.dumps(augmentation.manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            augmentation_metadata.update(
+                {
+                    "manifest_file": augmentation_manifest_path.name,
+                    "manifest_digest": sha256(augmentation_manifest_path),
+                }
+            )
 
     tokenizer = AutoTokenizer.from_pretrained(args.base, local_files_only=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-    train_data = EncodedDataset(
-        train_rows,
-        tokenizer,
-        settings.max_length,
-        gold_canonicalization=settings.gold_canonicalization,
-        entity_text_token_weight=settings.entity_text_token_weight,
-    )
-    validation_data = EncodedDataset(
-        validation_rows,
-        tokenizer,
-        settings.max_length,
-        gold_canonicalization=settings.gold_canonicalization,
-    )
-    collator = Collator(tokenizer.pad_token_id)
+    if args.boundary_contrastive:
+        encoded_pool = EncodedDataset(list(remaining_rows), tokenizer, settings.max_length)
+        if (
+            len(encoded_pool) != BOUNDARY_EXPECTED_ENCODED_EXAMPLES
+            or encoded_pool.skipped
+            != len(remaining_rows) - BOUNDARY_EXPECTED_ENCODED_EXAMPLES
+        ):
+            raise ValueError(
+                "boundary mode expected 4,430 encoded non-reserve rows and exactly two skips"
+            )
+        outer_refs = [row["ref"] for row in outer_rows]
+        fold = split_boundary_encoded_refs(encoded_pool.refs, outer_refs=outer_refs)
+        if (
+            len(fold.train_indices) != 4_046
+            or len(fold.validation_indices) != BOUNDARY_INNER_VALIDATION_EXAMPLES
+        ):
+            raise ValueError("boundary inner split has unexpected cardinality")
+        row_by_ref = {row["ref"]: row for row in remaining_rows}
+        source_train_rows = [
+            row_by_ref[encoded_pool.refs[index]] for index in fold.train_indices
+        ]
+        validation_rows = [
+            row_by_ref[encoded_pool.refs[index]] for index in fold.validation_indices
+        ]
+        positive_data = EncodedItemsDataset(
+            [encoded_pool.items[index] for index in fold.train_indices],
+            [encoded_pool.refs[index] for index in fold.train_indices],
+        )
+        validation_data = EncodedItemsDataset(
+            [encoded_pool.items[index] for index in fold.validation_indices],
+            [encoded_pool.refs[index] for index in fold.validation_indices],
+        )
+        heldout_refs = (
+            set(outer_refs) | set(validation_data.refs) | set(encoded_pool.skipped_refs)
+        )
+        corruption = generate_boundary_corruptions(
+            source_train_rows,
+            heldout_refs=heldout_refs,
+            seed=settings.seed,
+            max_examples=args.boundary_contrastive_examples,
+        )
+        if (
+            args.boundary_contrastive_examples == MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+            and len(corruption.pairs) != MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+        ):
+            raise ValueError("public inner train did not yield the required 512 balanced pairs")
+        negative_rows = [pair.negative_row for pair in corruption.pairs]
+        negative_data = EncodedDataset(negative_rows, tokenizer, settings.max_length)
+        expected_negative_refs = [row["ref"] for row in negative_rows]
+        if negative_data.skipped or negative_data.refs != expected_negative_refs:
+            raise ValueError("a selected boundary negative could not be encoded exactly once")
+        negative_by_ref = {
+            pair.source_ref: item
+            for pair, item in zip(corruption.pairs, negative_data.items, strict=True)
+        }
+        train_data = BoundaryContrastiveDataset(positive_data, negative_by_ref)
+        train_collator = BoundaryContrastiveCollator(tokenizer.pad_token_id)
+        validation_collator = Collator(tokenizer.pad_token_id)
+        disease_source_examples = sum(row_has_disease(row) for row in source_train_rows)
+        disease_extra_examples = 0
+        augmentation = augment_train_fold_entity_substitutions(
+            source_train_rows,
+            heldout_refs=heldout_refs,
+            seed=settings.seed,
+            max_examples=0,
+        )
+        augmentation_metadata = {
+            key: value for key, value in augmentation.manifest.items() if key != "examples"
+        }
+        augmentation_composition = "disabled_for_boundary_contrastive"
+        boundary_manifest = {
+            "schema": "microtensor.boundary_contrastive.v1",
+            "embedded_digest_algorithms": {
+                "refs_and_records": BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM,
+                "gold_text": BOUNDARY_TEXT_DIGEST_ALGORITHM,
+            },
+            "settings": {
+                "enabled": True,
+                "requested_examples": args.boundary_contrastive_examples,
+                "pairwise_lambda": args.boundary_contrastive_lambda,
+                "margin": args.boundary_contrastive_margin,
+                "positive_target": "raw_gold",
+                "score": "mean_assistant_log_probability",
+                "pair_penalty_reduction": "sum_over_positive_count_unpaired_positive_zero",
+                "objective": "positive_ce_plus_lambda_times_reduced_pair_penalty",
+            },
+            "split": fold.manifest,
+            "corruption": corruption.manifest,
+            "skipped_encoded_refs": sorted(encoded_pool.skipped_refs),
+            "skipped_refs_digest_algorithm": BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM,
+            "skipped_encoded_refs_digest": _refs_digest(encoded_pool.skipped_refs),
+        }
+        boundary_manifest_path = args.out / "boundary_contrastive_manifest.json"
+        boundary_manifest_identity = write_boundary_manifest(
+            boundary_manifest_path, boundary_manifest
+        )
+        split_summary = {
+            key: value
+            for key, value in fold.manifest.items()
+            if key not in {"outer_refs", "inner_train_refs", "inner_validation_refs"}
+        }
+        corruption_summary = {
+            key: value for key, value in corruption.manifest.items() if key != "examples"
+        }
+        boundary_metadata = {
+            "schema": boundary_manifest["schema"],
+            "embedded_digest_algorithms": boundary_manifest["embedded_digest_algorithms"],
+            **boundary_manifest["settings"],
+            **boundary_manifest_identity,
+            "split": split_summary,
+            "corruption": corruption_summary,
+            "skipped_encoded_examples": encoded_pool.skipped,
+            "skipped_encoded_refs_digest": boundary_manifest["skipped_encoded_refs_digest"],
+        }
+        # These rows were rejected before the inner split, so they are not skipped
+        # members of source_train_rows. Their identities remain bound above.
+        skipped_training_examples = 0
+        skipped_validation_examples = 0
+    else:
+        train_data = EncodedDataset(
+            train_rows,
+            tokenizer,
+            settings.max_length,
+            gold_canonicalization=settings.gold_canonicalization,
+            entity_text_token_weight=settings.entity_text_token_weight,
+        )
+        validation_data = EncodedDataset(
+            validation_rows,
+            tokenizer,
+            settings.max_length,
+            gold_canonicalization=settings.gold_canonicalization,
+        )
+        train_collator = Collator(tokenizer.pad_token_id)
+        validation_collator = train_collator
+        skipped_training_examples = train_data.skipped
+        skipped_validation_examples = validation_data.skipped
+
     generator = torch.Generator().manual_seed(settings.seed)
     train_loader = DataLoader(
         train_data,
         batch_size=settings.batch_size,
         shuffle=True,
         generator=generator,
-        collate_fn=collator,
+        collate_fn=train_collator,
         num_workers=2,
         pin_memory=True,
         persistent_workers=True,
@@ -946,7 +1779,7 @@ def main() -> int:
         validation_data,
         batch_size=settings.batch_size,
         shuffle=False,
-        collate_fn=collator,
+        collate_fn=validation_collator,
         num_workers=2,
         pin_memory=True,
         persistent_workers=True,
@@ -1018,7 +1851,7 @@ def main() -> int:
         "training_input": training_input,
         "corpus_version": CORPUS_VERSION,
         "corpus_file_digest": sha256(args.corpus),
-        "settings": asdict(settings),
+        "settings": {**asdict(settings), **boundary_training_setting_fields(args)},
         "target_controls": {
             "entity_match": "exact_text_and_type_set",
             "gold_canonicalization": settings.gold_canonicalization,
@@ -1028,7 +1861,7 @@ def main() -> int:
         "augmentation": {
             "entity_substitution": {
                 **augmentation_metadata,
-                "composition": "append_after_source_disease_oversampling",
+                "composition": augmentation_composition,
             }
         },
         "training_examples": len(train_data),
@@ -1036,12 +1869,14 @@ def main() -> int:
         "disease_source_examples": disease_source_examples,
         "disease_extra_examples": disease_extra_examples,
         "validation_examples": len(validation_data),
-        "skipped_training_examples": train_data.skipped,
-        "skipped_validation_examples": validation_data.skipped,
+        "skipped_training_examples": skipped_training_examples,
+        "skipped_validation_examples": skipped_validation_examples,
         "torch_version": torch.__version__,
         "gpu": torch.cuda.get_device_name(0),
         "started_at_unix": int(time.time()),
     }
+    if boundary_metadata is not None:
+        metadata["boundary_contrastive"] = boundary_metadata
     (args.out / "training_metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -1063,8 +1898,34 @@ def main() -> int:
         for micro_step, batch in enumerate(train_loader, start=1):
             batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
             loss_weights = batch.pop("loss_weights", None)
+            boundary_positive_count = batch.pop("boundary_positive_count", None)
+            boundary_positive_indices = batch.pop("boundary_pair_positive_indices", None)
+            boundary_negative_indices = batch.pop("boundary_pair_negative_indices", None)
+            boundary_fields = (
+                boundary_positive_count,
+                boundary_positive_indices,
+                boundary_negative_indices,
+            )
+            if any(value is None for value in boundary_fields) and not all(
+                value is None for value in boundary_fields
+            ):
+                raise ValueError("boundary batch control fields are incomplete")
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                if loss_weights is None:
+                if boundary_positive_count is not None:
+                    if loss_weights is not None:
+                        raise ValueError("boundary contrastive loss cannot use token weights")
+                    labels = batch.pop("labels")
+                    output = model(**batch)
+                    raw_loss = boundary_contrastive_loss(
+                        output.logits,
+                        labels,
+                        positive_count=boundary_positive_count,
+                        pair_positive_indices=boundary_positive_indices,
+                        pair_negative_indices=boundary_negative_indices,
+                        pairwise_lambda=args.boundary_contrastive_lambda,
+                        margin=args.boundary_contrastive_margin,
+                    )
+                elif loss_weights is None:
                     raw_loss = model(**batch).loss
                 else:
                     labels = batch.pop("labels")
