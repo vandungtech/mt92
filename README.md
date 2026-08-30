@@ -2,9 +2,12 @@
 
 This repository supervises one registered Microtensor hotkey safely across round
 boundaries. It is pinned to upstream commit
-`d0e002f887d038bf3ea4af65b499137a755620d7` (release `0.1.14`), netuid 92 on
-Finney, wallet `you-cold/you-hot1`, expected UID 32, and the currently live
-`extract/mt-3g` competition.
+`d0e002f887d038bf3ea4af65b499137a755620d7`, which reports version `0.1.14`,
+netuid 92 on Finney, wallet `you-cold/you-hot1`, expected UID 32, and the
+currently live `extract/mt-3g` competition. That commit is unreleased and is not
+the application-signed v0.1.14 release commit; the signed release does not yet
+contain the live extraction rules. Version equality is therefore not treated as
+release-signature proof, and any live cycle requires a fresh exact-round audit.
 
 It does **not** train a model or turn an empty wallet into a miner. A valid artifact,
 self-check, public training provenance, and upload destination must exist first. The
