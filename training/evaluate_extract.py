@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -14,7 +13,22 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from train_extract import CORPUS_VERSION, load_rows
+try:
+    from training.evaluation_selection import (
+        BOUNDARY_INNER_SELECTION,
+        CORPUS_VERSION,
+        LEGACY_SELECTION,
+        select_evaluation_rows,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "training":
+        raise
+    from evaluation_selection import (  # type: ignore[no-redef]
+        BOUNDARY_INNER_SELECTION,
+        CORPUS_VERSION,
+        LEGACY_SELECTION,
+        select_evaluation_rows,
+    )
 
 Entity = tuple[str, str]
 
@@ -57,27 +71,40 @@ def counts(prediction: set[Entity] | None, gold: set[Entity]) -> tuple[int, int,
     return len(found & gold), len(found - gold), len(gold - found)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--seed", type=int, default=92)
-    parser.add_argument("--examples", type=int, default=384)
+    parser.add_argument(
+        "--selection",
+        choices=(LEGACY_SELECTION, BOUNDARY_INNER_SELECTION),
+        default=None,
+    )
+    parser.add_argument("--seed", type=int, default=None, help="legacy default: 92")
+    parser.add_argument("--examples", type=int, default=None, help="legacy default: 384")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-new-tokens", type=int, default=256)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 @torch.no_grad()
 def main() -> int:
     args = parse_args()
+    try:
+        selected = select_evaluation_rows(
+            args.corpus,
+            selection=args.selection,
+            seed=args.seed,
+            examples=args.examples,
+            legacy_examples=384,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"evaluation selection failed: {exc}") from exc
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required for this benchmark")
 
-    rows = load_rows(args.corpus)
-    random.Random(args.seed).shuffle(rows)
-    rows = rows[: args.examples]
+    rows = selected.rows
     tokenizer = AutoTokenizer.from_pretrained(args.model, local_files_only=True)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
@@ -161,6 +188,7 @@ def main() -> int:
         "false_negative": false_negative,
         "malformed_outputs": malformed,
         "elapsed_s": round(time.monotonic() - started, 3),
+        "selection": selected.manifest,
     }
     summary_path = args.output.with_suffix(".summary.json")
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")

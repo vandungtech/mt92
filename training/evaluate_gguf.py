@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import time
 from pathlib import Path
 
@@ -15,35 +14,51 @@ from microtensor.harness.contract import Request
 from microtensor.harness.engines.gguf import GgufEngine
 from microtensor.scoring.extraction import gold_entities, micro_f1, parse_entities
 
-CORPUS_VERSION = "sha256:492ea6e7b791f03be0989b07eee0dc9ba722d35d2f274743c6dc33420c383ff8"
+try:
+    from training.evaluation_selection import (
+        BOUNDARY_INNER_SELECTION,
+        LEGACY_SELECTION,
+        select_evaluation_rows,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "training":
+        raise
+    from evaluation_selection import (  # type: ignore[no-redef]
+        BOUNDARY_INNER_SELECTION,
+        LEGACY_SELECTION,
+        select_evaluation_rows,
+    )
 
 
-def load_rows(path: Path) -> list[dict[str, object]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if str(payload.get("version")) != CORPUS_VERSION:
-        raise ValueError(f"expected corpus {CORPUS_VERSION}, got {payload.get('version')}")
-    tasks = payload.get("tasks")
-    if not isinstance(tasks, list):
-        raise ValueError("corpus tasks must be a list")
-    rows = [row for row in tasks if isinstance(row, dict) and row.get("partition") == "train"]
-    if len(rows) != 4_816:
-        raise ValueError(f"expected 4816 public train rows, found {len(rows)}")
-    return rows
-
-
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--seed", type=int, default=92)
-    parser.add_argument("--examples", type=int, default=64)
+    parser.add_argument(
+        "--selection",
+        choices=(LEGACY_SELECTION, BOUNDARY_INNER_SELECTION),
+        default=None,
+    )
+    parser.add_argument("--seed", type=int, default=None, help="legacy default: 92")
+    parser.add_argument("--examples", type=int, default=None, help="legacy default: 64")
     parser.add_argument("--quantization", default="Q4_K_M")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    rows = load_rows(args.corpus)
-    random.Random(args.seed).shuffle(rows)
-    rows = rows[: args.examples]
+
+def main() -> int:
+    args = parse_args()
+    try:
+        selected = select_evaluation_rows(
+            args.corpus,
+            selection=args.selection,
+            seed=args.seed,
+            examples=args.examples,
+            legacy_examples=64,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"evaluation selection failed: {exc}") from exc
+    rows = selected.rows
     engine = GgufEngine()
     engine.load(
         args.model,
@@ -116,6 +131,7 @@ def main() -> int:
         "mean_latency_ms": sum(latency_ms) / max(1, len(latency_ms)),
         "p95_latency_ms": ordered_latency[p95_index] if ordered_latency else 0.0,
         "elapsed_s": round(time.monotonic() - started, 3),
+        "selection": selected.manifest,
     }
     summary_path = args.output.with_suffix(".summary.json")
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
