@@ -16,6 +16,7 @@ import math
 import os
 import random
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -50,15 +51,183 @@ class Settings:
     lora_dropout: float
     disease_row_weight: float
     validation_examples: int
+    gold_canonicalization: str = "none"
+    entity_text_token_weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class CanonicalTarget:
+    """A strict scorer-equivalent target and its entity-value character spans."""
+
+    content: str
+    entity_text_spans: tuple[tuple[int, int], ...]
+
+
+def canonicalize_gold(raw: Any, order: str = "first") -> CanonicalTarget:
+    """Serialize a strict set of ``(text, type)`` pairs deterministically.
+
+    The scorer strips surrounding whitespace from otherwise valid values.  A
+    training target must never silently repair such a value, so this function
+    rejects it instead.  Likewise, any malformed member rejects the complete
+    target rather than being partially rescued.
+    """
+
+    if order not in {"first", "sorted"}:
+        raise ValueError("gold canonicalization order must be first or sorted")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("gold is not valid JSON") from exc
+    if not isinstance(raw, Mapping) or set(raw) != {"entities"}:
+        raise ValueError("gold must be an object containing only entities")
+    entities = raw["entities"]
+    if not isinstance(entities, Sequence) or isinstance(entities, (str, bytes)):
+        raise ValueError("gold entities must be a list")
+
+    seen: set[tuple[str, str]] = set()
+    pairs: list[tuple[str, str]] = []
+    for entity in entities:
+        if not isinstance(entity, Mapping) or set(entity) != {"text", "type"}:
+            raise ValueError("every gold entity must contain exactly text and type")
+        text_value = entity["text"]
+        entity_type = entity["type"]
+        if not isinstance(text_value, str) or not isinstance(entity_type, str):
+            raise ValueError("gold entity text and type must be strings")
+        if (
+            not text_value
+            or not entity_type
+            or text_value != text_value.strip()
+            or entity_type != entity_type.strip()
+        ):
+            raise ValueError("gold entity text and type must be non-empty and already stripped")
+        pair = (text_value, entity_type)
+        if pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+    if order == "sorted":
+        pairs.sort()
+
+    content = '{"entities":['
+    spans: list[tuple[int, int]] = []
+    for index, (text_value, entity_type) in enumerate(pairs):
+        if index:
+            content += ","
+        content += '{"text":'
+        encoded_text = json.dumps(text_value, ensure_ascii=False)
+        span_start = len(content) + 1
+        content += encoded_text
+        spans.append((span_start, len(content) - 1))
+        content += ',"type":' + json.dumps(entity_type, ensure_ascii=False) + "}"
+    content += "]}"
+    return CanonicalTarget(content, tuple(spans))
+
+
+def bind_entity_token_weights(
+    offset_mapping: Sequence[Sequence[int]],
+    labels: Sequence[int],
+    entity_spans: Sequence[tuple[int, int]],
+    entity_weight: float,
+) -> list[float]:
+    """Bind rendered entity spans to target tokens, rejecting ambiguous gaps."""
+
+    if not math.isfinite(entity_weight) or entity_weight <= 1.0:
+        raise ValueError("entity token weight must be finite and greater than 1.0")
+    if len(offset_mapping) != len(labels):
+        raise ValueError("token offsets and labels do not align")
+    offsets: list[tuple[int, int]] = []
+    for raw_offset in offset_mapping:
+        if not isinstance(raw_offset, Sequence) or len(raw_offset) != 2:
+            raise ValueError("tokenizer returned a malformed offset")
+        start, end = raw_offset
+        if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end < start:
+            raise ValueError("tokenizer returned a malformed offset")
+        offsets.append((start, end))
+
+    weights = [0.0 if int(label) == -100 else 1.0 for label in labels]
+    for span_start, span_end in entity_spans:
+        if span_start < 0 or span_end <= span_start:
+            raise ValueError("entity text has an invalid rendered span")
+        selected: list[int] = []
+        covered: list[tuple[int, int]] = []
+        for index, (token_start, token_end) in enumerate(offsets):
+            if token_start < span_end and token_end > span_start:
+                if int(labels[index]) == -100:
+                    raise ValueError("an entity token overlaps the masked prompt")
+                selected.append(index)
+                covered.append((max(token_start, span_start), min(token_end, span_end)))
+        if not selected:
+            raise ValueError("an entity span could not be bound to any token")
+        cursor = span_start
+        for covered_start, covered_end in sorted(covered):
+            if covered_start > cursor:
+                raise ValueError("token offsets leave a gap inside an entity span")
+            cursor = max(cursor, covered_end)
+        if cursor < span_end:
+            raise ValueError("token offsets do not cover a complete entity span")
+        for index in selected:
+            weights[index] = entity_weight
+    return weights
+
+
+def weighted_causal_lm_loss(
+    logits: torch.Tensor, labels: torch.Tensor, loss_weights: torch.Tensor
+) -> torch.Tensor:
+    """Return weighted next-token cross entropy with the causal shift applied."""
+
+    if logits.ndim != 3 or labels.ndim != 2 or loss_weights.ndim != 2:
+        raise ValueError("expected [batch, sequence, vocab] logits and aligned target matrices")
+    if logits.shape[:2] != labels.shape or labels.shape != loss_weights.shape:
+        raise ValueError("logits, labels, and loss weights do not align")
+    if logits.shape[1] < 2:
+        raise ValueError("causal language-model loss requires at least two tokens")
+    if not bool(torch.isfinite(loss_weights).all()) or bool((loss_weights < 0).any()):
+        raise ValueError("loss weights must be finite and non-negative")
+
+    shift_logits = logits[:, :-1, :].contiguous().float()
+    shift_labels = labels[:, 1:].contiguous()
+    shift_weights = loss_weights[:, 1:].to(device=shift_logits.device, dtype=torch.float32)
+    valid = shift_labels.ne(-100)
+    effective_weights = shift_weights * valid.to(dtype=torch.float32)
+    denominator = effective_weights.sum()
+    if not bool(denominator > 0):
+        raise ValueError("weighted loss has no supervised target tokens")
+    token_losses = torch.nn.functional.cross_entropy(
+        shift_logits.view(-1, shift_logits.shape[-1]),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    ).view_as(shift_labels)
+    return (token_losses * effective_weights).sum() / denominator
 
 
 class EncodedDataset(Dataset[dict[str, torch.Tensor]]):
-    def __init__(self, rows: list[dict[str, Any]], tokenizer: Any, max_length: int) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        tokenizer: Any,
+        max_length: int,
+        *,
+        gold_canonicalization: str = "none",
+        entity_text_token_weight: float = 1.0,
+    ) -> None:
+        if gold_canonicalization not in {"none", "first", "sorted"}:
+            raise ValueError("gold canonicalization must be none, first, or sorted")
+        if not math.isfinite(entity_text_token_weight) or entity_text_token_weight < 1.0:
+            raise ValueError("entity text token weight must be finite and at least 1.0")
+        if entity_text_token_weight > 1.0 and gold_canonicalization == "none":
+            raise ValueError("entity token weighting requires canonicalized gold")
         self.items: list[dict[str, torch.Tensor]] = []
         self.skipped = 0
         for row in rows:
             user = {"role": "user", "content": str(row["prompt"])}
-            assistant = {"role": "assistant", "content": str(row["gold"])}
+            canonical = (
+                canonicalize_gold(row["gold"], gold_canonicalization)
+                if gold_canonicalization != "none"
+                else None
+            )
+            assistant_content = canonical.content if canonical is not None else str(row["gold"])
+            assistant = {"role": "assistant", "content": assistant_content}
             prefix = tokenizer.apply_chat_template(
                 [user], tokenize=False, add_generation_prompt=True, enable_thinking=False
             )
@@ -69,19 +238,48 @@ class EncodedDataset(Dataset[dict[str, torch.Tensor]]):
                 enable_thinking=False,
             )
             prefix_ids = tokenizer(prefix, add_special_tokens=False).input_ids
-            input_ids = tokenizer(complete, add_special_tokens=False).input_ids
+            if entity_text_token_weight > 1.0:
+                if not complete.startswith(prefix) or not complete[len(prefix) :].startswith(
+                    assistant_content
+                ):
+                    raise ValueError(
+                        f"could not locate rendered assistant content for {row.get('ref', '<unknown>')}"
+                    )
+                encoded = tokenizer(
+                    complete,
+                    add_special_tokens=False,
+                    return_offsets_mapping=True,
+                )
+                input_ids = encoded.input_ids
+                offset_mapping = encoded.offset_mapping
+            else:
+                input_ids = tokenizer(complete, add_special_tokens=False).input_ids
+                offset_mapping = None
             if len(input_ids) > max_length:
                 self.skipped += 1
                 continue
             labels = [-100] * len(prefix_ids) + input_ids[len(prefix_ids) :]
             if len(labels) != len(input_ids) or all(value == -100 for value in labels):
                 raise ValueError(f"could not locate assistant tokens for {row.get('ref', '<unknown>')}")
-            self.items.append(
-                {
-                    "input_ids": torch.tensor(input_ids, dtype=torch.long),
-                    "labels": torch.tensor(labels, dtype=torch.long),
-                }
-            )
+            item = {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long),
+            }
+            if offset_mapping is not None:
+                assert canonical is not None
+                assistant_start = len(prefix)
+                spans = tuple(
+                    (assistant_start + start, assistant_start + end)
+                    for start, end in canonical.entity_text_spans
+                )
+                weights = bind_entity_token_weights(
+                    offset_mapping,
+                    labels,
+                    spans,
+                    entity_text_token_weight,
+                )
+                item["loss_weights"] = torch.tensor(weights, dtype=torch.float32)
+            self.items.append(item)
 
     def __len__(self) -> int:
         return len(self.items)
@@ -96,18 +294,31 @@ class Collator:
 
     def __call__(self, items: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         width = max(len(item["input_ids"]) for item in items)
+        weighted = ["loss_weights" in item for item in items]
+        if any(weighted) and not all(weighted):
+            raise ValueError("cannot collate a mixture of weighted and unweighted examples")
         ids = torch.full((len(items), width), self.pad_token_id, dtype=torch.long)
         labels = torch.full((len(items), width), -100, dtype=torch.long)
         attention = torch.zeros((len(items), width), dtype=torch.long)
+        loss_weights = torch.zeros((len(items), width), dtype=torch.float32) if all(weighted) else None
         for index, item in enumerate(items):
             length = len(item["input_ids"])
+            if len(item["labels"]) != length or (
+                loss_weights is not None and len(item["loss_weights"]) != length
+            ):
+                raise ValueError("encoded example fields do not align")
             ids[index, :length] = item["input_ids"]
             labels[index, :length] = item["labels"]
             attention[index, :length] = 1
-        return {"input_ids": ids, "attention_mask": attention, "labels": labels}
+            if loss_weights is not None:
+                loss_weights[index, :length] = item["loss_weights"]
+        batch = {"input_ids": ids, "attention_mask": attention, "labels": labels}
+        if loss_weights is not None:
+            batch["loss_weights"] = loss_weights
+        return batch
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--base", type=Path, required=True)
@@ -126,7 +337,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument("--disease-row-weight", type=float, default=1.0)
     parser.add_argument("--validation-examples", type=int, default=384)
-    return parser.parse_args()
+    parser.add_argument(
+        "--gold-canonicalization",
+        choices=("none", "first", "sorted"),
+        default="none",
+    )
+    parser.add_argument("--entity-text-token-weight", type=float, default=1.0)
+    return parser.parse_args(argv)
 
 
 def row_has_disease(row: dict[str, Any]) -> bool:
@@ -222,6 +439,8 @@ def evaluate(model: Any, loader: DataLoader[dict[str, torch.Tensor]], device: to
     total = 0.0
     count = 0
     for batch in loader:
+        if "loss_weights" in batch:
+            raise ValueError("validation loss must remain ordinary unweighted causal-LM loss")
         batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             loss = model(**batch).loss
@@ -251,9 +470,18 @@ def main() -> int:
         lora_dropout=args.lora_dropout,
         disease_row_weight=args.disease_row_weight,
         validation_examples=args.validation_examples,
+        gold_canonicalization=args.gold_canonicalization,
+        entity_text_token_weight=args.entity_text_token_weight,
     )
     if not 0.0 <= settings.lora_dropout < 1.0:
         raise SystemExit("--lora-dropout must be in [0, 1)")
+    if (
+        not math.isfinite(settings.entity_text_token_weight)
+        or settings.entity_text_token_weight < 1.0
+    ):
+        raise SystemExit("--entity-text-token-weight must be finite and at least 1.0")
+    if settings.entity_text_token_weight > 1.0 and settings.gold_canonicalization == "none":
+        raise SystemExit("entity token weighting requires --gold-canonicalization first or sorted")
     random.seed(settings.seed)
     torch.manual_seed(settings.seed)
     torch.cuda.manual_seed_all(settings.seed)
@@ -276,8 +504,19 @@ def main() -> int:
     tokenizer = AutoTokenizer.from_pretrained(args.base, local_files_only=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-    train_data = EncodedDataset(train_rows, tokenizer, settings.max_length)
-    validation_data = EncodedDataset(validation_rows, tokenizer, settings.max_length)
+    train_data = EncodedDataset(
+        train_rows,
+        tokenizer,
+        settings.max_length,
+        gold_canonicalization=settings.gold_canonicalization,
+        entity_text_token_weight=settings.entity_text_token_weight,
+    )
+    validation_data = EncodedDataset(
+        validation_rows,
+        tokenizer,
+        settings.max_length,
+        gold_canonicalization=settings.gold_canonicalization,
+    )
     collator = Collator(tokenizer.pad_token_id)
     generator = torch.Generator().manual_seed(settings.seed)
     train_loader = DataLoader(
@@ -353,6 +592,12 @@ def main() -> int:
         "corpus_version": CORPUS_VERSION,
         "corpus_file_digest": sha256(args.corpus),
         "settings": asdict(settings),
+        "target_controls": {
+            "entity_match": "exact_text_and_type_set",
+            "gold_canonicalization": settings.gold_canonicalization,
+            "entity_text_token_weight": settings.entity_text_token_weight,
+            "validation_loss": "ordinary_unweighted_causal_lm",
+        },
         "training_examples": len(train_data),
         "source_training_examples": len(source_train_rows),
         "disease_source_examples": disease_source_examples,
@@ -384,8 +629,15 @@ def main() -> int:
         model.train()
         for micro_step, batch in enumerate(train_loader, start=1):
             batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+            loss_weights = batch.pop("loss_weights", None)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                loss = model(**batch).loss / settings.gradient_accumulation
+                if loss_weights is None:
+                    raw_loss = model(**batch).loss
+                else:
+                    labels = batch.pop("labels")
+                    output = model(**batch)
+                    raw_loss = weighted_causal_lm_loss(output.logits, labels, loss_weights)
+                loss = raw_loss / settings.gradient_accumulation
             loss.backward()
             accumulated_loss += float(loss.detach()) * settings.gradient_accumulation
 
