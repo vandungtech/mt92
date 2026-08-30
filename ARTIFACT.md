@@ -112,6 +112,34 @@ The continuation trained on the encodable members of this public slice, so
 these are training-slice and quantization-selection measurements, not a hidden
 or official leaderboard estimate.
 
+The exact active Q4 was also replayed on the deterministic 384-row
+`boundary-inner-v1` fold, which is disjoint from the fixed outer audit fold.
+It scored `0.9919649379108838`: 679 TP, 7 FP, 4 FN, and zero malformed
+outputs. The selected-ref and ordered-ref digests are
+`sha256:3ae12b94d723c4ea627fa391500b64d0516eea800c86a7b1635217082c9f7a3c`
+and
+`sha256:12817194c09aaf96e1f4d67c5193863c4c20bbfcf5a5f4e5576edb22c752035c`.
+The row-level and original summary SHA-256 values are
+`sha256:e0be0d214701b5b3dfc2aa0c470736fd9d652a9545275fb2bbabfc2278396974`
+and
+`sha256:b7b5a2492bb728fa53a520bab25982722b78d6ae897746e1511ff672000e70aa`.
+The exact counts are a deterministic replay of those pinned rows; the original
+summary predates count emission. This remains public selection evidence, not a
+hidden or official leaderboard estimate.
+
+## Rejected Q5 candidate
+
+The predeclared one-shot `Q5_K_M` candidate built successfully but failed its
+next frozen gate. Its private GGUF is `444414944` bytes, SHA-256
+`sha256:50403ead1879a3bc8cb126e2cdeadca1231ca8b17e0cd050710e2ef4530f006d`,
+with artifact-tree digest
+`sha256:47e88c6138ee7d0f5d9c9eaa765c5be239b3071468b9ff6302a964c2b9f68925`.
+The no-clobber calibration-manifest build failed because the declared runtime
+lacked the deterministic weight-soup validation dependencies. The committed
+decision therefore permanently rejects the candidate with no retry; evaluation,
+self-check, promotion, publication, and submission were all skipped. The active
+Q4 bytes and binding were not changed.
+
 ## Official self-check and rollback
 
 The exact active artifact passed pinned upstream release `v0.1.14` at commit
