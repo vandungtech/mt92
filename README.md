@@ -2,7 +2,7 @@
 
 This repository supervises one registered Microtensor hotkey safely across round
 boundaries. It is pinned to upstream commit
-`73815395e03daa0d6a25ad93030bdb5124cb61cf` (release `0.1.14`), netuid 92 on
+`d0e002f887d038bf3ea4af65b499137a755620d7` (release `0.1.14`), netuid 92 on
 Finney, wallet `you-cold/you-hot1`, expected UID 32, and the currently live
 `extract/mt-3g` competition.
 

@@ -9,7 +9,7 @@ from typing import Mapping
 
 from .errors import ConfigError
 
-UPSTREAM_COMMIT = "73815395e03daa0d6a25ad93030bdb5124cb61cf"
+UPSTREAM_COMMIT = "d0e002f887d038bf3ea4af65b499137a755620d7"
 UPSTREAM_RELEASE = "0.1.14"
 EXPECTED_ENTRYPOINT = "model.gguf"
 EXPECTED_FORMAT = "gguf"

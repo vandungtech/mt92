@@ -10,12 +10,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-  "microtensor-subnet[provenance,s3] @ git+https://github.com/microtensor-io/microtensor-subnet.git@73815395e03daa0d6a25ad93030bdb5124cb61cf",
+  "microtensor-subnet[provenance,s3] @ git+https://github.com/microtensor-io/microtensor-subnet.git@d0e002f887d038bf3ea4af65b499137a755620d7",
 ]
 
 [project.optional-dependencies]
 selfcheck = [
-  "microtensor-subnet[validator,gguf] @ git+https://github.com/microtensor-io/microtensor-subnet.git@73815395e03daa0d6a25ad93030bdb5124cb61cf",
+  "microtensor-subnet[validator,gguf] @ git+https://github.com/microtensor-io/microtensor-subnet.git@d0e002f887d038bf3ea4af65b499137a755620d7",
 ]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 

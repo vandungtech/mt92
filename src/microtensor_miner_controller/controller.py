@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -11,6 +12,7 @@ from .config import ControllerConfig
 from .coordinator import fetch_current_round, resolve_round
 from .errors import ControllerError, RoundRefused, VerificationError
 from .models import PackagedArtifact, PreflightSnapshot, RoundWindow, VerificationProofs
+from .redaction import redact_text
 from .state import StateStore, utc_timestamp
 
 log = logging.getLogger(__name__)
@@ -324,7 +326,7 @@ class Controller:
             details=artifact_details,
         )
         self.backend.verify_source(packaged, full=True)
-        self.backend.verify_provenance(packaged, head)
+        self.backend.verify_provenance(packaged, window.close_block)
         payload = self.backend.verify_on_chain(packaged)
         return self._verified(
             window,
@@ -536,7 +538,8 @@ class Controller:
     def _failure(self, phase: str, exc: BaseException) -> None:
         previous = self.state.read_status()
         failures = int(previous.get("consecutive_failures", 0) or 0) + 1
-        message = str(exc) or exc.__class__.__name__
+        raw_message = str(exc) or exc.__class__.__name__
+        message = redact_text(raw_message, self.state.secrets)
         self.state.write(
             phase,
             ok=False,
@@ -548,3 +551,4 @@ class Controller:
             },
         )
         log.error("%s: %s", phase, message)
+        print(f"{utc_timestamp()} ERROR {phase}: {message}", file=sys.stderr, flush=True)

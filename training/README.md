@@ -64,7 +64,7 @@ After the exact artifact digest is known:
 
 ```bash
 WANDB_API_KEY=... python training/publish_provenance.py \
-  --training-dir runtime/training/qwen3-0.6b-extract \
+  --training-dir runtime/training/qwen3-0.6b-extract-final \
   --artifact-digest sha256:... \
   --finished-block FINNEY_BLOCK
 ```

@@ -24,6 +24,7 @@ class FakeBackend:
         self.operations: list[str] = []
         self.published = False
         self.fail_source = fail_source
+        self.provenance_blocks: list[int] = []
         self.local: PackagedArtifact | None = None
 
     def preflight(self) -> PreflightSnapshot:
@@ -72,6 +73,7 @@ class FakeBackend:
 
     def verify_provenance(self, packaged: PackagedArtifact, block: int) -> None:
         self.operations.append("provenance")
+        self.provenance_blocks.append(block)
 
     def publish(self, packaged: PackagedArtifact) -> PublishReceipt:
         self.operations.append("publish")
@@ -136,6 +138,17 @@ class ControllerTests(unittest.TestCase):
             self.assertNotIn("publish", backend.operations)
             self.assertFalse(state.read_health()["ok"])
             self.assertNotEqual(state.read_status()["phase"], "verified")
+
+    def test_periodic_provenance_uses_validator_close_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend()
+            controller, _ = self._build(Path(temporary), dry_run=False, backend=backend)
+            self.assertEqual(controller.run(once=True), 0)
+            snapshot = controller.preflight_snapshot
+            self.assertIsNotNone(snapshot)
+            controller.clock = lambda: 2_000.0
+            self.assertEqual(controller.cycle(snapshot), "verified")  # type: ignore[arg-type]
+            self.assertEqual(backend.provenance_blocks, [150, 200])
 
 
 if __name__ == "__main__":
