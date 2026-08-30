@@ -33,6 +33,9 @@ CORPUS_VERSION = "sha256:492ea6e7b791f03be0989b07eee0dc9ba722d35d2f274743c6dc334
 HOTKEY = "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
 BASE_WEIGHTS_DIGEST = "sha256:f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b"
 BASE_TOKENIZER_DIGEST = "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+ENTITY_SUBSTITUTION_ALGORITHM = "literal_same_type_train_fold_v1"
+ENTITY_TYPES = ("Chemical", "Disease")
+MAX_ENTITY_SUBSTITUTION_EXAMPLES = 1_024
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class Settings:
     validation_examples: int
     gold_canonicalization: str = "none"
     entity_text_token_weight: float = 1.0
+    entity_substitution_examples: int = 0
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,360 @@ class CanonicalTarget:
 
     content: str
     entity_text_spans: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class AugmentationSurface:
+    """A typed gold surface bound to exact, non-overlapping input spans."""
+
+    text: str
+    entity_type: str
+    spans: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class BoundAugmentationRow:
+    row: dict[str, Any]
+    ref: str
+    input_text: str
+    prompt_prefix: str
+    entities: tuple[dict[str, str], ...]
+    surfaces: tuple[AugmentationSurface, ...]
+
+
+@dataclass(frozen=True)
+class EntitySubstitutionResult:
+    rows: tuple[dict[str, Any], ...]
+    manifest: dict[str, Any]
+
+
+class _AugmentationIneligible(ValueError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _strict_json_loads(raw: str, ref: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in payload:
+                raise ValueError(f"duplicate JSON key {key!r} for {ref}")
+            payload[key] = value
+        return payload
+
+    try:
+        return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid gold JSON for {ref}") from exc
+
+
+def _literal_occurrences(text: str, needle: str) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while True:
+        start = text.find(needle, cursor)
+        if start < 0:
+            return tuple(spans)
+        spans.append((start, start + len(needle)))
+        cursor = start + 1
+
+
+def _bind_augmentation_row(row: dict[str, Any]) -> BoundAugmentationRow:
+    ref = row.get("ref")
+    if not isinstance(ref, str) or not ref or ref != ref.strip():
+        raise ValueError("augmentation rows require a non-empty, already stripped ref")
+    if row.get("partition") != "train":
+        raise ValueError(f"entity substitution accepts only train-fold rows, got {ref}")
+    inputs = row.get("inputs")
+    if not isinstance(inputs, Mapping):
+        raise ValueError(f"invalid inputs for {ref}")
+    input_text = inputs.get("text")
+    if not isinstance(input_text, str) or not input_text:
+        raise ValueError(f"invalid input text for {ref}")
+    prompt = row.get("prompt")
+    if not isinstance(prompt, str) or not prompt.endswith(input_text):
+        raise ValueError(f"prompt is not bound to its input text for {ref}")
+    prompt_prefix = prompt[: len(prompt) - len(input_text)]
+    if not prompt_prefix.endswith("\n\nText: "):
+        raise ValueError(f"prompt has an unexpected input boundary for {ref}")
+
+    raw_gold = row.get("gold")
+    payload = _strict_json_loads(raw_gold, ref) if isinstance(raw_gold, str) else raw_gold
+    if not isinstance(payload, Mapping) or set(payload) != {"entities"}:
+        raise ValueError(f"gold must contain only entities for {ref}")
+    raw_entities = payload["entities"]
+    if not isinstance(raw_entities, Sequence) or isinstance(raw_entities, (str, bytes)):
+        raise ValueError(f"gold entities must be a list for {ref}")
+
+    entities: list[dict[str, str]] = []
+    surface_types: dict[str, str] = {}
+    for index, raw_entity in enumerate(raw_entities):
+        if not isinstance(raw_entity, Mapping) or set(raw_entity) != {"text", "type"}:
+            raise ValueError(f"malformed gold entity {index} for {ref}")
+        entity_text = raw_entity["text"]
+        entity_type = raw_entity["type"]
+        if (
+            not isinstance(entity_text, str)
+            or not isinstance(entity_type, str)
+            or not entity_text
+            or entity_text != entity_text.strip()
+            or entity_type not in ENTITY_TYPES
+            or any(ord(character) < 32 for character in entity_text)
+        ):
+            raise ValueError(f"invalid gold entity {index} for {ref}")
+        prior_type = surface_types.setdefault(entity_text, entity_type)
+        if prior_type != entity_type:
+            raise _AugmentationIneligible("ambiguous_entity_type")
+        entities.append({"text": entity_text, "type": entity_type})
+
+    if not entities:
+        raise _AugmentationIneligible("no_entities")
+    surfaces: list[AugmentationSurface] = []
+    occupied: list[tuple[int, int, str]] = []
+    for entity_text, entity_type in surface_types.items():
+        spans = _literal_occurrences(input_text, entity_text)
+        if not spans:
+            raise _AugmentationIneligible("gold_surface_absent")
+        for start, end in spans:
+            if (start > 0 and input_text[start - 1].isalnum()) or (
+                end < len(input_text) and input_text[end].isalnum()
+            ):
+                raise _AugmentationIneligible("alphanumeric_boundary_collision")
+        for previous, current in zip(spans, spans[1:], strict=False):
+            if current[0] < previous[1]:
+                raise _AugmentationIneligible("self_overlapping_surface")
+        occupied.extend((start, end, entity_text) for start, end in spans)
+        surfaces.append(AugmentationSurface(entity_text, entity_type, spans))
+    occupied.sort()
+    for previous, current in zip(occupied, occupied[1:], strict=False):
+        if current[0] < previous[1] and current[2] != previous[2]:
+            raise _AugmentationIneligible("overlapping_entity_surfaces")
+    surfaces.sort(key=lambda surface: (surface.entity_type, surface.text))
+    return BoundAugmentationRow(
+        row, ref, input_text, prompt_prefix, tuple(entities), tuple(surfaces)
+    )
+
+
+def _stable_hash(*parts: object) -> str:
+    encoded = json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def augment_train_fold_entity_substitutions(
+    rows: list[dict[str, Any]],
+    *,
+    heldout_refs: set[str],
+    seed: int,
+    max_examples: int,
+) -> EntitySubstitutionResult:
+    """Create bounded synthetic copies using donors from this exact train fold."""
+
+    if isinstance(max_examples, bool) or not isinstance(max_examples, int):
+        raise ValueError("entity substitution examples must be an integer")
+    if not 0 <= max_examples <= MAX_ENTITY_SUBSTITUTION_EXAMPLES:
+        raise ValueError(
+            f"entity substitution examples must be in [0, {MAX_ENTITY_SUBSTITUTION_EXAMPLES}]"
+        )
+    if max_examples == 0:
+        return EntitySubstitutionResult(
+            (),
+            {
+                "algorithm": ENTITY_SUBSTITUTION_ALGORITHM,
+                "enabled": False,
+                "seed": seed,
+                "requested_examples": 0,
+                "augmented_examples": 0,
+                "replacement_count": 0,
+                "examples": [],
+            },
+        )
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("entity substitution seed must be an integer")
+    if any(not isinstance(ref, str) or not ref for ref in heldout_refs):
+        raise ValueError("held-out refs must be non-empty strings")
+
+    ordered_rows = sorted(rows, key=lambda row: str(row.get("ref", "")))
+    refs = [row.get("ref") for row in ordered_rows]
+    if any(not isinstance(ref, str) or not ref for ref in refs) or len(set(refs)) != len(refs):
+        raise ValueError("entity substitution requires unique non-empty train-fold refs")
+    source_refs = set(refs)
+    overlap = source_refs & heldout_refs
+    if overlap:
+        raise ValueError(f"train and held-out refs overlap: {sorted(overlap)[0]}")
+
+    bound_rows: list[BoundAugmentationRow] = []
+    ineligible: dict[str, int] = {}
+    for row in ordered_rows:
+        try:
+            bound_rows.append(_bind_augmentation_row(row))
+        except _AugmentationIneligible as exc:
+            ineligible[exc.reason] = ineligible.get(exc.reason, 0) + 1
+
+    observed_types: dict[str, set[str]] = {}
+    for source in bound_rows:
+        for surface in source.surfaces:
+            observed_types.setdefault(surface.text, set()).add(surface.entity_type)
+    ambiguous_surfaces = {
+        text for text, entity_types in observed_types.items() if len(entity_types) != 1
+    }
+    donor_by_type: dict[str, list[tuple[str, str]]] = {
+        entity_type: [] for entity_type in ENTITY_TYPES
+    }
+    for source in bound_rows:
+        for surface in source.surfaces:
+            if surface.text not in ambiguous_surfaces:
+                donor_by_type[surface.entity_type].append((surface.text, source.ref))
+    for entity_type in ENTITY_TYPES:
+        donor_by_type[entity_type] = sorted(set(donor_by_type[entity_type]))
+    donor_records = [
+        {"type": entity_type, "text": text, "source_ref": donor_ref}
+        for entity_type in ENTITY_TYPES
+        for text, donor_ref in donor_by_type[entity_type]
+    ]
+
+    candidates = sorted(
+        bound_rows,
+        key=lambda source: (_stable_hash(seed, "source", source.ref), source.ref),
+    )
+    augmented_rows: list[dict[str, Any]] = []
+    augmented_refs: set[str] = set()
+    records: list[dict[str, Any]] = []
+    no_compatible_donor = 0
+    for source in candidates:
+        if len(augmented_rows) >= max_examples:
+            break
+        candidate_surfaces = sorted(
+            (surface for surface in source.surfaces if surface.text not in ambiguous_surfaces),
+            key=lambda surface: (
+                _stable_hash(seed, "surface", source.ref, surface.entity_type, surface.text),
+                surface.entity_type,
+                surface.text,
+            ),
+        )
+        selected: tuple[AugmentationSurface, str, str] | None = None
+        source_texts = {surface.text.casefold() for surface in source.surfaces}
+        for surface in candidate_surfaces:
+            ranked_donors = sorted(
+                donor_by_type[surface.entity_type],
+                key=lambda donor: (
+                    _stable_hash(
+                        seed,
+                        "donor",
+                        source.ref,
+                        surface.entity_type,
+                        surface.text,
+                        donor[0],
+                        donor[1],
+                    ),
+                    donor[0],
+                    donor[1],
+                ),
+            )
+            for donor_text, donor_ref in ranked_donors:
+                donor_folded = donor_text.casefold()
+                if (
+                    donor_ref == source.ref
+                    or donor_text == surface.text
+                    or donor_folded in source.input_text.casefold()
+                    or any(ord(character) < 32 for character in donor_text)
+                    or any(
+                        existing in donor_folded or donor_folded in existing
+                        for existing in source_texts
+                    )
+                ):
+                    continue
+                selected = (surface, donor_text, donor_ref)
+                break
+            if selected is not None:
+                break
+        if selected is None:
+            no_compatible_donor += 1
+            continue
+
+        surface, donor_text, donor_ref = selected
+        transformed_text = source.input_text
+        for start, end in reversed(surface.spans):
+            if transformed_text[start:end] != surface.text:
+                raise ValueError(f"source span changed while augmenting {source.ref}")
+            transformed_text = transformed_text[:start] + donor_text + transformed_text[end:]
+        transformed_entities = [
+            {
+                "text": (
+                    donor_text
+                    if entity["text"] == surface.text and entity["type"] == surface.entity_type
+                    else entity["text"]
+                ),
+                "type": entity["type"],
+            }
+            for entity in source.entities
+        ]
+        transformed_gold = json.dumps({"entities": transformed_entities}, ensure_ascii=False)
+        transformation_id = _stable_hash(
+            seed, source.ref, surface.entity_type, surface.text, donor_text, donor_ref
+        )[:16]
+        augmented_ref = f"{source.ref}::entity-substitution::{transformation_id}"
+        if (
+            augmented_ref in source_refs
+            or augmented_ref in heldout_refs
+            or augmented_ref in augmented_refs
+        ):
+            raise ValueError(
+                f"generated augmentation ref collides with an existing ref: {augmented_ref}"
+            )
+        transformed_inputs = dict(source.row["inputs"])
+        transformed_inputs["text"] = transformed_text
+        augmented_row = dict(source.row)
+        augmented_row.update(
+            {
+                "ref": augmented_ref,
+                "inputs": transformed_inputs,
+                "prompt": source.prompt_prefix + transformed_text,
+                "gold": transformed_gold,
+            }
+        )
+        try:
+            _bind_augmentation_row(augmented_row)
+        except _AugmentationIneligible as exc:
+            raise ValueError(
+                f"generated augmentation for {source.ref} violates {exc.reason}"
+            ) from exc
+        augmented_rows.append(augmented_row)
+        augmented_refs.add(augmented_ref)
+        records.append(
+            {
+                "source_ref": source.ref,
+                "augmented_ref": augmented_ref,
+                "donor_ref": donor_ref,
+                "type": surface.entity_type,
+                "source_text": surface.text,
+                "donor_text": donor_text,
+                "occurrence_count": len(surface.spans),
+            }
+        )
+
+    manifest = {
+        "algorithm": ENTITY_SUBSTITUTION_ALGORITHM,
+        "enabled": True,
+        "seed": seed,
+        "requested_examples": max_examples,
+        "source_training_rows": len(rows),
+        "eligible_source_rows": len(bound_rows),
+        "ineligible_source_rows": dict(sorted(ineligible.items())),
+        "globally_ambiguous_surfaces": len(ambiguous_surfaces),
+        "no_compatible_donor_rows": no_compatible_donor,
+        "donor_entity_counts": {
+            entity_type: len(donor_by_type[entity_type]) for entity_type in ENTITY_TYPES
+        },
+        "source_training_refs_digest": "sha256:" + _stable_hash(sorted(refs)),
+        "heldout_refs_digest": "sha256:" + _stable_hash(sorted(heldout_refs)),
+        "donor_pool_digest": "sha256:" + _stable_hash(donor_records),
+        "augmented_examples": len(augmented_rows),
+        "replacement_count": len(records),
+        "examples": records,
+    }
+    return EntitySubstitutionResult(tuple(augmented_rows), manifest)
+
 
 
 def canonicalize_gold(raw: Any, order: str = "first") -> CanonicalTarget:
@@ -343,6 +701,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="none",
     )
     parser.add_argument("--entity-text-token-weight", type=float, default=1.0)
+    parser.add_argument("--entity-substitution-examples", type=int, default=0)
     return parser.parse_args(argv)
 
 
@@ -472,6 +831,7 @@ def main() -> int:
         validation_examples=args.validation_examples,
         gold_canonicalization=args.gold_canonicalization,
         entity_text_token_weight=args.entity_text_token_weight,
+        entity_substitution_examples=args.entity_substitution_examples,
     )
     if not 0.0 <= settings.lora_dropout < 1.0:
         raise SystemExit("--lora-dropout must be in [0, 1)")
@@ -482,6 +842,11 @@ def main() -> int:
         raise SystemExit("--entity-text-token-weight must be finite and at least 1.0")
     if settings.entity_text_token_weight > 1.0 and settings.gold_canonicalization == "none":
         raise SystemExit("entity token weighting requires --gold-canonicalization first or sorted")
+    if not 0 <= settings.entity_substitution_examples <= MAX_ENTITY_SUBSTITUTION_EXAMPLES:
+        raise SystemExit(
+            "--entity-substitution-examples must be in "
+            f"[0, {MAX_ENTITY_SUBSTITUTION_EXAMPLES}]"
+        )
     random.seed(settings.seed)
     torch.manual_seed(settings.seed)
     torch.cuda.manual_seed_all(settings.seed)
@@ -497,9 +862,31 @@ def main() -> int:
     random.Random(settings.seed).shuffle(rows)
     validation_rows = rows[: settings.validation_examples]
     source_train_rows = rows[settings.validation_examples :]
-    train_rows, disease_source_examples, disease_extra_examples = oversample_disease_rows(
+    base_train_rows, disease_source_examples, disease_extra_examples = oversample_disease_rows(
         source_train_rows, settings.disease_row_weight, settings.seed
     )
+    augmentation = augment_train_fold_entity_substitutions(
+        source_train_rows,
+        heldout_refs={row["ref"] for row in validation_rows},
+        seed=settings.seed,
+        max_examples=settings.entity_substitution_examples,
+    )
+    train_rows = [*base_train_rows, *augmentation.rows]
+    augmentation_metadata = {
+        key: value for key, value in augmentation.manifest.items() if key != "examples"
+    }
+    if augmentation.manifest["enabled"]:
+        augmentation_manifest_path = args.out / "entity_substitution_manifest.json"
+        augmentation_manifest_path.write_text(
+            json.dumps(augmentation.manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        augmentation_metadata.update(
+            {
+                "manifest_file": augmentation_manifest_path.name,
+                "manifest_digest": sha256(augmentation_manifest_path),
+            }
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(args.base, local_files_only=True)
     if tokenizer.pad_token_id is None:
@@ -597,6 +984,12 @@ def main() -> int:
             "gold_canonicalization": settings.gold_canonicalization,
             "entity_text_token_weight": settings.entity_text_token_weight,
             "validation_loss": "ordinary_unweighted_causal_lm",
+        },
+        "augmentation": {
+            "entity_substitution": {
+                **augmentation_metadata,
+                "composition": "append_after_source_disease_oversampling",
+            }
         },
         "training_examples": len(train_data),
         "source_training_examples": len(source_train_rows),
