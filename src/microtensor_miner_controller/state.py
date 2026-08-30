@@ -30,6 +30,7 @@ class StateStore:
         self.root = root
         self.status_path = root / "status.json"
         self.health_path = root / "health.json"
+        self.rank_path = root / "rank.json"
         self.lock_path = root / "controller.lock"
         self.secrets = tuple(secrets)
 
@@ -61,6 +62,13 @@ class StateStore:
 
     def read_health(self) -> dict[str, Any]:
         return self._read(self.health_path)
+
+    def read_rank(self) -> dict[str, Any]:
+        return self._read(self.rank_path)
+
+    def write_rank(self, payload: Mapping[str, Any]) -> None:
+        """Atomically persist observer-only rank state without touching health."""
+        self._atomic_json(self.rank_path, sanitize(dict(payload), self.secrets))
 
     def write(
         self,

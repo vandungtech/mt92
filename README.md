@@ -154,7 +154,9 @@ State is atomically replaced with mode 0600:
 
 - `$MMC_STATE_DIR/status.json`: phase, sanitized plan/artifact details, trusted round,
   and proof timestamps;
-- `$MMC_STATE_DIR/health.json`: compact supervisor-facing health; and
+- `$MMC_STATE_DIR/health.json`: compact supervisor-facing health;
+- `$MMC_STATE_DIR/rank.json`: best-effort public leaderboard standing for the configured
+  hotkey, refreshed independently every five minutes; and
 - `$MMC_STATE_DIR/controller.lock`: prevents duplicate signers.
 
 ```bash
@@ -184,6 +186,35 @@ A normal verified state includes all four proof flags:
 
 The commitment itself is not copied to logs/state because a source may be sensitive;
 only its SHA-256 fingerprint is retained.
+
+## Rank-one observer
+
+Continuous `run` mode starts a daemon observer for the official public
+`extract/mt-3g` leaderboard:
+
+`https://api.microtensor.cloud/v1/arenas/extract/mt-3g/leaderboard`
+
+It matches the exact SS58 hotkey returned by wallet preflight and atomically replaces
+`$MMC_STATE_DIR/rank.json` with mode 0600. The document records the server-supplied
+rank, quality, expected cost in milliseconds, frontier membership, exclusive
+hypervolume share, current rank-one leader, and whether the `rank == 1` goal is met.
+It also records the leaderboard round and observation time so an old public board is
+visible rather than mistaken for a current chain round.
+
+```bash
+jq . /var/lib/microtensor-miner/controller/rank.json
+```
+
+`reachability: true` means the HTTPS request and response schema succeeded. A reachable
+board that does not contain this hotkey writes `found: false` and `rank: null`. A
+timeout, HTTP error, malformed payload, wrong competition, or duplicate hotkey writes
+`reachability: false`, clears the current rank fields, and leaves `goal_achieved: false`.
+
+This observer is intentionally not an admission proof. It runs on a separate daemon
+thread, never reads or changes `status.json` or `health.json`, and its output is never
+consulted by packaging, upload, provenance, publication, or chain-verification code.
+Public API failure therefore cannot block or authorise a submission. One-shot and
+preflight commands do not start the periodic observer.
 
 ## Round and restart behavior
 

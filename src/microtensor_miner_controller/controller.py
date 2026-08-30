@@ -11,6 +11,7 @@ from .backend import Backend
 from .config import ControllerConfig
 from .coordinator import fetch_current_round, resolve_round
 from .errors import ControllerError, RoundRefused, VerificationError
+from .leaderboard import RankMonitor
 from .models import PackagedArtifact, PreflightSnapshot, RoundWindow, VerificationProofs
 from .redaction import redact_text
 from .state import StateStore, utc_timestamp
@@ -76,9 +77,12 @@ class Controller:
                 self.backend.close()
 
     def run(self, *, once: bool = False) -> int:
+        rank_monitor: RankMonitor | None = None
         with self.state.lock():
             try:
                 snapshot = self.preflight()
+                if not once:
+                    rank_monitor = self._start_rank_monitor(snapshot.hotkey)
                 while not self.stop_event.is_set():
                     try:
                         outcome = self.cycle(snapshot)
@@ -114,7 +118,30 @@ class Controller:
                 self._failure("fatal", exc)
                 return 1
             finally:
+                if rank_monitor is not None:
+                    try:
+                        rank_monitor.stop()
+                    except Exception as exc:
+                        log.warning("rank observer did not stop cleanly: %s", exc)
                 self.backend.close()
+
+    def _start_rank_monitor(self, hotkey: str) -> RankMonitor | None:
+        try:
+            monitor = RankMonitor(
+                self.state,
+                track=self.config.track,
+                hardware_class=self.config.hardware_class,
+                hotkey=hotkey,
+            )
+            monitor.start()
+            return monitor
+        except Exception as exc:
+            # Public standing is observational only: it never gates or authorises a cycle.
+            message = redact_text(str(exc) or exc.__class__.__name__, self.state.secrets)
+            log.warning(
+                "rank observer unavailable; submission supervision continues: %s", message
+            )
+            return None
 
     def cycle(self, snapshot: PreflightSnapshot) -> str:
         # Registration can change while this long-running process remains alive. Keep
