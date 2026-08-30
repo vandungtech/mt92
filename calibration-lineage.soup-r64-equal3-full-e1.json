@@ -1,0 +1,114 @@
+{
+  "artifact_tree_digest": "sha256:3c9a5b064e2641570989cb605f605aaa8db7b5cfbaa73f36bbb0d2ff25fb5d66",
+  "calibration": {
+    "arguments": [
+      "--offline",
+      "--model",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "--file",
+      "runtime/training/imatrix/final-seed92-r0-n512.txt",
+      "--output",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf",
+      "--ctx-size",
+      "512",
+      "--chunks",
+      "-1",
+      "--no-ppl",
+      "--parse-special"
+    ],
+    "corpus": {
+      "bytes": 310901,
+      "path": "runtime/training/imatrix/final-seed92-r0-n512.txt",
+      "sha256": "sha256:0588fa83ddf7768846d5e491c7878b2c7b66fe4ba0c9afd12ca4fd118b82bf9d"
+    },
+    "imatrix": {
+      "bytes": 1177088,
+      "path": "runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf",
+      "sha256": "sha256:9dc4a84b75775f4c357a82d7534ad388eacbbc187a761022beed00637a526d93"
+    },
+    "metadata": {
+      "bytes": 98185,
+      "path": "runtime/training/imatrix/final-seed92-r0-n512.txt.metadata.json",
+      "sha256": "sha256:7be2a3835d05781667e80f4d4aff55ccad55e548c6c75a17655a5fb815fb105b"
+    },
+    "settings": {
+      "chunks": -1,
+      "ctx_size": 512,
+      "no_ppl": true,
+      "offline": true,
+      "output_format": "gguf",
+      "parse_special": true,
+      "process_output": false
+    },
+    "tool": "llama-imatrix"
+  },
+  "conversion": {
+    "arguments": [
+      "runtime/training/experiments/soup-r64-equal3-full-e1/merged",
+      "--outfile",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "--outtype",
+      "f16"
+    ],
+    "output": {
+      "bytes": 1198182080,
+      "path": "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "sha256": "sha256:2562a6afb8e75683e06c3054724fd0a0e4a528ed83a8af6951a0a7f4be564275"
+    },
+    "outtype": "f16",
+    "tool": "convert_hf_to_gguf.py"
+  },
+  "llama_cpp_revision": "c589f0ed10c643678c4707dd160c21ac7633ebc0",
+  "quantization": {
+    "arguments": [
+      "--imatrix",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "runtime/candidates/soup-r64-equal3-full-e1-q4/model.gguf",
+      "Q4_K_M"
+    ],
+    "output": {
+      "bytes": 396704736,
+      "path": "runtime/candidates/soup-r64-equal3-full-e1-q4/model.gguf",
+      "sha256": "sha256:903b76dfae36ecb650808e282800333e96da8a606f96355cc735455bf8651ddd"
+    },
+    "tool": "llama-quantize"
+  },
+  "schema": "microtensor.gguf-imatrix-lineage.v1",
+  "source_model": {
+    "directory": "runtime/training/experiments/soup-r64-equal3-full-e1/merged",
+    "files": [
+      {
+        "bytes": 4168,
+        "path": "chat_template.jinja",
+        "sha256": "sha256:a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8"
+      },
+      {
+        "bytes": 1417,
+        "path": "config.json",
+        "sha256": "sha256:cc9e78f197814997a5140d41850bc2c222386701b431b358b32fd29544f643e5"
+      },
+      {
+        "bytes": 214,
+        "path": "generation_config.json",
+        "sha256": "sha256:8cf19eded42ca225321ef6d64a33a36162dd3febdd79690bd702ad895f8bc957"
+      },
+      {
+        "bytes": 1192135096,
+        "path": "model.safetensors",
+        "sha256": "sha256:8ad9367d4d1b530f675b591fa29118542af76f84fd3a570379edd474018410a5"
+      },
+      {
+        "bytes": 11422650,
+        "path": "tokenizer.json",
+        "sha256": "sha256:be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506"
+      },
+      {
+        "bytes": 692,
+        "path": "tokenizer_config.json",
+        "sha256": "sha256:1cc816812993bff176eb4f7495433b736f06fba9b6e7b05cac7b4a1780650c95"
+      }
+    ],
+    "training_metadata_sha256": "sha256:c6d65337a035932aceae77941ee8371e48a8dd4625ac3a637b6bb2a5a4ea5eb2"
+  }
+}

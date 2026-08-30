@@ -2,20 +2,18 @@
 
 The active deployable weights are intentionally ignored by Git and live at
 `runtime/artifact/model.gguf`. This record binds those exact local bytes to
-their reviewed training, calibration, evaluation, and self-check evidence
-without committing a 396 MB binary. It does not describe any soup,
-augmentation, or other candidate still under evaluation.
+reviewed training, calibration, evaluation, and official self-check evidence
+without committing a 396 MB binary.
 
 ## Identity
 
 - Track/class: `extract/mt-3g`
 - Format/quantization: GGUF v3 / `Q4_K_M`
-- Entrypoint size: `396704736` bytes
+- Entrypoint: `model.gguf`, `396704736` bytes
 - Entrypoint SHA-256:
-  `sha256:fe0f34195627765155ecd98a309052c5efb5a4b3e977bce7cfbbe6ba564162e0`
-- Microtensor artifact digest:
-  `sha256:316e9d2b06184e0f9c0f385e1f4850a96879b755f41bb7d4966637142ff144ee`
-- Artifact tree: one file, `model.gguf`, totaling `396704736` bytes
+  `sha256:903b76dfae36ecb650808e282800333e96da8a606f96355cc735455bf8651ddd`
+- Microtensor artifact-tree digest:
+  `sha256:3c9a5b064e2641570989cb605f605aaa8db7b5cfbaa73f36bbb0d2ff25fb5d66`
 - Base:
   `Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca`
 - Public corpus version:
@@ -25,108 +23,121 @@ augmentation, or other candidate still under evaluation.
 - Converter, imatrix engine, and quantizer: llama.cpp
   `c589f0ed10c643678c4707dd160c21ac7633ebc0`
 
-GGUF embeds the tokenizer and chat template, so the active publishable tree
-contains only `model.gguf`. The bound load specification fixes
-`max_input.tokens=512` and a `tokenizer.json` preprocessing reference. Its
-canonical SHA-256 is
+The active file is a hard link to
+`runtime/candidates/soup-r64-equal3-full-e1-q4/model.gguf`. GGUF embeds the
+tokenizer and chat template, so the publishable tree contains only
+`model.gguf`. The load specification's canonical SHA-256 is
 `sha256:12f805e5e63a0b48954cef98c6579b61b88ef03a27d658df632df687c0ec6e1e`.
 
 ## Training lineage
 
-Stage one is
-`runtime/training/experiments/lora-r64-e2-seed92`; its metadata SHA-256 is
-`sha256:178040ccd12dc855d0584d2f0505c4086fe7da6e51c08000b8295736f2aab9f7`.
-It trained a rank-64, alpha-128 LoRA for two epochs with seed 92, learning rate
-`2e-4`, batch size 8, gradient accumulation 4, maximum length 512, warmup
-ratio 0.05, and weight decay 0.01. It used 4,430 public examples and held out
-384 deterministic examples.
+The continuation starts from the deterministic equal-weight soup at
+`runtime/training/soups/r64-seed92-equal3`. Its metadata SHA-256 is
+`sha256:4237e19e8997edb4a9895461f758974d9a05270d38328983acb3d0eb72cff1c4`;
+its output-manifest digest is
+`sha256:4dd85b2ff353591eb26abdd26df073813ec550d5ceecba48fbf02244a25e4db7`,
+and its tensor-index digest is
+`sha256:a9291111e64caafb4bb8b4703e0b90ab00999dc9474276da6b4d94efac5edda5`.
 
-Before subsequent selection, that stage scored `0.9362637362637363` entity
-micro-F1 on the 384-example reserve: 639 true positives, 42 false positives,
-45 false negatives, and zero malformed outputs. The summary evidence SHA-256
-is `sha256:e55919d79a76ae28500964152e1b72f344fb78afcef727e15b3ad3dc59c4a10c`;
-the row-level JSONL SHA-256 is
-`sha256:1cbb039f05cf79dd0bb33312370bb9e6953e8668e3b10be3a1ed547778d8da8b`.
+The soup combines three rank-64 parents in order at equal normalized weight:
 
-Stage two is
-`runtime/training/experiments/lora-r64-e2-full-e1`; its metadata SHA-256 is
-`sha256:965c04d58bb9251a1eba8c543b3a1c7bcc80c2491e3e3bb0de9b868f455d0ecc`
-and it names the stage-one metadata digest as its parent. It ran one epoch over
-all 4,814 usable public examples with seed 92, learning rate `5e-5`, rank 64,
-alpha 128, batch size 8, gradient accumulation 4, maximum length 512, warmup
-ratio 0.05, and weight decay 0.01.
+- `lora-r64-e2-seed92`, metadata
+  `sha256:178040ccd12dc855d0584d2f0505c4086fe7da6e51c08000b8295736f2aab9f7`
+- `lora-r64-e2-drop0-seed92`, metadata
+  `sha256:0892e2e8afe42fc366e30ce1a979d54a8e39187ca469e686e7c2f77fcd7476de`
+- `lora-r64-e2-disease125-seed92`, metadata
+  `sha256:7b0ec1993e498d5077e1ff0aaa5513b7a1278661717e4943a36bb99a355651d0`
 
-## Public-only imatrix calibration
+The final continuation is
+`runtime/training/experiments/soup-r64-equal3-full-e1`; its metadata SHA-256 is
+`sha256:c6d65337a035932aceae77941ee8371e48a8dd4625ac3a637b6bb2a5a4ea5eb2`.
+It trained one epoch with seed 92, learning rate `5e-5`, rank 64, alpha 128,
+LoRA dropout 0.05, batch size 8, gradient accumulation 4, maximum length 512,
+warmup ratio 0.05, and weight decay 0.01. It used all 4,814 encodable public
+examples; two overlength examples were skipped. Training finished at Unix time
+`1788079473` and had completed by Finney block `8956890`.
 
-The active bytes were quantized from stage two with a final all-public
-importance matrix. The deterministic calibration corpus used seed 92, reserve
-size 0, maximum 512 examples, and selected 512 of 4,815 eligible public rows;
-one public row was rejected because its gold text was not a source substring.
-Thinking and generation prompts were disabled, and gold entities were rendered
-as compact, sorted-key JSON after exact text/type deduplication.
+## Conversion and public-only calibration
 
-The calibration evidence is bound as follows:
+The merged model converted to F16 at
+`runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf`,
+`1198182080` bytes, SHA-256
+`sha256:2562a6afb8e75683e06c3054724fd0a0e4a528ed83a8af6951a0a7f4be564275`.
 
-- rendered text:
-  `runtime/training/imatrix/final-seed92-r0-n512.txt`,
-  310901 bytes,
+The deterministic public calibration corpus used seed 92, reserve size 0, and
+512 examples. Thinking and generation prompts were disabled, and gold entities
+were rendered as compact sorted-key JSON after exact text/type deduplication.
+
+- rendered text: `runtime/training/imatrix/final-seed92-r0-n512.txt`,
+  `310901` bytes,
   `sha256:0588fa83ddf7768846d5e491c7878b2c7b66fe4ba0c9afd12ca4fd118b82bf9d`
 - metadata sidecar:
   `runtime/training/imatrix/final-seed92-r0-n512.txt.metadata.json`,
+  `98185` bytes,
   `sha256:7be2a3835d05781667e80f4d4aff55ccad55e548c6c75a17655a5fb815fb105b`
-- final importance matrix:
-  `runtime/training/imatrix/final-seed92-r0-n512.imatrix.gguf`,
-  1177088 bytes,
-  `sha256:ba06cfd26ab829208c3068d02fa9165084ea58cab6a4dee31a989b3cc8d52f41`
+- final imatrix:
+  `runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf`,
+  `1177088` bytes,
+  `sha256:9dc4a84b75775f4c357a82d7534ad388eacbbc187a761022beed00637a526d93`
 
-The imatrix pass used the pinned CUDA build in offline mode, context size 512,
-`--no-ppl`, `--parse-special`, no `--process-output`, and all 142
-available chunks. Quantization used that exact matrix and `Q4_K_M`.
+The pass used the pinned CUDA build in offline mode, context size 512, all
+available chunks, `--no-ppl`, `--parse-special`, and no
+`--process-output`. Quantization used that exact matrix and `Q4_K_M`.
 
-On the untouched stage-one reserve, the ordinary Q4 control scored
-`0.921496698459281` (628 TP, 51 FP, 56 FN, one malformed), while the
-same-class calibrated Q4 control scored `0.9306062819576333` (637 TP, 48 FP,
-47 FN, zero malformed). This supports the calibration method, but repeated
-comparisons against the reserve make it selection evidence rather than a fresh
-unbiased estimate.
+The no-clobber manifest
+`calibration-lineage.soup-r64-equal3-full-e1.json` has SHA-256
+`sha256:ebdafaa7d84c73dfc04c70f7a062c4f253c026365671905281f64ba4b1cb1fd7`.
+It binds the exact source inventory, conversion, corpus, sidecar, imatrix,
+quantized output, artifact tree, clean pinned llama.cpp checkout, and soup
+checkpoint. This is a byte-bound caller attestation of the canonical recipe,
+not a retroactive historical execution receipt.
 
-The uncalibrated final-stage Q4 scored `0.9612289685442574` on the same 384
-public rows. The active calibrated bytes scored `0.9670329670329672`: 660 TP,
-21 FP, 24 FN, zero malformed, `3475.478379628233` ms mean latency, and
-`6134.182253852487` ms p95.
-The active row-level evidence SHA-256 is
-`sha256:6821a35a7d46f98af41fc8b65b4239e2bfecc4134ac3183be038b87387bc98af`;
-its summary SHA-256 is
-`sha256:76d915e19524980f9691b0d94e526acf65163f281ac5f7b4c2bd288c6c8d41f8`.
-Stage two trained on these 384 rows, so this final score is training-slice and
-quantization evidence, not a hidden-performance estimate.
+## Evaluation evidence
 
-## Official self-check
+The unquantized continuation scored `0.9743589743589743` entity micro-F1 on
+the fixed 384-row public slice: 665 TP, 16 FP, 19 FN, and zero malformed. Its
+row-level and summary SHA-256 values are
+`sha256:e153fda8efecc47e8b324d399a40861c3ee8329c08565577ab17e43c8eafa8a2`
+and
+`sha256:363ee2803471d6ccea46c193610f90e07052ac610e5f778e8c2a99576348a03e`.
 
-The exact active Q4 artifact passed the pinned upstream `mt miner selfcheck`.
-The persisted result
-(`sha256:e31be3e835ebedea7a295d70741cd848ed84c343d99d750fa8640cf14439279f`)
-records:
+The exact active Q4 scored `0.9765051395007343`: 665 TP, 13 FP, 19 FN, zero
+malformed, `3472.1451612131204` ms mean latency, and
+`6138.441361486912` ms p95. Its row-level and summary SHA-256 values are
+`sha256:41fea10b49db1c0bda30ac83adeae2aa333e60a6167fa18d321cf64f6feda2c9`
+and
+`sha256:0c9aa6498337c6350a99bd074d745b6c9003c3415c55d37ffba0dacb8486e8a5`.
+
+The continuation trained on the encodable members of this public slice, so
+these are training-slice and quantization-selection measurements, not a hidden
+or official leaderboard estimate.
+
+## Official self-check and rollback
+
+The exact active artifact passed pinned upstream release `v0.1.14` at commit
+`d0e002f887d038bf3ea4af65b499137a755620d7`. The persisted self-check SHA-256
+is `sha256:f6ed5aa907d0a6d899c9665aace5664e700c934284f7e5b4ea7f610eb179bc79`
+and records:
 
 - proposed size: `436375209` bytes
-- proposed peak RSS: `899547545` bytes
-- proposed p95 latency: `4099` ms
+- proposed peak RSS: `899759308` bytes
+- proposed p95 latency: `4086` ms
 
-The same run reported TTFT p50/p95 of `3718/3727` ms, throughput of
-`18.3` tokens/s, and an estimated 200-task cost of `3550` CPU-seconds.
-Those console diagnostics are not serialized in the three-field self-check
-JSON. The private binding file has SHA-256
-`sha256:dc9cf8b8b0d8b1910ac03eebb1e87c96f2d6efd3d2364d29da5fce937f041bf9`
-and binds the persisted self-check, exact artifact tree, and load specification.
+The run reported TTFT p50/p95 of `3712/3715` ms, throughput of `18.8`
+tokens/s, and an estimated 200-task cost of `3465` CPU-seconds. Those console
+diagnostics are not serialized in the self-check JSON. The private binding
+SHA-256 is
+`sha256:496eb8a8c6c571e7aa66044fcee65d23138742545f020bf4d8d941042c9f990b`.
+
+The superseded active artifact and its self-check remain privately at
+`runtime/rollbacks/active-fe0f3419-before-soup-903b76df/`.
 
 ## Publication and submission status
 
-Training finished by Finney block `8955436`. The complete local pending
-record is at ignored `runtime/pending-provenance.json`.
+The local pending record is at ignored `runtime/pending-provenance.json`.
 
-**This artifact is unpublished and unsubmitted.** No W&B run was published,
-no immutable public artifact URL was created, no coordinator submission was
-made, and no chain commitment was written. At build time the required W&B API
-key and authenticated immutable-host credentials were absent, and no open
-coordinator submission window was observed. Treating the local service as a
-successful submission would therefore be inaccurate.
+**This artifact is unpublished and unsubmitted.** No public W&B run, immutable
+public URL, coordinator submission, or on-chain commitment exists for these
+bytes. The required credentials are absent, and the coordinator is serving a
+stale settled round. Treating the dry-run controller, local quality result, or
+local manifest as an official submission or rank would be inaccurate.
