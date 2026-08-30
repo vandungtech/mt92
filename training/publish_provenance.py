@@ -68,6 +68,18 @@ CALIBRATION_LINEAGE_SCHEMA = "microtensor.gguf-imatrix-lineage.v1"
 IMATRIX_CORPUS_SCHEMA = "microtensor.imatrix-corpus.v1"
 LLAMA_CPP_REVISION = "c589f0ed10c643678c4707dd160c21ac7633ebc0"
 ATTN_V_Q6_OVERRIDE = r"^blk\.[0-9]+\.attn_v\.weight$=Q6_K"
+WEIGHT_SOUP_SCHEMA = "microtensor.extract-weight-soup.v1"
+WEIGHT_SOUP_METADATA_FILENAME = "soup_metadata.json"
+_WEIGHT_SOUP_INPUT_FIELDS = frozenset(
+    {
+        "kind",
+        "soup_schema",
+        "soup_metadata_digest",
+        "output_manifest_digest",
+        "index_digest",
+        "tokenizer_digest",
+    }
+)
 
 _ENTITY_SUBSTITUTION_BASE_FIELDS = frozenset(
     {
@@ -120,6 +132,18 @@ class CalibrationLineage:
 
 
 @dataclass(frozen=True)
+class WeightSoupLineage:
+    """A soup checkpoint revalidated for one explicit training stage."""
+
+    stage_number: int
+    metadata: dict[str, Any]
+    metadata_digest: str
+    output_manifest_digest: str
+    index_digest: str
+    tokenizer_digest: str
+
+
+@dataclass(frozen=True)
 class Publication:
     """Everything needed to publish, after local validation has completed."""
 
@@ -127,6 +151,7 @@ class Publication:
     artifact_digest: str
     finished_block: int
     calibration: CalibrationLineage
+    weight_soups: tuple[WeightSoupLineage, ...]
 
     @property
     def record_count(self) -> int:
@@ -421,19 +446,50 @@ def _validate_training_input(
     if not isinstance(training_input, dict):
         raise ProvenanceValidationError(f"stage {stage_number} training_input must be an object")
 
-    weights_digest = _require_digest(
-        training_input.get("weights_digest"),
-        f"stage {stage_number} training_input.weights_digest",
-    )
+    kind = training_input.get("kind")
     tokenizer_digest = _require_digest(
         training_input.get("tokenizer_digest"),
         f"stage {stage_number} training_input.tokenizer_digest",
     )
 
-    if parent_metadata_digest is None:
-        if training_input.get("kind") != "huggingface_snapshot":
+    if kind == "deterministic_weight_soup":
+        if frozenset(training_input) != _WEIGHT_SOUP_INPUT_FIELDS:
             raise ProvenanceValidationError(
-                "stage 1 training_input.kind must be exactly 'huggingface_snapshot'"
+                f"stage {stage_number} deterministic_weight_soup input must contain exactly "
+                f"{sorted(_WEIGHT_SOUP_INPUT_FIELDS)!r}"
+            )
+        if parent_metadata_digest is not None:
+            raise ProvenanceValidationError(
+                f"stage {stage_number} deterministic_weight_soup must start the supplied lineage"
+            )
+        if training_input["soup_schema"] != WEIGHT_SOUP_SCHEMA:
+            raise ProvenanceValidationError(
+                f"stage {stage_number} training_input.soup_schema is not supported"
+            )
+        for field in (
+            "soup_metadata_digest",
+            "output_manifest_digest",
+            "index_digest",
+        ):
+            _require_digest(
+                training_input[field], f"stage {stage_number} training_input.{field}"
+            )
+        if tokenizer_digest != BASE_TOKENIZER_DIGEST:
+            raise ProvenanceValidationError(
+                f"stage {stage_number} soup tokenizer digest is not allowlisted"
+            )
+        return
+
+    weights_digest = _require_digest(
+        training_input.get("weights_digest"),
+        f"stage {stage_number} training_input.weights_digest",
+    )
+
+    if parent_metadata_digest is None:
+        if kind != "huggingface_snapshot":
+            raise ProvenanceValidationError(
+                "stage 1 training_input.kind must be a huggingface_snapshot or "
+                "deterministic_weight_soup"
             )
         if training_input.get("revision") != BASE_REVISION:
             raise ProvenanceValidationError(
@@ -445,7 +501,7 @@ def _validate_training_input(
             raise ProvenanceValidationError("stage 1 base tokenizer digest is not allowlisted")
         return
 
-    if training_input.get("kind") != "derived_model":
+    if kind != "derived_model":
         raise ProvenanceValidationError(
             f"stage {stage_number} training_input.kind must be exactly 'derived_model'"
         )
@@ -457,6 +513,127 @@ def _validate_training_input(
         raise ProvenanceValidationError(
             f"stage {stage_number} parent metadata digest does not match stage {stage_number - 1}"
         )
+
+
+def _load_weight_soup_module() -> Any:
+    module_name = "training.build_weight_soup" if __package__ else "build_weight_soup"
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ProvenanceValidationError(
+            "deterministic weight-soup validation dependencies are unavailable"
+        ) from exc
+    error_type = getattr(module, "SoupValidationError", None)
+    if (
+        getattr(module, "SCHEMA", None) != WEIGHT_SOUP_SCHEMA
+        or getattr(module, "METADATA_FILENAME", None) != WEIGHT_SOUP_METADATA_FILENAME
+        or not callable(getattr(module, "validate_weight_soup_checkpoint", None))
+        or not isinstance(error_type, type)
+        or not issubclass(error_type, Exception)
+    ):
+        raise ProvenanceValidationError(
+            "weight-soup validator does not match the publisher schema"
+        )
+    return module
+
+
+def _validate_weight_soup_checkpoints(
+    stages: Sequence[TrainingStage],
+    checkpoints: Mapping[int, Path] | None,
+) -> tuple[WeightSoupLineage, ...]:
+    supplied: dict[int, Path] = {}
+    if checkpoints is not None:
+        if not isinstance(checkpoints, Mapping):
+            raise ProvenanceValidationError("soup checkpoints must be a stage-to-path mapping")
+        for raw_stage, raw_path in checkpoints.items():
+            stage_number = _require_int(raw_stage, "soup checkpoint stage")
+            if not isinstance(raw_path, Path):
+                raise ProvenanceValidationError(
+                    f"soup checkpoint for stage {stage_number} must be a Path"
+                )
+            supplied[stage_number] = raw_path
+
+    expected = {
+        stage.number
+        for stage in stages
+        if stage.metadata["training_input"]["kind"] == "deterministic_weight_soup"
+    }
+    if set(supplied) != expected:
+        missing = sorted(expected - set(supplied))
+        extra = sorted(set(supplied) - expected)
+        raise ProvenanceValidationError(
+            f"soup checkpoint mapping does not exactly match soup-input stages; "
+            f"missing={missing}, extra={extra}"
+        )
+    if not expected:
+        return ()
+
+    module = _load_weight_soup_module()
+    lineages: list[WeightSoupLineage] = []
+    for stage in stages:
+        if stage.number not in expected:
+            continue
+        checkpoint = supplied[stage.number]
+        try:
+            validated = module.validate_weight_soup_checkpoint(checkpoint)
+        except (OSError, RuntimeError, module.SoupValidationError) as exc:
+            raise ProvenanceValidationError(
+                f"stage {stage.number} weight-soup checkpoint is invalid: {exc}"
+            ) from exc
+
+        training_input = stage.metadata["training_input"]
+        returned = {
+            "soup_metadata_digest": _require_digest(
+                getattr(validated, "metadata_digest", None),
+                f"stage {stage.number} validated soup metadata digest",
+            ),
+            "output_manifest_digest": _require_digest(
+                getattr(validated, "output_manifest_digest", None),
+                f"stage {stage.number} validated soup output manifest digest",
+            ),
+            "index_digest": _require_digest(
+                getattr(validated, "index_digest", None),
+                f"stage {stage.number} validated soup index digest",
+            ),
+            "tokenizer_digest": _require_digest(
+                getattr(validated, "tokenizer_digest", None),
+                f"stage {stage.number} validated soup tokenizer digest",
+            ),
+        }
+        for field, actual in returned.items():
+            if training_input[field] != actual:
+                raise ProvenanceValidationError(
+                    f"stage {stage.number} training_input.{field} does not match "
+                    "the validated soup checkpoint"
+                )
+
+        metadata_payload = _read_regular_file(
+            checkpoint / WEIGHT_SOUP_METADATA_FILENAME,
+            maximum=MAX_METADATA_BYTES,
+            label=f"stage {stage.number} weight-soup metadata",
+        )
+        metadata_digest = _digest_bytes(metadata_payload)
+        metadata = _parse_json_object(
+            metadata_payload, f"stage {stage.number} weight-soup metadata"
+        )
+        if (
+            metadata_digest != returned["soup_metadata_digest"]
+            or metadata.get("schema") != WEIGHT_SOUP_SCHEMA
+        ):
+            raise ProvenanceValidationError(
+                f"stage {stage.number} weight-soup metadata changed after validation"
+            )
+        lineages.append(
+            WeightSoupLineage(
+                stage_number=stage.number,
+                metadata=metadata,
+                metadata_digest=metadata_digest,
+                output_manifest_digest=returned["output_manifest_digest"],
+                index_digest=returned["index_digest"],
+                tokenizer_digest=returned["tokenizer_digest"],
+            )
+        )
+    return tuple(lineages)
 
 
 def _validate_target_controls(
@@ -1326,6 +1503,7 @@ def validate_publication(
     finished_block: int,
     *,
     calibration_manifest: Path | None = None,
+    weight_soup_checkpoints: Mapping[int, Path] | None = None,
 ) -> Publication:
     """Load and validate a complete oldest-to-newest local training lineage."""
 
@@ -1409,6 +1587,7 @@ def validate_publication(
 
     if corpus_file_digest is None:
         raise ProvenanceValidationError("training lineage has no corpus digest")
+    weight_soups = _validate_weight_soup_checkpoints(stages, weight_soup_checkpoints)
     if calibration_manifest is None:
         raise ProvenanceValidationError(
             "calibration manifest is required for every publication"
@@ -1425,6 +1604,7 @@ def validate_publication(
         artifact_digest=artifact_digest,
         finished_block=finished_block,
         calibration=calibration,
+        weight_soups=weight_soups,
     )
 
 
@@ -1454,6 +1634,19 @@ def publish(publication: Publication, wandb_client: Any) -> None:
             "weighting_active_when": "entity_text_token_weight_greater_than_one",
             "validation_loss": "ordinary_unweighted_causal_lm",
         }
+    soup_lineage: dict[str, Any] = {}
+    if publication.weight_soups:
+        soup_lineage["mt_weight_soup_lineage"] = {
+            f"stage_{soup.stage_number}": {
+                "schema": WEIGHT_SOUP_SCHEMA,
+                "metadata_digest": soup.metadata_digest,
+                "output_manifest_digest": soup.output_manifest_digest,
+                "index_digest": soup.index_digest,
+                "tokenizer_digest": soup.tokenizer_digest,
+                "metadata": soup.metadata,
+            }
+            for soup in publication.weight_soups
+        }
     run = wandb_client.init(
         entity=ENTITY,
         project=PROJECT,
@@ -1468,6 +1661,7 @@ def publish(publication: Publication, wandb_client: Any) -> None:
             "mt_training_stages": len(publication.stages),
             "mt_stage_metadata": stage_metadata,
             **target_control_semantics,
+            **soup_lineage,
             "mt_calibration_lineage": {
                 "manifest_digest": publication.calibration.manifest_digest,
                 "manifest": publication.calibration.manifest,
@@ -1497,6 +1691,38 @@ def publish(publication: Publication, wandb_client: Any) -> None:
         wandb_client.finish()
 
 
+def _index_weight_soup_checkpoints(
+    entries: Sequence[Sequence[str]],
+) -> dict[int, Path]:
+    checkpoints: dict[int, Path] = {}
+    for entry in entries:
+        if len(entry) != 2:
+            raise ProvenanceValidationError(
+                "each weight-soup checkpoint requires STAGE and PATH"
+            )
+        stage_text, path_text = entry
+        try:
+            stage_number = int(stage_text)
+        except ValueError as exc:
+            raise ProvenanceValidationError(
+                f"weight-soup checkpoint stage is not an integer: {stage_text!r}"
+            ) from exc
+        if stage_number < 1 or str(stage_number) != stage_text:
+            raise ProvenanceValidationError(
+                "weight-soup checkpoint stages must be canonical positive integers"
+            )
+        if stage_number in checkpoints:
+            raise ProvenanceValidationError(
+                f"duplicate weight-soup checkpoint for stage {stage_number}"
+            )
+        if not path_text or path_text != path_text.strip():
+            raise ProvenanceValidationError(
+                f"weight-soup checkpoint path for stage {stage_number} is invalid"
+            )
+        checkpoints[stage_number] = Path(path_text)
+    return checkpoints
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1511,6 +1737,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-digest", required=True)
     parser.add_argument("--finished-block", type=int, required=True)
     parser.add_argument("--calibration-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--weight-soup-checkpoint",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("STAGE", "PATH"),
+        help=(
+            "checkpoint for a 1-based deterministic_weight_soup training stage; "
+            "repeat as needed"
+        ),
+    )
     return parser
 
 
@@ -1518,11 +1755,15 @@ def main(argv: Sequence[str] | None = None, *, wandb_client: Any | None = None) 
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        weight_soup_checkpoints = _index_weight_soup_checkpoints(
+            args.weight_soup_checkpoint
+        )
         publication = validate_publication(
             args.training_dirs,
             args.artifact_digest,
             args.finished_block,
             calibration_manifest=args.calibration_manifest,
+            weight_soup_checkpoints=weight_soup_checkpoints,
         )
     except ProvenanceValidationError as exc:
         raise SystemExit(f"provenance validation failed: {exc}") from exc

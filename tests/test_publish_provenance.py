@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -112,6 +113,10 @@ class FakeWandb:
 
     def finish(self) -> None:
         self.finish_calls += 1
+
+
+class FakeSoupValidationError(ValueError):
+    pass
 
 
 class PublishProvenanceTests(unittest.TestCase):
@@ -257,6 +262,72 @@ class PublishProvenanceTests(unittest.TestCase):
         metadata_bytes = encoded_json(metadata)
         (directory / "training_metadata.json").write_bytes(metadata_bytes)
         return directory, metadata, metadata_bytes, manifest_path
+
+    def write_soup_checkpoint(
+        self, name: str
+    ) -> tuple[Path, dict[str, Any], SimpleNamespace]:
+        checkpoint = self.root / name
+        checkpoint.mkdir()
+        metadata = {
+            "schema": provenance.WEIGHT_SOUP_SCHEMA,
+            "base": {"identity": provenance.PINNED_BASE_MODEL},
+            "algorithm": {"formula": "base + weighted deltas"},
+            "sources": [
+                {
+                    "position": 1,
+                    "parent_training_metadata": {
+                        "sha256": digest(f"{name}-parent".encode())
+                    },
+                }
+            ],
+            "runtime": {"python": "fixture"},
+            "output": {"fixture": name},
+        }
+        metadata_bytes = encoded_json(metadata)
+        (checkpoint / provenance.WEIGHT_SOUP_METADATA_FILENAME).write_bytes(
+            metadata_bytes
+        )
+        (checkpoint / "fixture.safetensors").write_bytes(b"valid-shard")
+        validated = SimpleNamespace(
+            metadata_digest=digest(metadata_bytes),
+            output_manifest_digest=digest(f"{name}-manifest".encode()),
+            index_digest=digest(f"{name}-index".encode()),
+            tokenizer_digest=provenance.BASE_TOKENIZER_DIGEST,
+        )
+        return checkpoint, metadata, validated
+
+    def write_soup_stage(
+        self, name: str, validated: SimpleNamespace
+    ) -> tuple[Path, dict[str, Any], bytes]:
+        directory, metadata, _records, _metadata_bytes = self.write_stage(name)
+        metadata["training_input"] = {
+            "kind": "deterministic_weight_soup",
+            "soup_schema": provenance.WEIGHT_SOUP_SCHEMA,
+            "soup_metadata_digest": validated.metadata_digest,
+            "output_manifest_digest": validated.output_manifest_digest,
+            "index_digest": validated.index_digest,
+            "tokenizer_digest": validated.tokenizer_digest,
+        }
+        metadata_bytes = encoded_json(metadata)
+        (directory / "training_metadata.json").write_bytes(metadata_bytes)
+        return directory, metadata, metadata_bytes
+
+    @staticmethod
+    def fake_soup_module(
+        results: dict[Path, SimpleNamespace | Exception],
+    ) -> SimpleNamespace:
+        def validate(path: Path) -> SimpleNamespace:
+            result = results[path]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return SimpleNamespace(
+            SCHEMA=provenance.WEIGHT_SOUP_SCHEMA,
+            METADATA_FILENAME=provenance.WEIGHT_SOUP_METADATA_FILENAME,
+            SoupValidationError=FakeSoupValidationError,
+            validate_weight_soup_checkpoint=mock.Mock(side_effect=validate),
+        )
 
     def write_calibration_manifest(
         self, directory: Path, training_metadata_bytes: bytes
@@ -460,6 +531,7 @@ class PublishProvenanceTests(unittest.TestCase):
         *,
         calibration_manifest: Path | None = None,
         artifact_digest: str = ARTIFACT_DIGEST,
+        weight_soup_checkpoints: dict[int, Path] | None = None,
     ) -> int:
         arguments: list[str] = []
         for directory in directories:
@@ -467,6 +539,10 @@ class PublishProvenanceTests(unittest.TestCase):
         arguments.extend(
             ("--artifact-digest", artifact_digest, "--finished-block", "8955436")
         )
+        for stage_number, checkpoint in sorted((weight_soup_checkpoints or {}).items()):
+            arguments.extend(
+                ("--weight-soup-checkpoint", str(stage_number), str(checkpoint))
+            )
         arguments.extend(
             (
                 "--calibration-manifest",
@@ -934,6 +1010,306 @@ class PublishProvenanceTests(unittest.TestCase):
         )
         (mismatched / "training_metadata.json").write_bytes(encoded_json(metadata))
         self.assert_invalid([mismatched], "manifest does not match")
+
+    def test_weight_soup_checkpoint_is_revalidated_and_published(self) -> None:
+        checkpoint, soup_metadata, validated = self.write_soup_checkpoint(
+            "published-soup"
+        )
+        directory, stage_metadata, metadata_bytes = self.write_soup_stage(
+            "soup-continuation", validated
+        )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
+        soup_module = self.fake_soup_module({checkpoint: validated})
+        fake = FakeWandb()
+
+        with mock.patch.object(
+            provenance, "_load_weight_soup_module", return_value=soup_module
+        ):
+            self.assertEqual(
+                self.invoke_main(
+                    [directory],
+                    fake,
+                    calibration_manifest=calibration_path,
+                    artifact_digest=calibration["artifact_tree_digest"],
+                    weight_soup_checkpoints={1: checkpoint},
+                ),
+                0,
+            )
+
+        soup_module.validate_weight_soup_checkpoint.assert_called_once_with(checkpoint)
+        self.assertEqual(
+            fake.init_calls[0]["config"]["training_input"],
+            stage_metadata["training_input"],
+        )
+        self.assertEqual(
+            fake.init_calls[0]["config"]["mt_weight_soup_lineage"],
+            {
+                "stage_1": {
+                    "schema": provenance.WEIGHT_SOUP_SCHEMA,
+                    "metadata": soup_metadata,
+                    "metadata_digest": validated.metadata_digest,
+                    "output_manifest_digest": validated.output_manifest_digest,
+                    "index_digest": validated.index_digest,
+                    "tokenizer_digest": validated.tokenizer_digest,
+                }
+            },
+        )
+
+    def test_weight_soup_checkpoint_mapping_is_exact_and_not_positional(self) -> None:
+        checkpoint, _metadata, validated = self.write_soup_checkpoint("mapped-soup")
+        soup_stage, _stage_metadata, _bytes = self.write_soup_stage(
+            "mapped-stage", validated
+        )
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, r"missing=\[1\]"
+        ):
+            provenance.validate_publication([soup_stage], ARTIFACT_DIGEST, 8955436)
+
+        snapshot, _metadata, _records, _bytes = self.write_stage("mapped-snapshot")
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, r"extra=\[1\]"
+        ):
+            provenance.validate_publication(
+                [snapshot],
+                ARTIFACT_DIGEST,
+                8955436,
+                weight_soup_checkpoints={1: checkpoint},
+            )
+
+        other_checkpoint, _other_metadata, other_validated = self.write_soup_checkpoint(
+            "other-soup"
+        )
+        soup_module = self.fake_soup_module(
+            {checkpoint: validated, other_checkpoint: other_validated}
+        )
+        with (
+            mock.patch.object(
+                provenance, "_load_weight_soup_module", return_value=soup_module
+            ),
+            self.assertRaisesRegex(
+                provenance.ProvenanceValidationError,
+                "soup_metadata_digest does not match",
+            ),
+        ):
+            provenance.validate_publication(
+                [soup_stage],
+                ARTIFACT_DIGEST,
+                8955436,
+                weight_soup_checkpoints={1: other_checkpoint},
+            )
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "duplicate weight-soup checkpoint"
+        ):
+            provenance._index_weight_soup_checkpoints(
+                (("1", str(checkpoint)), ("1", str(other_checkpoint)))
+            )
+
+    def test_weight_soup_root_can_precede_a_derived_stage(self) -> None:
+        checkpoint, _soup_metadata, validated = self.write_soup_checkpoint(
+            "continued-soup"
+        )
+        soup_stage, _stage_metadata, soup_stage_bytes = self.write_soup_stage(
+            "continued-stage-1", validated
+        )
+        derived_stage, _derived_metadata, _records, derived_bytes = self.write_stage(
+            "continued-stage-2",
+            parent_digest=digest(soup_stage_bytes),
+            started=1_100,
+        )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            derived_stage, derived_bytes
+        )
+        soup_module = self.fake_soup_module({checkpoint: validated})
+
+        with mock.patch.object(
+            provenance, "_load_weight_soup_module", return_value=soup_module
+        ):
+            publication = provenance.validate_publication(
+                [soup_stage, derived_stage],
+                calibration["artifact_tree_digest"],
+                8_955_436,
+                calibration_manifest=calibration_path,
+                weight_soup_checkpoints={1: checkpoint},
+            )
+
+        self.assertEqual(len(publication.stages), 2)
+        self.assertEqual(publication.weight_soups[0].stage_number, 1)
+
+    def test_weight_soup_cannot_replace_a_derived_stage(self) -> None:
+        checkpoint, _soup_metadata, validated = self.write_soup_checkpoint(
+            "late-soup"
+        )
+        first_stage, _metadata, _records, first_bytes = self.write_stage("first")
+        late_stage, metadata, _records, _bytes = self.write_stage(
+            "late-stage",
+            parent_digest=digest(first_bytes),
+            started=1_100,
+        )
+        metadata["training_input"] = {
+            "kind": "deterministic_weight_soup",
+            "soup_schema": provenance.WEIGHT_SOUP_SCHEMA,
+            "soup_metadata_digest": validated.metadata_digest,
+            "output_manifest_digest": validated.output_manifest_digest,
+            "index_digest": validated.index_digest,
+            "tokenizer_digest": validated.tokenizer_digest,
+        }
+        (late_stage / "training_metadata.json").write_bytes(encoded_json(metadata))
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "must start the supplied lineage"
+        ):
+            provenance.validate_publication(
+                [first_stage, late_stage],
+                ARTIFACT_DIGEST,
+                8_955_436,
+                weight_soup_checkpoints={2: checkpoint},
+            )
+
+    def test_weight_soup_checkpoint_mapping_rejects_invalid_api_and_cli_keys(self) -> None:
+        checkpoint, _metadata, validated = self.write_soup_checkpoint("keyed-soup")
+        stage, _stage_metadata, _bytes = self.write_soup_stage("keyed-stage", validated)
+        invalid_mappings: tuple[object, ...] = (
+            {True: checkpoint},
+            {"1": checkpoint},
+            {0: checkpoint},
+            {1: str(checkpoint)},
+            ((1, checkpoint),),
+        )
+        for mapping in invalid_mappings:
+            with (
+                self.subTest(mapping=mapping),
+                self.assertRaises(provenance.ProvenanceValidationError),
+            ):
+                provenance.validate_publication(
+                    [stage],
+                    ARTIFACT_DIGEST,
+                    8_955_436,
+                    weight_soup_checkpoints=mapping,  # type: ignore[arg-type]
+                )
+
+        for stage_text in ("0", "01", "+1", " 1"):
+            with (
+                self.subTest(stage_text=stage_text),
+                self.assertRaises(provenance.ProvenanceValidationError),
+            ):
+                provenance._index_weight_soup_checkpoints(
+                    ((stage_text, str(checkpoint)),)
+                )
+
+    def test_weight_soup_schema_and_all_digest_claims_fail_closed(self) -> None:
+        checkpoint, _soup_metadata, validated = self.write_soup_checkpoint(
+            "claims-soup"
+        )
+        soup_module = self.fake_soup_module({checkpoint: validated})
+
+        schema_stage, metadata, _bytes = self.write_soup_stage(
+            "soup-schema", validated
+        )
+        metadata["training_input"]["soup_schema"] = "microtensor.unknown-soup.v1"
+        (schema_stage / "training_metadata.json").write_bytes(encoded_json(metadata))
+        self.assert_invalid([schema_stage], "soup_schema is not supported")
+
+        extra_stage, metadata, _bytes = self.write_soup_stage("soup-extra", validated)
+        metadata["training_input"]["weights_digest"] = "sha256:" + "8" * 64
+        (extra_stage / "training_metadata.json").write_bytes(encoded_json(metadata))
+        self.assert_invalid([extra_stage], "must contain exactly")
+
+        for field in (
+            "soup_metadata_digest",
+            "output_manifest_digest",
+            "index_digest",
+            "tokenizer_digest",
+        ):
+            with self.subTest(field=field):
+                stage, metadata, _bytes = self.write_soup_stage(
+                    f"soup-digest-{field}", validated
+                )
+                metadata["training_input"][field] = "sha256:" + "9" * 64
+                (stage / "training_metadata.json").write_bytes(encoded_json(metadata))
+                pattern = (
+                    "soup tokenizer digest"
+                    if field == "tokenizer_digest"
+                    else f"{field} does not match"
+                )
+                with (
+                    mock.patch.object(
+                        provenance,
+                        "_load_weight_soup_module",
+                        return_value=soup_module,
+                    ),
+                    self.assertRaisesRegex(provenance.ProvenanceValidationError, pattern),
+                ):
+                    provenance.validate_publication(
+                        [stage],
+                        ARTIFACT_DIGEST,
+                        8955436,
+                        weight_soup_checkpoints={1: checkpoint},
+                    )
+
+    def test_weight_soup_shard_failure_is_wrapped_before_publication(self) -> None:
+        checkpoint, _metadata, validated = self.write_soup_checkpoint("shard-soup")
+        stage, _stage_metadata, _bytes = self.write_soup_stage("shard-stage", validated)
+        with (checkpoint / "fixture.safetensors").open("ab") as handle:
+            handle.write(b"tampered")
+        soup_module = self.fake_soup_module(
+            {checkpoint: FakeSoupValidationError("weight shard digest mismatch")}
+        )
+        with (
+            mock.patch.object(
+                provenance, "_load_weight_soup_module", return_value=soup_module
+            ),
+            self.assertRaisesRegex(
+                provenance.ProvenanceValidationError, "weight shard digest mismatch"
+            ),
+        ):
+            provenance.validate_publication(
+                [stage],
+                ARTIFACT_DIGEST,
+                8955436,
+                weight_soup_checkpoints={1: checkpoint},
+            )
+
+    def test_weight_soup_metadata_cannot_change_after_checkpoint_validation(self) -> None:
+        checkpoint, _metadata, validated = self.write_soup_checkpoint("moving-soup")
+        stage, _stage_metadata, _bytes = self.write_soup_stage("moving-stage", validated)
+        soup_module = self.fake_soup_module({checkpoint: validated})
+
+        def mutate_after_validation(path: Path) -> SimpleNamespace:
+            self.assertEqual(path, checkpoint)
+            (checkpoint / provenance.WEIGHT_SOUP_METADATA_FILENAME).write_bytes(
+                encoded_json({"schema": provenance.WEIGHT_SOUP_SCHEMA})
+            )
+            return validated
+
+        soup_module.validate_weight_soup_checkpoint.side_effect = mutate_after_validation
+        with (
+            mock.patch.object(
+                provenance, "_load_weight_soup_module", return_value=soup_module
+            ),
+            self.assertRaisesRegex(
+                provenance.ProvenanceValidationError, "changed after validation"
+            ),
+        ):
+            provenance.validate_publication(
+                [stage],
+                ARTIFACT_DIGEST,
+                8_955_436,
+                weight_soup_checkpoints={1: checkpoint},
+            )
+
+    def test_weight_soup_validator_loads_in_direct_script_mode(self) -> None:
+        soup_module = self.fake_soup_module({})
+        with (
+            mock.patch.object(provenance, "__package__", ""),
+            mock.patch.object(
+                provenance.importlib, "import_module", return_value=soup_module
+            ) as importer,
+        ):
+            self.assertIs(provenance._load_weight_soup_module(), soup_module)
+        importer.assert_called_once_with("build_weight_soup")
 
     def test_calibration_lineage_is_published_with_exact_manifest_digest(self) -> None:
         directory, _metadata, _records, metadata_bytes = self.write_stage(

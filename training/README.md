@@ -170,8 +170,24 @@ python training/publish_provenance.py \
   --training-dir runtime/training/experiments/lora-r64-e2-seed92 \
   --training-dir runtime/training/experiments/lora-r64-e2-full-e1 \
   --artifact-digest sha256:... \
-  --finished-block FINNEY_BLOCK
+  --finished-block FINNEY_BLOCK \
+  --calibration-manifest runtime/training/calibration-lineage.json
 ```
+
+When stage 1 was trained from a deterministic weight soup, also bind that
+stage to its checkpoint explicitly:
+
+```bash
+  --weight-soup-checkpoint 1 runtime/training/soups/a-b-equal
+```
+
+Repeat the stage-numbered option for every supplied stage whose
+`training_input.kind` is `deterministic_weight_soup`; missing, duplicate, and
+extra mappings are rejected. The publisher revalidates each complete soup
+checkpoint before W&B is imported and includes its exact `soup_metadata.json`
+and validated digests in the public run config. The retained metadata preserves
+the source-file and parent-metadata digest claims, but validating it later does
+not reopen the original source checkpoint directories or recompute the soup.
 
 Only then package for an open coordinator round, upload the complete
 round-specific tree, and commit it on chain.
