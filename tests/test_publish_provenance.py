@@ -19,6 +19,27 @@ ARTIFACT_DIGEST = "sha256:" + "a" * 64
 CORPUS_FILE_DIGEST = "sha256:" + "b" * 64
 
 
+def target_settings(
+    *, epochs: int = 1, canonicalization: object = "first", weight: object = 3.0
+) -> dict[str, Any]:
+    return {
+        "epochs": epochs,
+        "gold_canonicalization": canonicalization,
+        "entity_text_token_weight": weight,
+    }
+
+
+def target_controls(
+    *, canonicalization: object = "first", weight: object = 3.0
+) -> dict[str, Any]:
+    return {
+        "entity_match": "exact_text_and_type_set",
+        "gold_canonicalization": canonicalization,
+        "entity_text_token_weight": weight,
+        "validation_loss": "ordinary_unweighted_causal_lm",
+    }
+
+
 def digest(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
@@ -186,6 +207,7 @@ class PublishProvenanceTests(unittest.TestCase):
         self.assertEqual(config["mt_track"], provenance.TRACK)
         self.assertEqual(config["mt_class"], provenance.HARDWARE_CLASS)
         self.assertEqual(config["mt_base_model"], provenance.PINNED_BASE_MODEL)
+        self.assertNotIn("mt_target_controls_semantics", config)
         stage_config = config["mt_stage_metadata"]["stage_1"]
         self.assertEqual(stage_config["metadata"], metadata)
         self.assertEqual(stage_config["metadata_digest"], digest(metadata_bytes))
@@ -206,6 +228,155 @@ class PublishProvenanceTests(unittest.TestCase):
             },
         )
         self.assertEqual(fake.finish_calls, 1)
+
+    def test_target_controls_are_validated_and_publish_exact_semantics(self) -> None:
+        controls = target_controls(canonicalization="sorted", weight=2.5)
+        directory, metadata, _metrics, _bytes = self.write_stage(
+            "controlled",
+            metadata_changes={
+                "settings": target_settings(canonicalization="sorted", weight=2.5),
+                "target_controls": controls,
+            },
+        )
+        fake = FakeWandb()
+
+        self.assertEqual(self.invoke_main([directory], fake), 0)
+
+        config = fake.init_calls[0]["config"]
+        self.assertEqual(config["target_controls"], controls)
+        self.assertEqual(
+            config["mt_target_controls_semantics"],
+            {
+                "schema": provenance.TARGET_CONTROLS_SCHEMA,
+                "canonicalization": {
+                    "none": "preserve_raw_gold_target",
+                    "first": "strict_exact_pair_deduplication_in_first_occurrence_order",
+                    "sorted": "strict_exact_pair_deduplication_in_lexicographic_order",
+                },
+                "malformed_gold": "reject_without_repair",
+                "entity_text_token_binding": provenance.ENTITY_TEXT_TOKEN_BINDING,
+                "entity_text_weighting_loss": provenance.WEIGHTED_TRAINING_LOSS,
+                "weighting_active_when": "entity_text_token_weight_greater_than_one",
+                "validation_loss": "ordinary_unweighted_causal_lm",
+            },
+        )
+        self.assertEqual(
+            config["mt_stage_metadata"]["stage_1"]["metadata"], metadata
+        )
+
+    def test_target_controls_require_exact_schema_and_settings_consistency(self) -> None:
+        valid_settings = target_settings()
+        valid_controls = target_controls()
+        cases: list[tuple[str, dict[str, Any], str]] = [
+            (
+                "not-object",
+                {"settings": valid_settings, "target_controls": []},
+                "target_controls must be an object",
+            ),
+            (
+                "missing-field",
+                {
+                    "settings": valid_settings,
+                    "target_controls": {
+                        key: value
+                        for key, value in valid_controls.items()
+                        if key != "validation_loss"
+                    },
+                },
+                "must contain exactly",
+            ),
+            (
+                "extra-field",
+                {
+                    "settings": valid_settings,
+                    "target_controls": {**valid_controls, "repair_malformed": False},
+                },
+                "must contain exactly",
+            ),
+            (
+                "canonicalization-mismatch",
+                {
+                    "settings": valid_settings,
+                    "target_controls": target_controls(canonicalization="sorted"),
+                },
+                "gold_canonicalization must exactly match settings",
+            ),
+            (
+                "weight-mismatch",
+                {
+                    "settings": valid_settings,
+                    "target_controls": target_controls(weight=4.0),
+                },
+                "entity_text_token_weight must exactly match settings",
+            ),
+            (
+                "unknown-match",
+                {
+                    "settings": valid_settings,
+                    "target_controls": {**valid_controls, "entity_match": "casefolded"},
+                },
+                "entity_match has unknown semantics",
+            ),
+            (
+                "unknown-validation-loss",
+                {
+                    "settings": valid_settings,
+                    "target_controls": {
+                        **valid_controls,
+                        "validation_loss": "weighted_causal_lm",
+                    },
+                },
+                "validation_loss has unknown semantics",
+            ),
+            (
+                "invalid-canonicalization",
+                {
+                    "settings": target_settings(canonicalization="casefolded"),
+                    "target_controls": target_controls(canonicalization="casefolded"),
+                },
+                "settings.gold_canonicalization",
+            ),
+            (
+                "invalid-weight",
+                {
+                    "settings": target_settings(weight=0.5),
+                    "target_controls": target_controls(weight=0.5),
+                },
+                "settings.entity_text_token_weight",
+            ),
+            (
+                "partial-settings",
+                {
+                    "settings": {"epochs": 1, "gold_canonicalization": "first"},
+                    "target_controls": valid_controls,
+                },
+                "both target-control settings",
+            ),
+            (
+                "weighted-without-canonicalization",
+                {
+                    "settings": target_settings(canonicalization="none", weight=2.0),
+                    "target_controls": target_controls(canonicalization="none", weight=2.0),
+                },
+                "requires canonicalized gold",
+            ),
+        ]
+        for name, changes, pattern in cases:
+            with self.subTest(case=name):
+                directory, _metadata, _metrics, _bytes = self.write_stage(
+                    f"controls-{name}", metadata_changes=changes
+                )
+                self.assert_invalid([directory], pattern)
+
+    def test_historical_metadata_may_omit_controls_but_new_settings_may_not(self) -> None:
+        historical, _metadata, _metrics, _bytes = self.write_stage("historical")
+        provenance.validate_publication([historical], ARTIFACT_DIGEST, 8955436)
+
+        stripped, _metadata, _metrics, _bytes = self.write_stage(
+            "stripped-controls",
+            metadata_changes={"settings": target_settings()},
+        )
+        self.assert_invalid([stripped], "target_controls is required")
 
     def test_valid_two_stage_lineage_uses_unique_global_record_steps(self) -> None:
         first, first_metadata, first_metrics, first_bytes = self.write_stage(

@@ -38,6 +38,24 @@ _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _CORE_METRIC_FIELDS = frozenset({"step", "epoch", "elapsed_s"})
 _TRAIN_METRIC_FIELDS = frozenset({"loss", "learning_rate"})
 _VALIDATION_METRIC_FIELDS = frozenset({"validation_loss", "validation_perplexity"})
+_TARGET_CONTROL_FIELDS = frozenset(
+    {
+        "entity_match",
+        "gold_canonicalization",
+        "entity_text_token_weight",
+        "validation_loss",
+    }
+)
+_TARGET_SETTING_FIELDS = frozenset(
+    {"gold_canonicalization", "entity_text_token_weight"}
+)
+TARGET_CONTROLS_SCHEMA = "microtensor.extract-target-controls.v1"
+ENTITY_TEXT_TOKEN_BINDING = (
+    "assistant_token_offset_overlaps_canonical_json_entity_text_value_span"
+)
+WEIGHTED_TRAINING_LOSS = (
+    "weighted_shifted_causal_lm_cross_entropy_normalized_by_valid_weight"
+)
 
 
 class ProvenanceValidationError(ValueError):
@@ -266,12 +284,99 @@ def _validate_training_input(
         )
 
 
+def _validate_target_controls(
+    metadata: Mapping[str, Any], settings: Mapping[str, Any], stage_number: int
+) -> bool:
+    """Validate the opt-in v1 scorer-aligned target-control declaration.
+
+    Under this schema, an entity-weighted token is any assistant token whose
+    tokenizer offset overlaps the canonical JSON string-content span for an
+    entity's ``text`` value (quotes excluded, JSON escapes included).  Training
+    uses weighted shifted causal-LM cross entropy normalized by valid weight;
+    validation remains ordinary unweighted causal-LM loss.
+
+    Metadata created before these controls had neither the top-level object nor
+    its two settings, and remains valid.  Once either setting exists, the
+    complete declaration is mandatory so stripping only the semantic object
+    cannot silently weaken provenance.
+    """
+
+    setting_fields = frozenset(settings) & _TARGET_SETTING_FIELDS
+    if "target_controls" not in metadata:
+        if setting_fields:
+            raise ProvenanceValidationError(
+                f"stage {stage_number} target_controls is required when target-control "
+                "settings are present"
+            )
+        return False
+
+    controls = metadata["target_controls"]
+    if not isinstance(controls, dict):
+        raise ProvenanceValidationError(f"stage {stage_number} target_controls must be an object")
+    if frozenset(controls) != _TARGET_CONTROL_FIELDS:
+        raise ProvenanceValidationError(
+            f"stage {stage_number} target_controls must contain exactly "
+            f"{sorted(_TARGET_CONTROL_FIELDS)!r}"
+        )
+    if setting_fields != _TARGET_SETTING_FIELDS:
+        raise ProvenanceValidationError(
+            f"stage {stage_number} settings must contain both target-control settings"
+        )
+
+    gold_canonicalization = settings["gold_canonicalization"]
+    if not isinstance(gold_canonicalization, str) or gold_canonicalization not in {
+        "none",
+        "first",
+        "sorted",
+    }:
+        raise ProvenanceValidationError(
+            f"stage {stage_number} settings.gold_canonicalization must be none, first, or sorted"
+        )
+    if controls["gold_canonicalization"] != gold_canonicalization:
+        raise ProvenanceValidationError(
+            f"stage {stage_number} target_controls.gold_canonicalization must exactly match settings"
+        )
+
+    settings_weight = _require_number(
+        settings["entity_text_token_weight"],
+        f"stage {stage_number} settings.entity_text_token_weight",
+        minimum=1.0,
+    )
+    controls_weight = _require_number(
+        controls["entity_text_token_weight"],
+        f"stage {stage_number} target_controls.entity_text_token_weight",
+        minimum=1.0,
+    )
+    if controls["entity_text_token_weight"] != settings["entity_text_token_weight"]:
+        raise ProvenanceValidationError(
+            f"stage {stage_number} target_controls.entity_text_token_weight must exactly match settings"
+        )
+    if controls_weight != settings_weight:
+        raise ProvenanceValidationError(
+            f"stage {stage_number} target-control weights are not numerically identical"
+        )
+    if settings_weight > 1.0 and gold_canonicalization == "none":
+        raise ProvenanceValidationError(
+            f"stage {stage_number} entity token weighting requires canonicalized gold"
+        )
+    if controls["entity_match"] != "exact_text_and_type_set":
+        raise ProvenanceValidationError(
+            f"stage {stage_number} target_controls.entity_match has unknown semantics"
+        )
+    if controls["validation_loss"] != "ordinary_unweighted_causal_lm":
+        raise ProvenanceValidationError(
+            f"stage {stage_number} target_controls.validation_loss has unknown semantics"
+        )
+    return True
+
+
 def _validate_metadata_times_and_counts(
     metadata: Mapping[str, Any], stage_number: int
 ) -> tuple[int, int, int, int, float]:
     settings = metadata.get("settings")
     if not isinstance(settings, dict):
         raise ProvenanceValidationError(f"stage {stage_number} settings must be an object")
+    _validate_target_controls(metadata, settings, stage_number)
     epochs = _require_int(settings.get("epochs"), f"stage {stage_number} settings.epochs")
     updates = _require_int(metadata.get("updates"), f"stage {stage_number} updates")
     if epochs > updates:
@@ -499,6 +604,21 @@ def publish(publication: Publication, wandb_client: Any) -> None:
         }
         for stage in publication.stages
     }
+    target_control_semantics: dict[str, Any] = {}
+    if any("target_controls" in stage.metadata for stage in publication.stages):
+        target_control_semantics["mt_target_controls_semantics"] = {
+            "schema": TARGET_CONTROLS_SCHEMA,
+            "canonicalization": {
+                "none": "preserve_raw_gold_target",
+                "first": "strict_exact_pair_deduplication_in_first_occurrence_order",
+                "sorted": "strict_exact_pair_deduplication_in_lexicographic_order",
+            },
+            "malformed_gold": "reject_without_repair",
+            "entity_text_token_binding": ENTITY_TEXT_TOKEN_BINDING,
+            "entity_text_weighting_loss": WEIGHTED_TRAINING_LOSS,
+            "weighting_active_when": "entity_text_token_weight_greater_than_one",
+            "validation_loss": "ordinary_unweighted_causal_lm",
+        }
     run = wandb_client.init(
         entity=ENTITY,
         project=PROJECT,
@@ -512,6 +632,7 @@ def publish(publication: Publication, wandb_client: Any) -> None:
             "mt_corpus_version": CORPUS_VERSION,
             "mt_training_stages": len(publication.stages),
             "mt_stage_metadata": stage_metadata,
+            **target_control_semantics,
         },
     )
     global_step = 0
