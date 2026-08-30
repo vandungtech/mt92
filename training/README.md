@@ -61,6 +61,48 @@ Run `mt miner selfcheck` against the final artifact tree. GGUF embeds the
 tokenizer and chat template; accepted GGUF manifests name `tokenizer.json`
 in preprocessing but do not package a redundant external tokenizer file.
 
+## Calibration-aware Q4
+
+Greedy extraction can be sensitive to quantization. Build importance-matrix
+input only from the public corpus. When comparing against the stage-one
+reserve, exclude those exact rows before applying any example cap:
+
+```bash
+python training/prepare_imatrix.py \
+  --corpus /path/to/public.json \
+  --tokenizer /path/to/merged-model \
+  --output runtime/training/imatrix/stage1.txt \
+  --reserve-examples 384 \
+  --max-examples 512
+```
+
+The adjacent metadata sidecar binds the exact corpus, tokenizer, template,
+selection order, rejected rows, rendered records, and output digest. For a
+final all-public calibration, use `--reserve-examples 0`.
+
+```bash
+"$TRAIN_PYTHON" "$LLAMA_CPP_DIR/convert_hf_to_gguf.py" \
+  "$MERGED_MODEL_DIR" \
+  --outfile runtime/training/imatrix/model-f16.gguf \
+  --outtype f16
+
+"$LLAMA_CPP_DIR/build/bin/llama-imatrix" \
+  --offline \
+  --model runtime/training/imatrix/model-f16.gguf \
+  --file runtime/training/imatrix/stage1.txt \
+  --output runtime/training/imatrix/stage1.imatrix.gguf \
+  --ctx-size 512 \
+  --chunks 128 \
+  --no-ppl --process-output --parse-special
+
+"$LLAMA_CPP_DIR/build/bin/llama-quantize" \
+  --imatrix runtime/training/imatrix/stage1.imatrix.gguf \
+  runtime/training/imatrix/model-f16.gguf runtime/artifact/model.gguf \
+  Q4_K_M
+```
+
+Changing calibration data or quantizer settings creates new artifact bytes and
+must be recorded in provenance and re-run through the exact validator engine.
 ## Provenance
 
 The publisher intentionally has no anonymous fallback. The live mechanism
