@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -1508,6 +1509,58 @@ class PublishProvenanceTests(unittest.TestCase):
         ):
             provenance.validate_publication(
                 [incomplete],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+    def test_training_metadata_cannot_inject_reserved_wandb_namespace(self) -> None:
+        directory, _metadata, _records, metadata_bytes = self.write_stage(
+            "reserved-wandb-injection",
+            metadata_changes={
+                "mt_boundary_contrastive_lineage": {
+                    "stage_999": {"schema": "fabricated"}
+                }
+            },
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError,
+            "publisher-reserved metadata fields",
+        ):
+            provenance.validate_publication(
+                [directory],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+    def test_calibration_roles_reject_hardlink_aliases(self) -> None:
+        directory, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-hardlink-alias"
+        )
+        manifest_path, manifest, assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
+        assets["imatrix"].unlink()
+        os.link(assets["converted"], assets["imatrix"])
+        aliased_payload = assets["imatrix"].read_bytes()
+        manifest["calibration"]["imatrix"].update(
+            {
+                "bytes": len(aliased_payload),
+                "sha256": digest(aliased_payload),
+            }
+        )
+        manifest_path.write_bytes(encoded_json(manifest))
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "distinct files and inodes"
+        ):
+            provenance.validate_publication(
+                [directory],
                 manifest["artifact_tree_digest"],
                 8955436,
                 calibration_manifest=manifest_path,

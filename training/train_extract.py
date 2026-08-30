@@ -29,10 +29,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedul
 
 try:
     from training import build_weight_soup as weight_soup
+    from training import boundary_contrastive as boundary
 except ModuleNotFoundError as exc:
     if exc.name != "training":
         raise
     import build_weight_soup as weight_soup
+    import boundary_contrastive as boundary
 
 BASE_MODEL = "Qwen/Qwen3-0.6B"
 BASE_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
@@ -43,19 +45,21 @@ BASE_TOKENIZER_DIGEST = "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed
 ENTITY_SUBSTITUTION_ALGORITHM = "literal_same_type_train_fold_v1"
 ENTITY_TYPES = ("Chemical", "Disease")
 MAX_ENTITY_SUBSTITUTION_EXAMPLES = 1_024
-BOUNDARY_OUTER_SPLIT_ALGORITHM = "python_random_mt19937_seed92_prefix384_v1"
-BOUNDARY_INNER_SPLIT_ALGORITHM = "sha256_rank_encoded_ref_seed92_v1"
-BOUNDARY_CORRUPTION_ALGORITHM = "single_entity_text_boundary_codepoint_v1"
-BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM = "sha256_canonical_json_utf8_v1"
-BOUNDARY_TEXT_DIGEST_ALGORITHM = "sha256_utf8_text_v1"
-BOUNDARY_FILE_DIGEST_ALGORITHM = "sha256_file_bytes_v1"
-BOUNDARY_OUTER_SEED = 92
-BOUNDARY_OUTER_EXAMPLES = 384
-BOUNDARY_INNER_VALIDATION_EXAMPLES = 384
-BOUNDARY_EXPECTED_ENCODED_EXAMPLES = 4_430
-MAX_BOUNDARY_CONTRASTIVE_EXAMPLES = 512
-MAX_BOUNDARY_CONTRASTIVE_LAMBDA = 1.0
-MAX_BOUNDARY_CONTRASTIVE_MARGIN = 20.0
+BOUNDARY_OUTER_SPLIT_ALGORITHM = boundary.BOUNDARY_OUTER_SPLIT_ALGORITHM
+BOUNDARY_INNER_SPLIT_ALGORITHM = boundary.BOUNDARY_INNER_SPLIT_ALGORITHM
+BOUNDARY_CORRUPTION_ALGORITHM = boundary.BOUNDARY_CORRUPTION_ALGORITHM
+BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM = (
+    boundary.BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM
+)
+BOUNDARY_TEXT_DIGEST_ALGORITHM = boundary.BOUNDARY_TEXT_DIGEST_ALGORITHM
+BOUNDARY_FILE_DIGEST_ALGORITHM = boundary.BOUNDARY_FILE_DIGEST_ALGORITHM
+BOUNDARY_OUTER_SEED = boundary.BOUNDARY_OUTER_SEED
+BOUNDARY_OUTER_EXAMPLES = boundary.BOUNDARY_OUTER_EXAMPLES
+BOUNDARY_INNER_VALIDATION_EXAMPLES = boundary.BOUNDARY_INNER_VALIDATION_EXAMPLES
+BOUNDARY_EXPECTED_ENCODED_EXAMPLES = boundary.BOUNDARY_EXPECTED_ENCODED_EXAMPLES
+MAX_BOUNDARY_CONTRASTIVE_EXAMPLES = boundary.MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+MAX_BOUNDARY_CONTRASTIVE_LAMBDA = boundary.MAX_BOUNDARY_CONTRASTIVE_LAMBDA
+MAX_BOUNDARY_CONTRASTIVE_MARGIN = boundary.MAX_BOUNDARY_CONTRASTIVE_MARGIN
 
 
 @dataclass(frozen=True)
@@ -112,30 +116,9 @@ class EntitySubstitutionResult:
     manifest: dict[str, Any]
 
 
-@dataclass(frozen=True)
-class BoundaryFoldSplit:
-    train_indices: tuple[int, ...]
-    validation_indices: tuple[int, ...]
-    manifest: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class BoundaryCorruption:
-    source_ref: str
-    negative_row: dict[str, Any]
-    record: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class BoundaryCorruptionResult:
-    pairs: tuple[BoundaryCorruption, ...]
-    manifest: dict[str, Any]
-
-
-class _BoundaryIneligible(ValueError):
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
+BoundaryFoldSplit = boundary.BoundaryFoldSplit
+BoundaryCorruption = boundary.BoundaryCorruption
+BoundaryCorruptionResult = boundary.BoundaryCorruptionResult
 
 
 class _AugmentationIneligible(ValueError):
@@ -246,405 +229,12 @@ def _bind_augmentation_row(row: dict[str, Any]) -> BoundAugmentationRow:
     )
 
 
-def _stable_hash(*parts: object) -> str:
-    encoded = json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _json_digest(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _refs_digest(refs: Sequence[str]) -> str:
-    return _json_digest(sorted(refs))
-
-
-def boundary_outer_partition(
-    rows: Sequence[dict[str, Any]],
-) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """Seal the historical seed-92 reserve without inspecting row contents."""
-
-    if len(rows) != 4_816:
-        raise ValueError("boundary outer split requires exactly 4,816 rows")
-    refs: list[str] = []
-    for row in rows:
-        ref = row.get("ref")
-        if not isinstance(ref, str) or not ref or ref != ref.strip():
-            raise ValueError("boundary split requires non-empty, already stripped refs")
-        if row.get("partition") != "train":
-            raise ValueError(f"boundary split accepts only train-fold rows, got {ref}")
-        refs.append(ref)
-    if len(set(refs)) != len(refs):
-        raise ValueError("boundary split requires unique refs")
-    shuffled = list(rows)
-    random.Random(BOUNDARY_OUTER_SEED).shuffle(shuffled)
-    return tuple(shuffled[:BOUNDARY_OUTER_EXAMPLES]), tuple(shuffled[BOUNDARY_OUTER_EXAMPLES:])
-
-
-def split_boundary_encoded_refs(
-    encoded_refs: Sequence[str],
-    *,
-    outer_refs: Sequence[str],
-) -> BoundaryFoldSplit:
-    """Hash-rank encoded, non-reserve refs into a stable inner train/validation split."""
-
-    refs = list(encoded_refs)
-    reserved = list(outer_refs)
-    if len(refs) != BOUNDARY_EXPECTED_ENCODED_EXAMPLES or len(reserved) != BOUNDARY_OUTER_EXAMPLES:
-        raise ValueError("boundary inner split requires exactly 4,430 encoded and 384 outer refs")
-    if any(not isinstance(ref, str) or not ref or ref != ref.strip() for ref in refs):
-        raise ValueError("encoded refs must be non-empty, already stripped strings")
-    if any(not isinstance(ref, str) or not ref or ref != ref.strip() for ref in reserved):
-        raise ValueError("outer refs must be non-empty, already stripped strings")
-    if len(set(refs)) != len(refs) or len(set(reserved)) != len(reserved):
-        raise ValueError("boundary split refs must be unique")
-    outer_overlap = set(refs) & set(reserved)
-    if outer_overlap:
-        raise ValueError(f"encoded pool overlaps outer reserve: {sorted(outer_overlap)[0]}")
-
-    ranked = sorted(
-        refs,
-        key=lambda ref: (
-            _stable_hash(BOUNDARY_INNER_SPLIT_ALGORITHM, BOUNDARY_OUTER_SEED, ref),
-            ref,
-        ),
-    )
-    validation_refs = set(ranked[:BOUNDARY_INNER_VALIDATION_EXAMPLES])
-    validation_indices = tuple(
-        index for index, ref in enumerate(refs) if ref in validation_refs
-    )
-    train_indices = tuple(index for index, ref in enumerate(refs) if ref not in validation_refs)
-    train_refs = [refs[index] for index in train_indices]
-    inner_validation_refs = [refs[index] for index in validation_indices]
-    train_set = set(train_refs)
-    validation_set = set(inner_validation_refs)
-    outer_set = set(reserved)
-    overlaps = {
-        "outer_inner_train": len(outer_set & train_set),
-        "outer_inner_validation": len(outer_set & validation_set),
-        "inner_train_inner_validation": len(train_set & validation_set),
-    }
-    if any(overlaps.values()) or len(train_indices) + len(validation_indices) != len(refs):
-        raise ValueError("boundary split is not an exact disjoint partition")
-    return BoundaryFoldSplit(
-        train_indices,
-        validation_indices,
-        {
-            "refs_digest_algorithm": BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM,
-            "outer_algorithm": BOUNDARY_OUTER_SPLIT_ALGORITHM,
-            "outer_seed": BOUNDARY_OUTER_SEED,
-            "outer_examples": len(reserved),
-            "inner_algorithm": BOUNDARY_INNER_SPLIT_ALGORITHM,
-            "inner_seed": BOUNDARY_OUTER_SEED,
-            "encoded_examples": len(refs),
-            "inner_train_examples": len(train_refs),
-            "inner_validation_examples": len(inner_validation_refs),
-            "outer_refs": sorted(reserved),
-            "inner_train_refs": sorted(train_refs),
-            "inner_validation_refs": sorted(inner_validation_refs),
-            "outer_refs_digest": _refs_digest(reserved),
-            "encoded_refs_digest": _refs_digest(refs),
-            "inner_train_refs_digest": _refs_digest(train_refs),
-            "inner_validation_refs_digest": _refs_digest(inner_validation_refs),
-            "overlap_counts": overlaps,
-        },
-    )
-
-
-def _boundary_change_is_exact(
-    source: str, corrupted: str, direction: str, side: str
-) -> bool:
-    if direction == "expansion" and len(corrupted) == len(source) + 1:
-        return (side == "left" and corrupted[1:] == source) or (
-            side == "right" and corrupted[:-1] == source
-        )
-    if direction == "contraction" and len(corrupted) + 1 == len(source):
-        return (side == "left" and source[1:] == corrupted) or (
-            side == "right" and source[:-1] == corrupted
-        )
-    return False
-
-
-def _boundary_row_candidates(row: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    ref = row.get("ref")
-    if not isinstance(ref, str) or not ref:
-        raise ValueError("boundary corruption requires a non-empty ref")
-    if row.get("partition") != "train":
-        raise ValueError(f"boundary corruption accepts only train-fold rows, got {ref}")
-    inputs = row.get("inputs")
-    if not isinstance(inputs, Mapping):
-        raise ValueError(f"invalid inputs for {ref}")
-    input_text = inputs.get("text")
-    if not isinstance(input_text, str) or not input_text:
-        raise ValueError(f"invalid input text for {ref}")
-    prompt = row.get("prompt")
-    if not isinstance(prompt, str) or not prompt.endswith(input_text):
-        raise ValueError(f"prompt is not bound to its input text for {ref}")
-    if not prompt[: len(prompt) - len(input_text)].endswith("\n\nText: "):
-        raise ValueError(f"prompt has an unexpected input boundary for {ref}")
-    raw_gold = row.get("gold")
-    if not isinstance(raw_gold, str):
-        raise ValueError(f"boundary corruption requires raw gold text for {ref}")
-    payload = _strict_json_loads(raw_gold, ref)
-    if not isinstance(payload, Mapping) or set(payload) != {"entities"}:
-        raise ValueError(f"gold must contain only entities for {ref}")
-    raw_entities = payload["entities"]
-    if not isinstance(raw_entities, list):
-        raise ValueError(f"gold entities must be a list for {ref}")
-
-    entities: list[dict[str, str]] = []
-    pairs: set[tuple[str, str]] = set()
-    texts: set[str] = set()
-    for index, raw_entity in enumerate(raw_entities):
-        if not isinstance(raw_entity, Mapping) or set(raw_entity) != {"text", "type"}:
-            raise ValueError(f"malformed gold entity {index} for {ref}")
-        entity_text = raw_entity["text"]
-        entity_type = raw_entity["type"]
-        if (
-            not isinstance(entity_text, str)
-            or not isinstance(entity_type, str)
-            or not entity_text
-            or entity_text != entity_text.strip()
-            or entity_type not in ENTITY_TYPES
-            or any(ord(character) < 32 for character in entity_text)
-        ):
-            raise ValueError(f"invalid gold entity {index} for {ref}")
-        pair = (entity_text, entity_type)
-        if pair in pairs:
-            raise _BoundaryIneligible("duplicate_entity")
-        if entity_text in texts:
-            raise _BoundaryIneligible("ambiguous_entity_text")
-        pairs.add(pair)
-        texts.add(entity_text)
-        entities.append({"text": entity_text, "type": entity_type})
-    if not entities:
-        raise _BoundaryIneligible("no_entities")
-    if any(entity["text"] not in input_text for entity in entities):
-        raise _BoundaryIneligible("gold_surface_absent")
-
-    candidates: dict[str, list[dict[str, Any]]] = {"expansion": [], "contraction": []}
-    seen_negative_targets: set[str] = set()
-    for entity_index, entity in enumerate(entities):
-        source_text = entity["text"]
-        encoded_source = json.dumps(source_text, ensure_ascii=False)
-        literal_spans = _literal_occurrences(raw_gold, encoded_source)
-        if len(literal_spans) != 1:
-            continue
-        replacements: list[tuple[str, str, str]] = []
-        if len(source_text) > 1:
-            replacements.extend(
-                (("contraction", "left", source_text[1:]),
-                 ("contraction", "right", source_text[:-1]))
-            )
-        for start, end in _literal_occurrences(input_text, source_text):
-            if start > 0:
-                replacements.append(("expansion", "left", input_text[start - 1 : end]))
-            if end < len(input_text):
-                replacements.append(("expansion", "right", input_text[start : end + 1]))
-        for direction, side, corrupted_text in replacements:
-            if (
-                not corrupted_text
-                or corrupted_text != corrupted_text.strip()
-                or any(ord(character) < 32 for character in corrupted_text)
-                or corrupted_text not in input_text
-                or corrupted_text in texts
-                or not _boundary_change_is_exact(source_text, corrupted_text, direction, side)
-            ):
-                continue
-            literal_start, literal_end = literal_spans[0]
-            encoded_corrupted = json.dumps(corrupted_text, ensure_ascii=False)
-            negative_gold = raw_gold[:literal_start] + encoded_corrupted + raw_gold[literal_end:]
-            if negative_gold in seen_negative_targets:
-                continue
-            expected_entities = [dict(value) for value in entities]
-            expected_entities[entity_index]["text"] = corrupted_text
-            if _strict_json_loads(negative_gold, ref) != {"entities": expected_entities}:
-                raise ValueError(f"generated boundary corruption changed extra fields for {ref}")
-            seen_negative_targets.add(negative_gold)
-            candidates[direction].append(
-                {
-                    "direction": direction,
-                    "side": side,
-                    "entity_index": entity_index,
-                    "source_text": source_text,
-                    "corrupted_text": corrupted_text,
-                    "negative_gold": negative_gold,
-                }
-            )
-    if not candidates["expansion"] and not candidates["contraction"]:
-        raise _BoundaryIneligible("no_valid_boundary")
-    return candidates
-
-
-def _text_digest(value: str) -> str:
-    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def generate_boundary_corruptions(
-    rows: Sequence[dict[str, Any]],
-    *,
-    heldout_refs: set[str],
-    seed: int,
-    max_examples: int,
-) -> BoundaryCorruptionResult:
-    """Create a balanced, deterministic set of raw-positive boundary pairs."""
-
-    if isinstance(max_examples, bool) or not isinstance(max_examples, int):
-        raise ValueError("boundary contrastive examples must be an integer")
-    if not 0 <= max_examples <= MAX_BOUNDARY_CONTRASTIVE_EXAMPLES or max_examples % 2:
-        raise ValueError(
-            "boundary contrastive examples must be an even integer in "
-            f"[0, {MAX_BOUNDARY_CONTRASTIVE_EXAMPLES}]"
-        )
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        raise ValueError("boundary corruption seed must be an integer")
-    if any(not isinstance(ref, str) or not ref for ref in heldout_refs):
-        raise ValueError("held-out refs must be non-empty strings")
-    ordered_rows = sorted(rows, key=lambda row: str(row.get("ref", "")))
-    refs = [row.get("ref") for row in ordered_rows]
-    if any(not isinstance(ref, str) or not ref for ref in refs) or len(set(refs)) != len(refs):
-        raise ValueError("boundary corruption requires unique non-empty source refs")
-    source_refs = set(refs)
-    overlap = source_refs & heldout_refs
-    if overlap:
-        raise ValueError(f"boundary source and held-out refs overlap: {sorted(overlap)[0]}")
-
-    eligible: list[tuple[dict[str, Any], dict[str, dict[str, Any]]]] = []
-    ineligible: dict[str, int] = {}
-    for row in ordered_rows:
-        try:
-            candidates = _boundary_row_candidates(row)
-        except _BoundaryIneligible as exc:
-            ineligible[exc.reason] = ineligible.get(exc.reason, 0) + 1
-            continue
-        selected: dict[str, dict[str, Any]] = {}
-        for direction, values in candidates.items():
-            if values:
-                selected[direction] = min(
-                    values,
-                    key=lambda value: (
-                        _stable_hash(
-                            BOUNDARY_CORRUPTION_ALGORITHM, seed, row["ref"], direction,
-                            value["side"], value["entity_index"], value["corrupted_text"],
-                        ),
-                        value["side"], value["entity_index"], value["corrupted_text"],
-                    ),
-                )
-        eligible.append((row, selected))
-
-    expansion_only = [entry for entry in eligible if set(entry[1]) == {"expansion"}]
-    contraction_only = [entry for entry in eligible if set(entry[1]) == {"contraction"}]
-    both = [entry for entry in eligible if set(entry[1]) == {"expansion", "contraction"}]
-
-    def rank(entries: Sequence[tuple[dict[str, Any], dict[str, dict[str, Any]]]], label: str):
-        return sorted(
-            entries,
-            key=lambda entry: (
-                _stable_hash(
-                    BOUNDARY_CORRUPTION_ALGORITHM, seed, "source", label, entry[0]["ref"]
-                ),
-                entry[0]["ref"],
-            ),
-        )
-
-    expansion_only = rank(expansion_only, "expansion")
-    contraction_only = rank(contraction_only, "contraction")
-    both = rank(both, "balanced")
-    per_direction = max_examples // 2
-    while per_direction:
-        expansion_need = per_direction - min(per_direction, len(expansion_only))
-        contraction_need = per_direction - min(per_direction, len(contraction_only))
-        if expansion_need + contraction_need <= len(both):
-            break
-        per_direction -= 1
-    expansion_take = min(per_direction, len(expansion_only))
-    contraction_take = min(per_direction, len(contraction_only))
-    expansion_need = per_direction - expansion_take
-    contraction_need = per_direction - contraction_take
-    selected_expansions = [*expansion_only[:expansion_take], *both[:expansion_need]]
-    selected_contractions = [
-        *contraction_only[:contraction_take],
-        *both[expansion_need : expansion_need + contraction_need],
-    ]
-    selected_entries = [
-        (row, values["expansion"]) for row, values in selected_expansions
-    ] + [
-        (row, values["contraction"]) for row, values in selected_contractions
-    ]
-    selected_entries.sort(
-        key=lambda entry: (
-            _stable_hash(
-                BOUNDARY_CORRUPTION_ALGORITHM, seed, "pair", entry[0]["ref"],
-                entry[1]["direction"],
-            ),
-            entry[0]["ref"],
-        )
-    )
-
-    pairs: list[BoundaryCorruption] = []
-    records: list[dict[str, Any]] = []
-    for row, candidate in selected_entries:
-        source_ref = row["ref"]
-        positive_gold = row["gold"]
-        negative_gold = candidate["negative_gold"]
-        negative_id = _stable_hash(
-            BOUNDARY_CORRUPTION_ALGORITHM, seed, source_ref, candidate["direction"],
-            candidate["side"], candidate["entity_index"], candidate["corrupted_text"],
-        )[:16]
-        negative_ref = f"{source_ref}::boundary-negative::{negative_id}"
-        if negative_ref in source_refs or negative_ref in heldout_refs:
-            raise ValueError(f"generated boundary ref collides: {negative_ref}")
-        negative_row = dict(row)
-        negative_row["ref"] = negative_ref
-        negative_row["gold"] = negative_gold
-        record = {
-            "source_ref": source_ref,
-            "negative_ref": negative_ref,
-            "direction": candidate["direction"],
-            "side": candidate["side"],
-            "entity_index": candidate["entity_index"],
-            "source_text": candidate["source_text"],
-            "corrupted_text": candidate["corrupted_text"],
-            "positive_gold_digest": _text_digest(positive_gold),
-            "negative_gold_digest": _text_digest(negative_gold),
-        }
-        records.append(record)
-        pairs.append(BoundaryCorruption(source_ref, negative_row, record))
-
-    direction_counts = {
-        direction: sum(record["direction"] == direction for record in records)
-        for direction in ("expansion", "contraction")
-    }
-    if direction_counts["expansion"] != direction_counts["contraction"]:
-        raise ValueError("boundary pair selection is not direction-balanced")
-    manifest = {
-        "algorithm": BOUNDARY_CORRUPTION_ALGORITHM,
-        "refs_and_records_digest_algorithm": BOUNDARY_CANONICAL_JSON_DIGEST_ALGORITHM,
-        "gold_text_digest_algorithm": BOUNDARY_TEXT_DIGEST_ALGORITHM,
-        "enabled": True,
-        "seed": seed,
-        "requested_examples": max_examples,
-        "source_training_rows": len(rows),
-        "eligible_source_rows": len(eligible),
-        "ineligible_source_rows": dict(sorted(ineligible.items())),
-        "generated_examples": len(pairs),
-        "direction_counts": direction_counts,
-        "source_refs_digest": _refs_digest(refs),
-        "heldout_refs_digest": _refs_digest(sorted(heldout_refs)),
-        "pair_source_refs_digest": _refs_digest([pair.source_ref for pair in pairs]),
-        "positive_targets_digest": _json_digest(
-            [{"ref": record["source_ref"], "digest": record["positive_gold_digest"]}
-             for record in records]
-        ),
-        "negative_targets_digest": _json_digest(
-            [{"ref": record["negative_ref"], "digest": record["negative_gold_digest"]}
-             for record in records]
-        ),
-        "pairs_digest": _json_digest(records),
-        "examples": records,
-    }
-    return BoundaryCorruptionResult(tuple(pairs), manifest)
+_stable_hash = boundary.stable_hash
+_json_digest = boundary.canonical_json_digest
+_refs_digest = boundary.refs_digest
+boundary_outer_partition = boundary.boundary_outer_partition
+split_boundary_encoded_refs = boundary.split_boundary_encoded_refs
+generate_boundary_corruptions = boundary.generate_boundary_corruptions
 
 
 def augment_train_fold_entity_substitutions(
@@ -1584,7 +1174,11 @@ def main() -> int:
 
     training_input = verify_training_input(args.base)
     is_weight_soup = training_input["kind"] == "deterministic_weight_soup"
-    rows = load_rows(args.corpus)
+    rows = (
+        list(boundary.parse_boundary_corpus(args.corpus.read_bytes()))
+        if args.boundary_contrastive
+        else load_rows(args.corpus)
+    )
     boundary_metadata: dict[str, Any] | None = None
     if args.boundary_contrastive:
         outer_rows, remaining_rows = boundary_outer_partition(rows)
@@ -1633,9 +1227,11 @@ def main() -> int:
             len(encoded_pool) != BOUNDARY_EXPECTED_ENCODED_EXAMPLES
             or encoded_pool.skipped
             != len(remaining_rows) - BOUNDARY_EXPECTED_ENCODED_EXAMPLES
+            or tuple(sorted(encoded_pool.skipped_refs))
+            != tuple(sorted(boundary.BOUNDARY_SKIPPED_ENCODED_REFS))
         ):
             raise ValueError(
-                "boundary mode expected 4,430 encoded non-reserve rows and exactly two skips"
+                "boundary mode expected the pinned 4,430 encoded rows and two-ref skip allowlist"
             )
         outer_refs = [row["ref"] for row in outer_rows]
         fold = split_boundary_encoded_refs(encoded_pool.refs, outer_refs=outer_refs)
@@ -1685,7 +1281,7 @@ def main() -> int:
         train_data = BoundaryContrastiveDataset(positive_data, negative_by_ref)
         train_collator = BoundaryContrastiveCollator(tokenizer.pad_token_id)
         validation_collator = Collator(tokenizer.pad_token_id)
-        disease_source_examples = sum(row_has_disease(row) for row in source_train_rows)
+        disease_source_examples = boundary.disease_row_count(source_train_rows)
         disease_extra_examples = 0
         augmentation = augment_train_fold_entity_substitutions(
             source_train_rows,

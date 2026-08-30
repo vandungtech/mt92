@@ -18,6 +18,14 @@ from pathlib import Path
 from typing import Any
 
 
+try:
+    from training import boundary_contrastive as boundary
+except ModuleNotFoundError as exc:
+    if exc.name != "training":
+        raise
+    import boundary_contrastive as boundary
+
+
 ENTITY = "microtensor"
 PROJECT = "training-runs"
 HOTKEY = "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
@@ -36,6 +44,7 @@ MAX_METADATA_BYTES = 1024 * 1024
 MAX_METRICS_BYTES = 64 * 1024 * 1024
 MAX_METRIC_RECORDS = 1_000_000
 MAX_AUGMENTATION_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_BOUNDARY_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_CALIBRATION_METADATA_BYTES = 16 * 1024 * 1024
 MAX_CALIBRATION_CORPUS_BYTES = 64 * 1024 * 1024
 MAX_LINEAGE_ASSET_BYTES = 32 * 1024 * 1024 * 1024
@@ -132,6 +141,16 @@ class CalibrationLineage:
 
 
 @dataclass(frozen=True)
+class BoundaryContrastiveLineage:
+    """A stage-local boundary manifest independently replayed from its corpus."""
+
+    stage_number: int
+    manifest: dict[str, Any]
+    manifest_digest: str
+    corpus_digest: str
+
+
+@dataclass(frozen=True)
 class WeightSoupLineage:
     """A soup checkpoint revalidated for one explicit training stage."""
 
@@ -152,6 +171,7 @@ class Publication:
     finished_block: int
     calibration: CalibrationLineage
     weight_soups: tuple[WeightSoupLineage, ...]
+    boundary_contrastive: tuple[BoundaryContrastiveLineage, ...]
 
     @property
     def record_count(self) -> int:
@@ -235,10 +255,94 @@ def _read_regular_file(path: Path, *, maximum: int, label: str) -> bytes:
     return payload
 
 
-def _snapshot_regular_file(
+def _read_regular_file_without_symlinks(
     path: Path, *, maximum: int, label: str
-) -> tuple[int, str]:
-    """Hash a stable regular file without loading a large model into memory."""
+) -> tuple[bytes, tuple[int, int]]:
+    """Read through directory descriptors while rejecting every symlink component."""
+
+    raw = os.fspath(path)
+    lexical = Path(raw)
+    if not raw or any(part in {".", ".."} for part in lexical.parts):
+        raise ProvenanceValidationError(
+            f"{label} path must not contain empty, dot, or parent components: {path}"
+        )
+    absolute = Path(os.path.abspath(raw))
+    if len(absolute.parts) < 2:
+        raise ProvenanceValidationError(f"{label} is not a file path: {path}")
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    directory_descriptor = -1
+    file_descriptor = -1
+    try:
+        directory_descriptor = os.open(absolute.anchor, directory_flags)
+        for component in absolute.parts[1:-1]:
+            next_descriptor = os.open(
+                component, directory_flags, dir_fd=directory_descriptor
+            )
+            opened_directory = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(opened_directory.st_mode):
+                os.close(next_descriptor)
+                raise ProvenanceValidationError(
+                    f"{label} path component is not a directory: {component}"
+                )
+            os.close(directory_descriptor)
+            directory_descriptor = next_descriptor
+        file_descriptor = os.open(
+            absolute.parts[-1], file_flags, dir_fd=directory_descriptor
+        )
+        opened = os.fstat(file_descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ProvenanceValidationError(f"{label} is not a regular file: {path}")
+        if opened.st_size > maximum:
+            raise ProvenanceValidationError(
+                f"{label} exceeds the {maximum}-byte limit: {path}"
+            )
+        with os.fdopen(file_descriptor, "rb") as handle:
+            file_descriptor = -1
+            payload = handle.read(maximum + 1)
+            after = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise ProvenanceValidationError(
+            f"{label} has a symlink, unsafe component, or unreadable file: {path}"
+        ) from exc
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        if directory_descriptor >= 0:
+            os.close(directory_descriptor)
+
+    if len(payload) > maximum:
+        raise ProvenanceValidationError(
+            f"{label} exceeds the {maximum}-byte limit: {path}"
+        )
+    if (
+        after.st_dev != opened.st_dev
+        or after.st_ino != opened.st_ino
+        or after.st_size != opened.st_size
+        or after.st_mtime_ns != opened.st_mtime_ns
+        or len(payload) != after.st_size
+    ):
+        raise ProvenanceValidationError(
+            f"{label} changed while it was being read: {path}"
+        )
+    return payload, (after.st_dev, after.st_ino)
+
+
+def _snapshot_regular_file_identity(
+    path: Path, *, maximum: int, label: str
+) -> tuple[int, str, tuple[int, int]]:
+    """Hash a stable regular file and retain its opened inode identity."""
 
     try:
         before = path.lstat()
@@ -295,7 +399,22 @@ def _snapshot_regular_file(
         or after.st_mtime_ns != opened.st_mtime_ns
     ):
         raise ProvenanceValidationError(f"{label} changed while it was hashed: {path}")
-    return size, "sha256:" + digest.hexdigest()
+    return (
+        size,
+        "sha256:" + digest.hexdigest(),
+        (after.st_dev, after.st_ino),
+    )
+
+
+def _snapshot_regular_file(
+    path: Path, *, maximum: int, label: str
+) -> tuple[int, str]:
+    """Hash a stable regular file without exposing its inode identity."""
+
+    size, digest, _identity = _snapshot_regular_file_identity(
+        path, maximum=maximum, label=label
+    )
+    return size, digest
 
 
 def _require_exact_fields(
@@ -348,21 +467,21 @@ def _validate_file_claim(
     base: Path,
     label: str,
     maximum: int = MAX_LINEAGE_ASSET_BYTES,
-) -> Path:
+) -> tuple[Path, tuple[int, int]]:
     claim = _require_exact_fields(
         value, frozenset({"path", "bytes", "sha256"}), label
     )
     path = _resolve_claimed_file(base, claim["path"], label)
     claimed_size = _require_int(claim["bytes"], f"{label}.bytes")
     claimed_digest = _require_digest(claim["sha256"], f"{label}.sha256")
-    actual_size, actual_digest = _snapshot_regular_file(
+    actual_size, actual_digest, actual_identity = _snapshot_regular_file_identity(
         path, maximum=maximum, label=label
     )
     if claimed_size != actual_size:
         raise ProvenanceValidationError(f"{label}.bytes does not match the file")
     if claimed_digest != actual_digest:
         raise ProvenanceValidationError(f"{label}.sha256 does not match the file")
-    return path
+    return path, actual_identity
 
 
 def _reject_json_constant(value: str) -> None:
@@ -759,6 +878,11 @@ def _validate_entity_substitution(
         f"stage {stage_number} augmentation",
     )
     enabled = requested > 0
+    expected_composition = (
+        "disabled_for_boundary_contrastive"
+        if settings.get("boundary_contrastive") is True
+        else ENTITY_SUBSTITUTION_COMPOSITION
+    )
     fields = _ENTITY_SUBSTITUTION_BASE_FIELDS | frozenset({"composition"})
     if enabled:
         fields |= _ENTITY_SUBSTITUTION_ENABLED_FIELDS | frozenset(
@@ -778,7 +902,7 @@ def _validate_entity_substitution(
     if (
         claim["algorithm"] != ENTITY_SUBSTITUTION_ALGORITHM
         or claim["enabled"] is not enabled
-        or claim["composition"] != ENTITY_SUBSTITUTION_COMPOSITION
+        or claim["composition"] != expected_composition
         or claimed_seed != seed
         or claimed_requested != requested
         or augmented > requested
@@ -852,6 +976,240 @@ def _validate_entity_substitution(
         raise ProvenanceValidationError(
             f"{label} manifest does not match training metadata"
         )
+
+
+def _canonical_boundary_json(value: object, label: str) -> bytes:
+    try:
+        return boundary.canonical_json_bytes(value)
+    except ValueError as exc:
+        raise ProvenanceValidationError(
+            f"{label} is not canonical strict JSON"
+        ) from exc
+
+
+def _validate_boundary_lineages(
+    stages: Sequence[TrainingStage],
+    corpora: Mapping[int, Path] | None,
+) -> tuple[BoundaryContrastiveLineage, ...]:
+    """Independently replay every declared boundary experiment from exact corpus bytes."""
+
+    setting_fields = frozenset(
+        {
+            "boundary_contrastive",
+            "boundary_contrastive_examples",
+            "boundary_contrastive_lambda",
+            "boundary_contrastive_margin",
+        }
+    )
+    supplied: dict[int, Path] = {}
+    if corpora is not None:
+        if not isinstance(corpora, Mapping):
+            raise ProvenanceValidationError(
+                "boundary corpora must be a stage-to-path mapping"
+            )
+        for raw_stage, raw_path in corpora.items():
+            stage_number = _require_int(raw_stage, "boundary corpus stage")
+            if not isinstance(raw_path, Path):
+                raise ProvenanceValidationError(
+                    f"boundary corpus for stage {stage_number} must be a Path"
+                )
+            supplied[stage_number] = raw_path
+
+    expected: set[int] = set()
+    for stage in stages:
+        settings = stage.metadata.get("settings")
+        if not isinstance(settings, dict):
+            raise ProvenanceValidationError(
+                f"stage {stage.number} settings must be an object"
+            )
+        present_settings = frozenset(settings) & setting_fields
+        has_declaration = "boundary_contrastive" in stage.metadata
+        if present_settings and present_settings != setting_fields:
+            raise ProvenanceValidationError(
+                f"stage {stage.number} boundary settings must be all present or all absent"
+            )
+        if bool(present_settings) != has_declaration:
+            raise ProvenanceValidationError(
+                f"stage {stage.number} boundary settings and declaration must appear together"
+            )
+        if has_declaration:
+            expected.add(stage.number)
+
+    if set(supplied) != expected:
+        missing = sorted(expected - set(supplied))
+        extra = sorted(set(supplied) - expected)
+        raise ProvenanceValidationError(
+            "boundary corpus mapping does not exactly match boundary stages; "
+            f"missing={missing}, extra={extra}"
+        )
+    if not expected:
+        return ()
+
+    lineages: list[BoundaryContrastiveLineage] = []
+    for stage in stages:
+        if stage.number not in expected:
+            continue
+        label = f"stage {stage.number} boundary contrastive"
+        metadata = stage.metadata
+        settings = metadata["settings"]
+        if settings["boundary_contrastive"] is not True:
+            raise ProvenanceValidationError(f"{label} must be explicitly enabled")
+        requested = _require_int(
+            settings["boundary_contrastive_examples"],
+            f"{label} requested examples",
+            minimum=0,
+        )
+        if (
+            requested > boundary.MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+            or requested % 2
+        ):
+            raise ProvenanceValidationError(
+                f"{label} requested examples must be even and in [0, 512]"
+            )
+        pairwise_lambda = _require_number(
+            settings["boundary_contrastive_lambda"],
+            f"{label} pairwise lambda",
+        )
+        margin = _require_number(
+            settings["boundary_contrastive_margin"], f"{label} margin"
+        )
+        if (
+            pairwise_lambda > boundary.MAX_BOUNDARY_CONTRASTIVE_LAMBDA
+            or margin > boundary.MAX_BOUNDARY_CONTRASTIVE_MARGIN
+        ):
+            raise ProvenanceValidationError(f"{label} loss controls are out of range")
+
+        expected_controls = {
+            "seed": boundary.BOUNDARY_OUTER_SEED,
+            "max_length": 512,
+            "validation_examples": boundary.BOUNDARY_OUTER_EXAMPLES,
+            "disease_row_weight": 1.0,
+            "gold_canonicalization": "none",
+            "entity_text_token_weight": 1.0,
+            "entity_substitution_examples": 0,
+        }
+        actual_controls = {key: settings.get(key) for key in expected_controls}
+        if _canonical_boundary_json(
+            actual_controls, f"{label} training controls"
+        ) != _canonical_boundary_json(
+            expected_controls, f"{label} expected training controls"
+        ):
+            raise ProvenanceValidationError(
+                f"{label} training controls are not the fixed v1 recipe"
+            )
+        training_input = metadata.get("training_input")
+        if (
+            not isinstance(training_input, dict)
+            or training_input.get("tokenizer_digest")
+            != boundary.BASE_TOKENIZER_DIGEST
+        ):
+            raise ProvenanceValidationError(
+                f"{label} tokenizer digest is not allowlisted"
+            )
+        if metadata.get("corpus_file_digest") != boundary.BOUNDARY_CORPUS_FILE_DIGEST:
+            raise ProvenanceValidationError(
+                f"{label} corpus digest is not the pinned public corpus"
+            )
+        expected_counts = {
+            "source_training_examples": boundary.BOUNDARY_INNER_TRAIN_EXAMPLES,
+            "training_examples": boundary.BOUNDARY_INNER_TRAIN_EXAMPLES,
+            "validation_examples": boundary.BOUNDARY_INNER_VALIDATION_EXAMPLES,
+            "skipped_training_examples": 0,
+            "skipped_validation_examples": 0,
+            "disease_extra_examples": 0,
+        }
+        for field, expected_count in expected_counts.items():
+            actual_count = _require_int(
+                metadata.get(field), f"{label} {field}", minimum=0
+            )
+            if actual_count != expected_count:
+                raise ProvenanceValidationError(
+                    f"{label} {field} must be exactly {expected_count}"
+                )
+
+        corpus_payload, corpus_identity = _read_regular_file_without_symlinks(
+            supplied[stage.number],
+            maximum=boundary.BOUNDARY_CORPUS_BYTES,
+            label=f"{label} corpus",
+        )
+        try:
+            rows = boundary.parse_boundary_corpus(corpus_payload)
+            expected_manifest, fold, corruption = boundary.build_boundary_manifest(
+                rows,
+                skipped_refs=boundary.BOUNDARY_SKIPPED_ENCODED_REFS,
+                requested_examples=requested,
+                pairwise_lambda=settings["boundary_contrastive_lambda"],
+                margin=settings["boundary_contrastive_margin"],
+            )
+            row_by_ref = {row["ref"]: row for row in rows}
+            expected_disease_source_examples = boundary.disease_row_count(
+                [
+                    row_by_ref[ref]
+                    for ref in fold.manifest["inner_train_refs"]
+                ]
+            )
+        except ValueError as exc:
+            raise ProvenanceValidationError(f"{label} replay failed: {exc}") from exc
+        actual_disease_source_examples = _require_int(
+            metadata.get("disease_source_examples"),
+            f"{label} disease_source_examples",
+            minimum=0,
+        )
+        if actual_disease_source_examples != expected_disease_source_examples:
+            raise ProvenanceValidationError(
+                f"{label} disease_source_examples must be exactly "
+                f"{expected_disease_source_examples}"
+            )
+        if (
+            requested == boundary.MAX_BOUNDARY_CONTRASTIVE_EXAMPLES
+            and corruption.manifest["direction_counts"]
+            != {"expansion": 256, "contraction": 256}
+        ):
+            raise ProvenanceValidationError(
+                f"{label} did not replay 512 balanced boundary pairs"
+            )
+
+        manifest_path = stage.directory / "boundary_contrastive_manifest.json"
+        manifest_payload, manifest_identity = _read_regular_file_without_symlinks(
+            manifest_path,
+            maximum=MAX_BOUNDARY_MANIFEST_BYTES,
+            label=f"{label} manifest",
+        )
+        if manifest_identity == corpus_identity:
+            raise ProvenanceValidationError(
+                f"{label} corpus and manifest must be distinct files"
+            )
+        manifest_digest = _digest_bytes(manifest_payload)
+        manifest = _parse_json_object(manifest_payload, f"{label} manifest")
+        if _canonical_boundary_json(
+            manifest, f"{label} manifest"
+        ) != _canonical_boundary_json(
+            expected_manifest, f"{label} replayed manifest"
+        ):
+            raise ProvenanceValidationError(
+                f"{label} manifest does not match independent corpus replay"
+            )
+        expected_summary = boundary.boundary_metadata_summary(
+            expected_manifest, manifest_digest=manifest_digest
+        )
+        declaration = metadata["boundary_contrastive"]
+        if _canonical_boundary_json(
+            declaration, f"{label} metadata declaration"
+        ) != _canonical_boundary_json(
+            expected_summary, f"{label} expected metadata summary"
+        ):
+            raise ProvenanceValidationError(
+                f"{label} metadata summary does not match its replayed manifest"
+            )
+        lineages.append(
+            BoundaryContrastiveLineage(
+                stage_number=stage.number,
+                manifest=manifest,
+                manifest_digest=manifest_digest,
+                corpus_digest=boundary.digest_bytes(corpus_payload),
+            )
+        )
+    return tuple(lineages)
 
 
 def _validate_metadata_times_and_counts(
@@ -1337,7 +1695,7 @@ def _validate_calibration_lineage(
         frozenset({"tool", "arguments", "outtype", "output"}),
         "calibration conversion",
     )
-    converted_path = _validate_file_claim(
+    converted_path, converted_identity = _validate_file_claim(
         conversion["output"], base=base, label="calibration F16 model"
     )
     expected_conversion_arguments = [
@@ -1395,19 +1753,19 @@ def _validate_calibration_lineage(
     ):
         raise ProvenanceValidationError("calibration settings are not allowlisted")
 
-    corpus_path = _validate_file_claim(
+    corpus_path, corpus_identity = _validate_file_claim(
         calibration["corpus"],
         base=base,
         label="calibration corpus",
         maximum=MAX_CALIBRATION_CORPUS_BYTES,
     )
-    metadata_path = _validate_file_claim(
+    metadata_path, metadata_identity = _validate_file_claim(
         calibration["metadata"],
         base=base,
         label="calibration corpus metadata",
         maximum=MAX_CALIBRATION_METADATA_BYTES,
     )
-    imatrix_path = _validate_file_claim(
+    imatrix_path, imatrix_identity = _validate_file_claim(
         calibration["imatrix"], base=base, label="calibration imatrix"
     )
     expected_imatrix_arguments = [
@@ -1453,7 +1811,7 @@ def _validate_calibration_lineage(
         frozenset({"tool", "arguments", "output"}),
         "calibration quantization",
     )
-    output_path = _validate_file_claim(
+    output_path, output_identity = _validate_file_claim(
         quantization["output"], base=base, label="calibration quantized artifact"
     )
     base_arguments = [
@@ -1488,8 +1846,17 @@ def _validate_calibration_lineage(
         converted_path.resolve(),
         output_path.resolve(),
     }
-    if len(paths) != 5:
-        raise ProvenanceValidationError("calibration roles must reference distinct files")
+    identities = {
+        corpus_identity,
+        metadata_identity,
+        imatrix_identity,
+        converted_identity,
+        output_identity,
+    }
+    if len(paths) != 5 or len(identities) != 5:
+        raise ProvenanceValidationError(
+            "calibration roles must reference distinct files and inodes"
+        )
 
     return CalibrationLineage(
         manifest=manifest,
@@ -1504,6 +1871,7 @@ def validate_publication(
     *,
     calibration_manifest: Path | None = None,
     weight_soup_checkpoints: Mapping[int, Path] | None = None,
+    boundary_corpora: Mapping[int, Path] | None = None,
 ) -> Publication:
     """Load and validate a complete oldest-to-newest local training lineage."""
 
@@ -1533,6 +1901,14 @@ def validate_publication(
         metadata = _parse_json_object(
             metadata_bytes, f"stage {stage_number} metadata file {metadata_path}"
         )
+        reserved_metadata_fields = sorted(
+            field for field in metadata if field.startswith("mt_")
+        )
+        if reserved_metadata_fields:
+            raise ProvenanceValidationError(
+                f"stage {stage_number} uses publisher-reserved metadata fields: "
+                f"{reserved_metadata_fields}"
+            )
         metrics = _parse_metrics(metrics_bytes, metrics_path)
         metadata_digest = _digest_bytes(metadata_bytes)
 
@@ -1587,6 +1963,7 @@ def validate_publication(
 
     if corpus_file_digest is None:
         raise ProvenanceValidationError("training lineage has no corpus digest")
+    boundary_lineages = _validate_boundary_lineages(stages, boundary_corpora)
     weight_soups = _validate_weight_soup_checkpoints(stages, weight_soup_checkpoints)
     if calibration_manifest is None:
         raise ProvenanceValidationError(
@@ -1605,6 +1982,7 @@ def validate_publication(
         finished_block=finished_block,
         calibration=calibration,
         weight_soups=weight_soups,
+        boundary_contrastive=boundary_lineages,
     )
 
 
@@ -1634,6 +2012,17 @@ def publish(publication: Publication, wandb_client: Any) -> None:
             "weighting_active_when": "entity_text_token_weight_greater_than_one",
             "validation_loss": "ordinary_unweighted_causal_lm",
         }
+    boundary_lineage: dict[str, Any] = {}
+    if publication.boundary_contrastive:
+        boundary_lineage["mt_boundary_contrastive_lineage"] = {
+            f"stage_{lineage.stage_number}": {
+                "schema": lineage.manifest["schema"],
+                "manifest_digest": lineage.manifest_digest,
+                "corpus_digest": lineage.corpus_digest,
+                "manifest": lineage.manifest,
+            }
+            for lineage in publication.boundary_contrastive
+        }
     soup_lineage: dict[str, Any] = {}
     if publication.weight_soups:
         soup_lineage["mt_weight_soup_lineage"] = {
@@ -1661,6 +2050,7 @@ def publish(publication: Publication, wandb_client: Any) -> None:
             "mt_training_stages": len(publication.stages),
             "mt_stage_metadata": stage_metadata,
             **target_control_semantics,
+            **boundary_lineage,
             **soup_lineage,
             "mt_calibration_lineage": {
                 "manifest_digest": publication.calibration.manifest_digest,
@@ -1723,6 +2113,38 @@ def _index_weight_soup_checkpoints(
     return checkpoints
 
 
+def _index_boundary_corpora(
+    entries: Sequence[Sequence[str]],
+) -> dict[int, Path]:
+    corpora: dict[int, Path] = {}
+    for entry in entries:
+        if len(entry) != 2:
+            raise ProvenanceValidationError(
+                "each boundary corpus requires STAGE and PATH"
+            )
+        stage_text, path_text = entry
+        try:
+            stage_number = int(stage_text)
+        except ValueError as exc:
+            raise ProvenanceValidationError(
+                f"boundary corpus stage is not an integer: {stage_text!r}"
+            ) from exc
+        if stage_number < 1 or str(stage_number) != stage_text:
+            raise ProvenanceValidationError(
+                "boundary corpus stages must be canonical positive integers"
+            )
+        if stage_number in corpora:
+            raise ProvenanceValidationError(
+                f"duplicate boundary corpus for stage {stage_number}"
+            )
+        if not path_text or path_text != path_text.strip():
+            raise ProvenanceValidationError(
+                f"boundary corpus path for stage {stage_number} is invalid"
+            )
+        corpora[stage_number] = Path(path_text)
+    return corpora
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1737,6 +2159,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-digest", required=True)
     parser.add_argument("--finished-block", type=int, required=True)
     parser.add_argument("--calibration-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--boundary-corpus",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("STAGE", "PATH"),
+        help=(
+            "exact public corpus for a 1-based boundary-contrastive training stage; "
+            "repeat as needed"
+        ),
+    )
     parser.add_argument(
         "--weight-soup-checkpoint",
         action="append",
@@ -1758,12 +2191,14 @@ def main(argv: Sequence[str] | None = None, *, wandb_client: Any | None = None) 
         weight_soup_checkpoints = _index_weight_soup_checkpoints(
             args.weight_soup_checkpoint
         )
+        boundary_corpora = _index_boundary_corpora(args.boundary_corpus)
         publication = validate_publication(
             args.training_dirs,
             args.artifact_digest,
             args.finished_block,
             calibration_manifest=args.calibration_manifest,
             weight_soup_checkpoints=weight_soup_checkpoints,
+            boundary_corpora=boundary_corpora,
         )
     except ProvenanceValidationError as exc:
         raise SystemExit(f"provenance validation failed: {exc}") from exc

@@ -212,7 +212,7 @@ python training/publish_provenance.py \
   --training-dir runtime/training/experiments/lora-r64-e2-full-e1 \
   --artifact-digest sha256:... \
   --finished-block FINNEY_BLOCK \
-  --calibration-manifest runtime/training/calibration-lineage.json
+  --calibration-manifest calibration-lineage.json
 ```
 
 When stage 1 was trained from a deterministic weight soup, also bind that
@@ -229,6 +229,24 @@ checkpoint before W&B is imported and includes its exact `soup_metadata.json`
 and validated digests in the public run config. The retained metadata preserves
 the source-file and parent-metadata digest claims, but validating it later does
 not reopen the original source checkpoint directories or recompute the soup.
+
+Keep the calibration manifest at the repository root when its recorded command
+arguments use repository-relative paths such as `runtime/training/`; moving it
+under `runtime/training/` changes their resolution and fails validation.
+
+For every boundary-contrastive stage, also supply the exact pinned public corpus:
+
+```bash
+  --boundary-corpus 2 runtime/training/corpus/extract-fb5f1332493b1abe.json
+```
+
+Repeat `--boundary-corpus STAGE PATH` for exactly the stages that declare
+`microtensor.boundary_contrastive.v1`. Missing, duplicate, extra, symlinked, or
+tampered corpus evidence is rejected. Before W&B is imported, the publisher
+independently reconstructs the fixed outer and inner folds, the two pinned
+tokenizer skips, and every balanced corruption record, then requires the full
+manifest and compact training-metadata summary to match the replay exactly
+under canonical JSON and the declared file-byte digest semantics.
 
 Only then package for an open coordinator round, upload the complete
 round-specific tree, and commit it on chain.
