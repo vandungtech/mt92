@@ -17,6 +17,13 @@ EXPECTED_QUANTIZATION = "Q4_K_M"
 EXPECTED_MAX_INPUT_TOKENS = 512
 EXPECTED_TOKENIZER = "tokenizer.json"
 EXPECTED_BASE_MODEL = "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca"
+_GITHUB_RELEASE_SOURCE = re.compile(
+    r"^github\.com/"
+    r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/"
+    r"([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?)/"
+    r"releases/download/"
+    r"([A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?)$"
+)
 
 
 def _text(env: Mapping[str, str], key: str, default: str = "", *, required: bool = False) -> str:
@@ -49,6 +56,11 @@ def _boolean(env: Mapping[str, str], key: str, default: bool) -> bool:
 def _path(env: Mapping[str, str], key: str, default: str, *, required: bool = False) -> Path:
     raw = _text(env, key, default, required=required)
     return Path(raw).expanduser().absolute()
+
+
+def _optional_path(env: Mapping[str, str], key: str) -> Path | None:
+    raw = _text(env, key)
+    return Path(raw).expanduser().absolute() if raw else None
 
 
 def _validate_template(template: str) -> None:
@@ -86,6 +98,7 @@ class ControllerConfig:
     track: str
     hardware_class: str
     source_template: str
+    github_token_file: Path | None
     entrypoint: str
     artifact_format: str
     quantization: str
@@ -137,6 +150,7 @@ class ControllerConfig:
             track=_text(source, "MMC_TRACK", "extract", required=True),
             hardware_class=_text(source, "MMC_HARDWARE_CLASS", "mt-3g", required=True),
             source_template=source_template,
+            github_token_file=_optional_path(source, "MMC_GITHUB_TOKEN_FILE"),
             entrypoint=_text(source, "MMC_ENTRYPOINT", EXPECTED_ENTRYPOINT, required=True),
             artifact_format=_text(source, "MMC_ARTIFACT_FORMAT", EXPECTED_FORMAT, required=True),
             quantization=_text(source, "MMC_QUANTIZATION", EXPECTED_QUANTIZATION),
@@ -219,14 +233,22 @@ class ControllerConfig:
             )
         if not self.coordinator_url.startswith("https://"):
             raise ConfigError("MMC_COORDINATOR_URL must use HTTPS")
-        if not self.source_template.startswith(("s3:", "r2:")):
+        scheme = self.source_template.partition(":")[0]
+        if scheme not in {"s3", "r2", "https"}:
             raise ConfigError(
-                "supervised live uploads support only per-round s3: or r2: sources; "
-                "HF revisions are immutable and https/ipfs have no upstream uploader"
+                "supervised uploads support s3/r2 diagnostics or an immutable GitHub "
+                "https release"
             )
+        self.source_for(0, "5ConfigProbe")
+        if scheme == "https" and self.github_token_file is None and not self.dry_run:
+            raise ConfigError("MMC_GITHUB_TOKEN_FILE is required for live GitHub releases")
+        if scheme != "https" and self.github_token_file is not None:
+            raise ConfigError("MMC_GITHUB_TOKEN_FILE is valid only with a GitHub https source")
         if self.allow_unverified_upstream and not self.dry_run:
-            raise ConfigError("MMC_ALLOW_UNVERIFIED_UPSTREAM is permitted only with MMC_DRY_RUN=true")
-        if not self.dry_run:
+            raise ConfigError(
+                "MMC_ALLOW_UNVERIFIED_UPSTREAM is permitted only with MMC_DRY_RUN=true"
+            )
+        if not self.dry_run and scheme != "https":
             raise ConfigError(
                 "live S3/R2 activation is refused: verification with miner credentials does not "
                 "prove validators can fetch the artifact without those credentials"
@@ -235,6 +257,16 @@ class ControllerConfig:
             raise ConfigError("MMC_REQUIRE_ANCHORED_COORDINATOR must remain true")
         if self.allow_chain_schedule_fallback and not self.dry_run:
             raise ConfigError("chain-schedule fallback is diagnostic-only and requires dry-run")
+
+    @staticmethod
+    def github_release_coordinates(source: str) -> tuple[str, str, str] | None:
+        if not source.startswith("https:"):
+            return None
+        match = _GITHUB_RELEASE_SOURCE.fullmatch(source.removeprefix("https:"))
+        if match is None:
+            return None
+        owner, repo, tag = match.groups()
+        return owner, repo, tag
 
     def source_for(self, round_index: int, hotkey: str) -> str:
         if round_index < 0:
@@ -250,7 +282,26 @@ class ControllerConfig:
             or any(c in rendered for c in "?#@\\")
         ):
             raise ConfigError("rendered source contains a forbidden delimiter or credential marker")
-        _, _, locator = rendered.partition(":")
+        scheme, separator, locator = rendered.partition(":")
+        if not separator:
+            raise ConfigError("rendered source has no scheme")
+        if scheme == "https":
+            coordinates = self.github_release_coordinates(rendered)
+            if coordinates is None:
+                raise ConfigError(
+                    "https sources must be github.com/OWNER/REPO/releases/download/TAG"
+                )
+            owner, repo, tag = coordinates
+            if (
+                "--" in owner
+                or repo.casefold().endswith(".git")
+                or ".." in tag
+                or tag.casefold().endswith(".lock")
+            ):
+                raise ConfigError("rendered GitHub release source is invalid")
+            return rendered
+        if scheme not in {"s3", "r2"}:
+            raise ConfigError("rendered source scheme is not supervised")
         bucket, separator, prefix = locator.partition("/")
         if not separator or not bucket or not prefix or "//" in locator:
             raise ConfigError("rendered object-store source must be bucket/non-empty-prefix")

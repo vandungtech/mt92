@@ -26,6 +26,12 @@ log = logging.getLogger(__name__)
 _PINNED_MODEL = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{7,40}$")
 
 
+def _publishable_files(manifest: Any) -> tuple[str, ...]:
+    from microtensor.miner.package import publishable_files
+
+    return tuple(publishable_files(manifest))
+
+
 class Backend(Protocol):
     def preflight(self) -> PreflightSnapshot: ...
 
@@ -165,6 +171,9 @@ class MicrotensorBackend:
 
     def _validate_artifact_config(self) -> None:
         config = self.config
+        if config.source_template.startswith("https:") and not config.dry_run:
+            self._read_github_token()
+
         if not config.wallet_path.is_dir():
             raise PreflightError(f"wallet path is not a directory: {config.wallet_path}")
         self._validate_wallet_permissions()
@@ -193,7 +202,92 @@ class MicrotensorBackend:
             except (OSError, json.JSONDecodeError) as exc:
                 raise PreflightError(f"existing manifest is unreadable: {exc}") from exc
             if raw.get("sealed"):
-                raise PreflightError("existing manifest is sealed; remove it only after manual review")
+                raise PreflightError(
+                    "existing manifest is sealed; remove it only after manual review"
+                )
+
+    def _read_github_token(self) -> str:
+        path = self.config.github_token_file
+        if path is None:
+            raise PreflightError("GitHub token file is required for live HTTPS upload")
+
+        descriptor = -1
+        try:
+            before = path.lstat()
+            self._validate_github_token_metadata(before)
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            self._validate_github_token_metadata(opened)
+            if before.st_dev != opened.st_dev or before.st_ino != opened.st_ino:
+                raise PreflightError("GitHub token file changed while it was opened")
+            fingerprint = (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+                opened.st_uid,
+                opened.st_nlink,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+            with os.fdopen(descriptor, "rb") as token_stream:
+                descriptor = -1
+                raw = token_stream.read(4097)
+                after = os.fstat(token_stream.fileno())
+            self._validate_github_token_metadata(after)
+            if fingerprint != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise PreflightError("GitHub token file changed while it was read")
+        except PreflightError:
+            raise
+        except OSError:
+            raise PreflightError("GitHub token file is unavailable or unsafe") from None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+        if len(raw) > 4096:
+            raise PreflightError("GitHub token file exceeds the size limit")
+        try:
+            token = raw.decode("ascii")
+        except UnicodeDecodeError:
+            raise PreflightError("GitHub token file must contain ASCII") from None
+        if token.endswith("\n"):
+            token = token[:-1]
+        if "\n" in token or "\r" in token or not token.isascii():
+            raise PreflightError("GitHub token file must contain exactly one token")
+        try:
+            from .github_release import GitHubTransport, ReleasePublishError
+
+            GitHubTransport(token)
+        except (ImportError, ReleasePublishError):
+            raise PreflightError("GitHub token file contains an invalid token") from None
+        return token
+
+    @staticmethod
+    def _validate_github_token_metadata(metadata: os.stat_result) -> None:
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise PreflightError("GitHub token file must be a regular non-symlink")
+        if metadata.st_uid != os.geteuid():
+            raise PreflightError("GitHub token file must be owned by the effective user")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise PreflightError("GitHub token file mode must be exactly 0600")
+        if metadata.st_nlink != 1:
+            raise PreflightError("GitHub token file must have exactly one hard link")
+
     def _validate_wallet_permissions(self) -> None:
         hotkey_file = (
             self.config.wallet_path
@@ -437,18 +531,47 @@ class MicrotensorBackend:
         return payload
 
     def upload(self, packaged: PackagedArtifact) -> None:
-        from microtensor.miner.package import publishable_files
-        from microtensor.miner.upload import plan_upload, upload
+        if self.config.dry_run:
+            raise VerificationError("upload is forbidden while MMC_DRY_RUN=true")
 
-        manifest = self._native(packaged)
-        scheme, _, locator = packaged.source.partition(":")
-        plan = plan_upload(
-            self.config.artifact_dir,
-            scheme,
-            locator,
-            publishable_files(manifest),
-        )
-        upload(plan, self.config.artifact_dir)
+        scheme = packaged.source.partition(":")[0]
+        if scheme != "https":
+            raise VerificationError(
+                "live upload requires an immutable GitHub HTTPS release; S3/R2 are refused"
+            )
+        self._upload_github(packaged)
+
+    def _upload_github(self, packaged: PackagedArtifact) -> None:
+        try:
+            from .github_release import GitHubReleasePublisher
+
+            coordinates = self.config.github_release_coordinates(packaged.source)
+            if coordinates is None:
+                raise VerificationError("GitHub release coordinates are invalid")
+            owner, repo, tag = coordinates
+            token = self._read_github_token()
+            names = _publishable_files(self._native(packaged))
+            if not names or len(names) != len(set(names)):
+                raise VerificationError("publishable artifact file set is invalid")
+            assets = {
+                name: self.config.artifact_dir / name
+                for name in names
+            }
+            result = GitHubReleasePublisher(
+                owner=owner,
+                repo=repo,
+                tag=tag,
+                token=token,
+            ).publish(assets)
+            published_names = tuple(asset.name for asset in result.assets)
+            if (
+                result.source != packaged.source
+                or len(published_names) != len(names)
+                or set(published_names) != set(names)
+            ):
+                raise VerificationError("GitHub release result does not match the package")
+        except Exception:
+            raise VerificationError("GitHub immutable release upload failed") from None
 
     def verify_source(self, packaged: PackagedArtifact, *, full: bool) -> None:
         from microtensor.chain.wallet import verify_payload

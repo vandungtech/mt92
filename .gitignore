@@ -33,5 +33,6 @@ wandb/
 *.ckpt
 *credentials*
 *secrets*
+*.token
 *.key
 *.log

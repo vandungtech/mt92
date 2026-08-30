@@ -21,7 +21,7 @@ the complete transition for each newly opened round:
 2. unlock the configured hotkey and prove it currently maps to UID 32;
 3. accept only a coherent, anchored coordinator round;
 4. sign a fresh, explicitly unsealed manifest for that round;
-5. upload to a unique per-round S3/R2 prefix;
+5. upload the exact manifest assets to a unique immutable public GitHub Release;
 6. download and hash the complete remote artifact;
 7. verify W&B provenance against the artifact digest;
 8. publish only while safely before the close block; and
@@ -39,9 +39,14 @@ Only step 9 followed by all earlier proofs writes `"ok": true` to health state.
 - Sealed artifacts are categorically rejected. There is no reveal-key failure mode.
 - Each source must contain `{round}` so a new manifest cannot overwrite another
   round's still-relevant namespace.
-- Live autonomous upload permits only `s3:` and `r2:`. Upstream accepts `ipfs:` but
-  cannot upload or fetch it; `https:` has no uploader; an HF commit SHA is immutable
-  and cannot receive each round's new manifest.
+- Live upload accepts only
+  `https:github.com/OWNER/REPO/releases/download/TAG`, with `{round}` in the tag.
+  Arbitrary HTTPS, HF, IPFS, S3, and R2 live destinations are refused.
+- The publisher enables and rechecks GitHub release immutability, creates or recovers a
+  draft, streams each exact manifest asset, and never deletes or overwrites a release asset.
+- A direct backend upload is refused in dry-run, closing accidental write bypasses.
+- The GitHub token is read only from `MMC_GITHUB_TOKEN_FILE`; that file must be owned by
+  the service user, be a regular non-symlink, and have mode exactly 0600.
 - Logs and JSON state redact secret-looking assignments, bearer tokens, URL userinfo,
   query credentials, and secret environment values.
 
@@ -56,8 +61,10 @@ deployment must prepare these runtime inputs, which remain Git-ignored:
 - a base model locator pinned as `<org>/<repo>@<7-40 hex commit>`;
 - a W&B run named by the hotkey SS58 address in
   `microtensor/training-runs`, with the required competition/base-model fields and
-  the artifact digest; and
-- a validator-fetchable S3/R2 namespace plus uploader credentials.
+  the artifact digest;
+- an initialized public GitHub repository with a compact owner/repository name; and
+- a fine-grained GitHub token with repository Contents write and Administration write,
+  stored in a separate service-user-owned mode-0600 regular file.
 
 The controller does not fabricate any of these. Validators measure the artifact, so a
 dummy model or invented provenance would only create an invalid on-chain submission.
@@ -91,16 +98,42 @@ sudo install -m 0600 .env.example /etc/microtensor-miner/miner.env
 sudoedit /etc/microtensor-miner/miner.env
 ```
 
-Replace every `REPLACE_...` value. Do not quote or add shell commands: the controller
+Replace every placeholder value. Do not quote or add shell commands: the controller
 parses a deliberately small `UPPER_CASE_NAME=value` data format and never sources it as
 shell code. Keep it owned by the service user or root and mode 0600.
 
 The service user must be the wallet owner or have read access to only the required
 wallet tree. Do not copy wallet material into this Git repository or an image.
 
-The upload namespace should be public to validators. The controller verifies remote
-bytes with the configured runtime credentials; that check does not prove an unrelated
-validator possesses private bucket credentials.
+Use the exact Microtensor HTTPS locator form below; it intentionally has no `//` after
+`https:`:
+
+```dotenv
+MMC_SOURCE_TEMPLATE=https:github.com/YOURUSER/mt92/releases/download/r{round}
+MMC_GITHUB_TOKEN_FILE=/etc/microtensor-miner/github.token
+```
+
+The repository must already be public and initialized with at least one commit. Keep the
+combined owner/repository name roughly 30 characters or fewer for current four-digit
+rounds. The exact allowance depends on the round and digest; the controller validates
+the complete 128-byte chain encoding before it performs an external upload.
+
+Create the token as a separate file, never as an environment value or command argument:
+
+```bash
+sudo install -o SERVICE_USER -g SERVICE_GROUP -m 0600 /dev/null \
+  /etc/microtensor-miner/github.token
+sudoedit /etc/microtensor-miner/github.token
+```
+
+The file must contain only the token, with at most one final newline. The fine-grained
+token needs Contents write to manage releases and Administration write to enable
+immutable releases. Preflight rejects a symlink, non-regular or multiply linked file,
+wrong owner, any mode other than 0600, malformed content, or a file that changes while read.
+
+After publishing, the normal source verifier downloads and hashes the complete artifact
+through the public HTTPS locator. GitHub credentials are not used for that fetch, so a
+successful verification exercises the same anonymous route available to validators.
 
 ## Dry-run and activation
 
@@ -116,20 +149,30 @@ Dry-run performs read-only upstream, wallet, metagraph, chain, and coordinator c
 It writes local status/health files but does not rewrite the artifact, upload, sign, or
 submit an extrinsic. A valid plan exits zero while health remains `ok: false` by design.
 
-This audited snapshot deliberately rejects `MMC_DRY_RUN=false`. The upstream S3/R2
-probe uses the miner's object-store credentials, which cannot prove that an unrelated
-validator can fetch the same bytes anonymously. Activation therefore also requires a
-validator-anonymous source verifier, public W&B provenance, a real immutable public
-destination, and an open coordinator round. After implementing and auditing that
-verifier and removing the explicit fail-closed gate in `config.py`, exercise a live
-one-shot before starting continuous submission:
+Live mode is supported only for the immutable GitHub source. Before setting
+`MMC_DRY_RUN=false`, confirm all of the following:
+
+- the compact repository exists, is initialized, and is publicly readable;
+- the protected token file passes preflight and has the permissions described above;
+- the exact artifact digest has admissible public W&B provenance; and
+- the coordinator reports a coherent, anchored submissions phase with enough blocks left.
+
+S3 and R2 remain configuration diagnostics only and are categorically refused for live
+upload. An interrupted draft is recoverable: matching assets are reused, missing assets
+are uploaded, and a published release is accepted idempotently only when it is immutable
+and its complete asset set matches. Any extra or mismatched asset fails without deletion
+or overwrite.
+
+After changing the environment, rerun preflight and exercise one live one-shot before
+starting continuous submission:
 
 ```bash
+MMC_ENV_FILE=/etc/microtensor-miner/miner.env scripts/preflight.sh
 MMC_ENV_FILE=/etc/microtensor-miner/miner.env \
   .venv/bin/microtensor-miner-controller run --once
 ```
 
-Only then should `scripts/run-controller.sh` be used for continuous submission.
+Only after the one-shot reaches verified health should continuous submission be enabled.
 
 ## Supervisord
 
@@ -146,7 +189,14 @@ stdout. The controller itself handles transient coordinator/chain failures witho
 turning an unverified state green.
 
 No inbound network port is required. The process uses outbound HTTPS/WSS for Finney,
-the coordinator, W&B, and the artifact store.
+the coordinator, W&B, the GitHub API, and public release downloads.
+
+This workspace deployment also includes `deploy/supervisor-host.conf`, which points at
+the actual `/workspace/microtensor-miner` paths and the protected runtime environment.
+Installing that file under `/etc/supervisor/conf.d/` makes the controller part of the
+host supervisor instead of depending on an interactive shell. It runs as root only
+because this host's registered hotkey file is root-owned and mode 0600; do not copy or
+relax the wallet permissions to run it under another account.
 
 ## Status and health
 
