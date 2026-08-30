@@ -44,6 +44,16 @@ def digest(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def artifact_tree_digest(files: dict[str, bytes]) -> str:
+    tree = hashlib.sha256()
+    for name, payload in sorted(files.items()):
+        tree.update(name.encode("utf-8"))
+        tree.update(b"\x00")
+        tree.update(digest(payload).encode("ascii"))
+        tree.update(b"\x00")
+    return "sha256:" + tree.hexdigest()
+
+
 def encoded_json(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
 
@@ -171,11 +181,298 @@ class PublishProvenanceTests(unittest.TestCase):
         )
         return directory, metadata, records, metadata_bytes
 
-    def invoke_main(self, directories: list[Path], fake: FakeWandb) -> int:
+    def write_augmented_stage(
+        self, name: str, *, enabled: bool = True
+    ) -> tuple[Path, dict[str, Any], bytes, Path | None]:
+        directory, metadata, _records, _original = self.write_stage(name)
+        requested = 1 if enabled else 0
+        summary: dict[str, Any] = {
+            "algorithm": provenance.ENTITY_SUBSTITUTION_ALGORITHM,
+            "enabled": enabled,
+            "seed": 92,
+            "requested_examples": requested,
+            "augmented_examples": requested,
+            "replacement_count": requested,
+        }
+        manifest_path: Path | None = None
+        if enabled:
+            summary.update(
+                {
+                    "source_training_rows": 2,
+                    "eligible_source_rows": 2,
+                    "ineligible_source_rows": {},
+                    "globally_ambiguous_surfaces": 0,
+                    "no_compatible_donor_rows": 0,
+                    "donor_entity_counts": {"Chemical": 1, "Disease": 1},
+                    "source_training_refs_digest": "sha256:" + "1" * 64,
+                    "heldout_refs_digest": "sha256:" + "2" * 64,
+                    "donor_pool_digest": "sha256:" + "3" * 64,
+                }
+            )
+            manifest = {
+                **summary,
+                "examples": [
+                    {
+                        "source_ref": "source-1",
+                        "augmented_ref": (
+                            "source-1::entity-substitution::0123456789abcdef"
+                        ),
+                        "donor_ref": "donor-1",
+                        "type": "Chemical",
+                        "source_text": "Aspirin",
+                        "donor_text": "Ibuprofen",
+                        "occurrence_count": 1,
+                    }
+                ],
+            }
+            manifest_bytes = encoded_json(manifest)
+            manifest_path = directory / "entity_substitution_manifest.json"
+            manifest_path.write_bytes(manifest_bytes)
+            summary.update(
+                {
+                    "manifest_file": manifest_path.name,
+                    "manifest_digest": digest(manifest_bytes),
+                }
+            )
+
+        metadata.update(
+            {
+                "settings": {
+                    **metadata["settings"],
+                    "seed": 92,
+                    "entity_substitution_examples": requested,
+                },
+                "augmentation": {
+                    "entity_substitution": {
+                        **summary,
+                        "composition": provenance.ENTITY_SUBSTITUTION_COMPOSITION,
+                    }
+                },
+                "source_training_examples": 2,
+                "disease_extra_examples": 0,
+                "training_examples": 2 + requested,
+                "skipped_training_examples": 0,
+            }
+        )
+        metadata_bytes = encoded_json(metadata)
+        (directory / "training_metadata.json").write_bytes(metadata_bytes)
+        return directory, metadata, metadata_bytes, manifest_path
+
+    def write_calibration_manifest(
+        self, directory: Path, training_metadata_bytes: bytes
+    ) -> tuple[Path, dict[str, Any], dict[str, Path]]:
+        merged = directory / "merged"
+        merged.mkdir()
+        source_payloads = {
+            "config.json": b'{"model_type":"qwen3"}\n',
+            "model.safetensors": b"test-model-weights",
+            "tokenizer.json": b'{"version":"1.0"}\n',
+            "tokenizer_config.json": b'{"chat_template":"inline"}\n',
+        }
+        for name, payload in source_payloads.items():
+            (merged / name).write_bytes(payload)
+
+        assets = self.root / f"{directory.name}-calibration-assets"
+        assets.mkdir()
+        corpus_path = assets / "calibration.txt"
+        record_payloads = [b"record-one\n", b"record-two\n"]
+        corpus_payload = b"".join(record_payloads)
+        corpus_path.write_bytes(corpus_payload)
+        imatrix_path = assets / "calibration.imatrix.gguf"
+        imatrix_path.write_bytes(b"GGUF-imatrix")
+        converted_path = assets / "model-f16.gguf"
+        converted_path.write_bytes(b"GGUF-f16")
+        artifact_dir = assets / "artifact"
+        artifact_dir.mkdir()
+        artifact_path = artifact_dir / "model.gguf"
+        artifact_payload = b"GGUF-model"
+        artifact_path.write_bytes(artifact_payload)
+
+        tokenizer_artifacts = {
+            name: {"bytes": len(source_payloads[name]), "sha256": digest(source_payloads[name])}
+            for name in ("config.json", "tokenizer.json", "tokenizer_config.json")
+        }
+        sidecar = {
+            "schema": provenance.IMATRIX_CORPUS_SCHEMA,
+            "source": {
+                "corpus_bytes": 123,
+                "corpus_file_sha256": CORPUS_FILE_DIGEST,
+                "corpus_version": provenance.CORPUS_VERSION,
+                "loader": "training.train_extract.load_rows",
+                "public_train_rows": 2,
+            },
+            "tokenizer": {
+                "artifacts": tokenizer_artifacts,
+                "chat_template_sha256": "sha256:" + "4" * 64,
+                "chat_template_source": "tokenizer_config.json:chat_template",
+                "loader": "transformers.AutoTokenizer.from_pretrained",
+                "local_files_only": True,
+                "runtime_class": "Qwen2Tokenizer",
+                "trust_remote_code": False,
+                "model_type": "qwen3",
+                "tokenizer_class": "Qwen2Tokenizer",
+            },
+            "selection": {
+                "algorithm": "random.Random(seed).shuffle(rows)",
+                "eligible_examples": 2,
+                "included_examples": 2,
+                "included_refs": ["row-1", "row-2"],
+                "max_examples": 2,
+                "omitted_after_cap": 0,
+                "rejected_rows": [],
+                "reserve_examples": 0,
+                "reserved_refs": [],
+                "seed": 92,
+            },
+            "rendering": {
+                "add_generation_prompt": False,
+                "canonical_gold": {
+                    "deduplicate": "exact_text_type_pair",
+                    "entity_order": "unicode_text_then_type",
+                    "json": "utf8_compact_sorted_keys",
+                    "substring_scope": "inputs.text",
+                },
+                "enable_thinking": False,
+                "record_separator": (
+                    "none; each Qwen rendering ends with <|im_end|>\\n"
+                ),
+                "tokenize": False,
+            },
+            "output": {
+                "bytes": len(corpus_payload),
+                "records": len(record_payloads),
+                "sha256": digest(corpus_payload),
+            },
+            "records": [
+                {
+                    "bytes": len(payload),
+                    "ref": f"row-{index}",
+                    "sha256": digest(payload),
+                }
+                for index, payload in enumerate(record_payloads, start=1)
+            ],
+            "runtime": {"python": "3.11.14"},
+        }
+        metadata_path = assets / "calibration.txt.metadata.json"
+        metadata_path.write_bytes(encoded_json(sidecar))
+
+        def claim(path: Path) -> dict[str, Any]:
+            payload = path.read_bytes()
+            return {
+                "path": path.relative_to(self.root).as_posix(),
+                "bytes": len(payload),
+                "sha256": digest(payload),
+            }
+
+        corpus_claim = claim(corpus_path)
+        metadata_claim = claim(metadata_path)
+        imatrix_claim = claim(imatrix_path)
+        converted_claim = claim(converted_path)
+        artifact_claim = claim(artifact_path)
+        manifest = {
+            "schema": provenance.CALIBRATION_LINEAGE_SCHEMA,
+            "llama_cpp_revision": provenance.LLAMA_CPP_REVISION,
+            "artifact_tree_digest": artifact_tree_digest(
+                {"model.gguf": artifact_payload}
+            ),
+            "source_model": {
+                "directory": merged.relative_to(self.root).as_posix(),
+                "training_metadata_sha256": digest(training_metadata_bytes),
+                "files": [
+                    {
+                        "path": name,
+                        "bytes": len(payload),
+                        "sha256": digest(payload),
+                    }
+                    for name, payload in sorted(source_payloads.items())
+                ],
+            },
+            "conversion": {
+                "tool": "convert_hf_to_gguf.py",
+                "outtype": "f16",
+                "output": converted_claim,
+                "arguments": [
+                    merged.relative_to(self.root).as_posix(),
+                    "--outfile",
+                    converted_claim["path"],
+                    "--outtype",
+                    "f16",
+                ],
+            },
+            "calibration": {
+                "tool": "llama-imatrix",
+                "corpus": corpus_claim,
+                "metadata": metadata_claim,
+                "imatrix": imatrix_claim,
+                "settings": {
+                    "offline": True,
+                    "ctx_size": 512,
+                    "chunks": -1,
+                    "no_ppl": True,
+                    "process_output": False,
+                    "parse_special": True,
+                    "output_format": "gguf",
+                },
+                "arguments": [
+                    "--offline",
+                    "--model",
+                    converted_claim["path"],
+                    "--file",
+                    corpus_claim["path"],
+                    "--output",
+                    imatrix_claim["path"],
+                    "--ctx-size",
+                    "512",
+                    "--chunks",
+                    "-1",
+                    "--no-ppl",
+                    "--parse-special",
+                ],
+            },
+            "quantization": {
+                "tool": "llama-quantize",
+                "arguments": [
+                    "--imatrix",
+                    imatrix_claim["path"],
+                    "--tensor-type",
+                    provenance.ATTN_V_Q6_OVERRIDE,
+                    converted_claim["path"],
+                    artifact_claim["path"],
+                    "Q4_K_M",
+                ],
+                "output": artifact_claim,
+            },
+        }
+        manifest_path = self.root / f"{directory.name}-calibration-lineage.json"
+        manifest_path.write_bytes(encoded_json(manifest))
+        return manifest_path, manifest, {
+            "artifact": artifact_path,
+            "converted": converted_path,
+            "corpus": corpus_path,
+            "metadata": metadata_path,
+            "imatrix": imatrix_path,
+        }
+
+    def invoke_main(
+        self,
+        directories: list[Path],
+        fake: FakeWandb,
+        *,
+        calibration_manifest: Path | None = None,
+        artifact_digest: str = ARTIFACT_DIGEST,
+    ) -> int:
         arguments: list[str] = []
         for directory in directories:
             arguments.extend(("--training-dir", str(directory)))
-        arguments.extend(("--artifact-digest", ARTIFACT_DIGEST, "--finished-block", "8955436"))
+        arguments.extend(
+            ("--artifact-digest", artifact_digest, "--finished-block", "8955436")
+        )
+        arguments.extend(
+            (
+                "--calibration-manifest",
+                str(calibration_manifest or self.root / "missing-calibration-lineage.json"),
+            )
+        )
         with (
             mock.patch.dict(provenance.os.environ, {}, clear=True),
             mock.patch.object(
@@ -193,9 +490,20 @@ class PublishProvenanceTests(unittest.TestCase):
 
     def test_valid_single_stage_keeps_cli_and_config_compatibility(self) -> None:
         directory, metadata, metrics, metadata_bytes = self.write_stage("stage-one")
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
         fake = FakeWandb()
 
-        self.assertEqual(self.invoke_main([directory], fake), 0)
+        self.assertEqual(
+            self.invoke_main(
+                [directory],
+                fake,
+                calibration_manifest=calibration_path,
+                artifact_digest=calibration["artifact_tree_digest"],
+            ),
+            0,
+        )
 
         self.assertEqual(len(fake.init_calls), 1)
         call = fake.init_calls[0]
@@ -211,6 +519,13 @@ class PublishProvenanceTests(unittest.TestCase):
         stage_config = config["mt_stage_metadata"]["stage_1"]
         self.assertEqual(stage_config["metadata"], metadata)
         self.assertEqual(stage_config["metadata_digest"], digest(metadata_bytes))
+        self.assertEqual(
+            config["mt_calibration_lineage"],
+            {
+                "manifest": calibration,
+                "manifest_digest": digest(encoded_json(calibration)),
+            },
+        )
 
         self.assertEqual([step for _payload, step in fake.log_calls], [1, 2, 3])
         for source, (logged, _step) in zip(metrics, fake.log_calls, strict=True):
@@ -221,7 +536,8 @@ class PublishProvenanceTests(unittest.TestCase):
         self.assertEqual(
             fake.run.summary,
             {
-                "mt_artifact_digest": ARTIFACT_DIGEST,
+                "mt_artifact_digest": calibration["artifact_tree_digest"],
+                "mt_calibration_manifest_digest": digest(encoded_json(calibration)),
                 "mt_finished_at": 8955436,
                 "mt_training_records": 3,
                 "mt_training_stages": 1,
@@ -231,16 +547,27 @@ class PublishProvenanceTests(unittest.TestCase):
 
     def test_target_controls_are_validated_and_publish_exact_semantics(self) -> None:
         controls = target_controls(canonicalization="sorted", weight=2.5)
-        directory, metadata, _metrics, _bytes = self.write_stage(
+        directory, metadata, _metrics, metadata_bytes = self.write_stage(
             "controlled",
             metadata_changes={
                 "settings": target_settings(canonicalization="sorted", weight=2.5),
                 "target_controls": controls,
             },
         )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
         fake = FakeWandb()
 
-        self.assertEqual(self.invoke_main([directory], fake), 0)
+        self.assertEqual(
+            self.invoke_main(
+                [directory],
+                fake,
+                calibration_manifest=calibration_path,
+                artifact_digest=calibration["artifact_tree_digest"],
+            ),
+            0,
+        )
 
         config = fake.init_calls[0]["config"]
         self.assertEqual(config["target_controls"], controls)
@@ -369,8 +696,16 @@ class PublishProvenanceTests(unittest.TestCase):
                 self.assert_invalid([directory], pattern)
 
     def test_historical_metadata_may_omit_controls_but_new_settings_may_not(self) -> None:
-        historical, _metadata, _metrics, _bytes = self.write_stage("historical")
-        provenance.validate_publication([historical], ARTIFACT_DIGEST, 8955436)
+        historical, _metadata, _metrics, metadata_bytes = self.write_stage("historical")
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            historical, metadata_bytes
+        )
+        provenance.validate_publication(
+            [historical],
+            calibration["artifact_tree_digest"],
+            8955436,
+            calibration_manifest=calibration_path,
+        )
 
         stripped, _metadata, _metrics, _bytes = self.write_stage(
             "stripped-controls",
@@ -388,9 +723,20 @@ class PublishProvenanceTests(unittest.TestCase):
             started=2_000,
             metadata_changes={"pipeline_stages": 2},
         )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            second, second_bytes
+        )
         fake = FakeWandb()
 
-        self.assertEqual(self.invoke_main([first, second], fake), 0)
+        self.assertEqual(
+            self.invoke_main(
+                [first, second],
+                fake,
+                calibration_manifest=calibration_path,
+                artifact_digest=calibration["artifact_tree_digest"],
+            ),
+            0,
+        )
 
         all_metrics = [*first_metrics, *second_metrics]
         self.assertEqual(
@@ -526,6 +872,271 @@ class PublishProvenanceTests(unittest.TestCase):
             ):
                 provenance.validate_publication([self.root], ARTIFACT_DIGEST, value)
 
+
+    def test_entity_substitution_disabled_and_enabled_metadata_is_bound(self) -> None:
+        disabled, disabled_metadata, metadata_bytes, augmentation_path = self.write_augmented_stage(
+            "augmentation-disabled", enabled=False
+        )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            disabled, metadata_bytes
+        )
+        publication = provenance.validate_publication(
+            [disabled],
+            calibration["artifact_tree_digest"],
+            8955436,
+            calibration_manifest=calibration_path,
+        )
+        self.assertIsNone(augmentation_path)
+        self.assertEqual(
+            publication.stages[0].metadata["augmentation"],
+            disabled_metadata["augmentation"],
+        )
+
+        enabled, enabled_metadata, metadata_bytes, augmentation_path = self.write_augmented_stage(
+            "augmentation-enabled"
+        )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            enabled, metadata_bytes
+        )
+        publication = provenance.validate_publication(
+            [enabled],
+            calibration["artifact_tree_digest"],
+            8955436,
+            calibration_manifest=calibration_path,
+        )
+        self.assertIsNotNone(augmentation_path)
+        self.assertEqual(
+            publication.stages[0].metadata["augmentation"],
+            enabled_metadata["augmentation"],
+        )
+
+    def test_entity_substitution_claims_fail_closed(self) -> None:
+        stripped, metadata, _bytes, _manifest = self.write_augmented_stage(
+            "augmentation-stripped", enabled=False
+        )
+        del metadata["augmentation"]
+        (stripped / "training_metadata.json").write_bytes(encoded_json(metadata))
+        self.assert_invalid([stripped], "augmentation is required")
+
+        tampered, _metadata, _bytes, manifest_path = self.write_augmented_stage(
+            "augmentation-tampered"
+        )
+        if manifest_path is None:
+            self.fail("enabled augmentation fixture did not write its manifest")
+        manifest_path.write_bytes(manifest_path.read_bytes() + b" ")
+        self.assert_invalid([tampered], "manifest_digest does not match")
+
+        mismatched, metadata, _bytes, _manifest = self.write_augmented_stage(
+            "augmentation-summary-mismatch"
+        )
+        metadata["augmentation"]["entity_substitution"]["donor_pool_digest"] = (
+            "sha256:" + "9" * 64
+        )
+        (mismatched / "training_metadata.json").write_bytes(encoded_json(metadata))
+        self.assert_invalid([mismatched], "manifest does not match")
+
+    def test_calibration_lineage_is_published_with_exact_manifest_digest(self) -> None:
+        directory, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibrated"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
+
+        fake = FakeWandb()
+        self.assertEqual(
+            self.invoke_main(
+                [directory],
+                fake,
+                calibration_manifest=manifest_path,
+                artifact_digest=manifest["artifact_tree_digest"],
+            ),
+            0,
+        )
+
+        config = fake.init_calls[0]["config"]["mt_calibration_lineage"]
+        self.assertEqual(config["manifest"], manifest)
+        self.assertEqual(config["manifest_digest"], digest(encoded_json(manifest)))
+        self.assertEqual(
+            fake.run.summary["mt_calibration_manifest_digest"],
+            digest(encoded_json(manifest)),
+        )
+
+        del manifest["quantization"]["arguments"][2:4]
+        manifest_path.write_bytes(encoded_json(manifest))
+        publication = provenance.validate_publication(
+            [directory],
+            manifest["artifact_tree_digest"],
+            8955436,
+            calibration_manifest=manifest_path,
+        )
+        self.assertIsNotNone(publication.calibration)
+
+    def test_every_artifact_requires_calibration_manifest(self) -> None:
+        directory, _metadata, _records, _metadata_bytes = self.write_stage(
+            "calibration-required"
+        )
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "calibration manifest is required"
+        ):
+            provenance.validate_publication([directory], ARTIFACT_DIGEST, 8955436)
+
+    def test_calibration_lineage_files_and_settings_fail_closed(self) -> None:
+        tampered, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-tampered-artifact"
+        )
+        manifest_path, manifest, assets = self.write_calibration_manifest(
+            tampered, metadata_bytes
+        )
+        assets["artifact"].write_bytes(b"GGUF-other")
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "sha256 does not match"
+        ):
+            provenance.validate_publication(
+                [tampered],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        unsafe, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-unsafe-path"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            unsafe, metadata_bytes
+        )
+        manifest["calibration"]["corpus"]["path"] = "../calibration.txt"
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "normalized relative path"
+        ):
+            provenance.validate_publication(
+                [unsafe],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        wrong_conversion, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-wrong-conversion-input"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            wrong_conversion, metadata_bytes
+        )
+        manifest["conversion"]["arguments"][0] = manifest["calibration"]["corpus"][
+            "path"
+        ]
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "conversion ordered arguments"
+        ):
+            provenance.validate_publication(
+                [wrong_conversion],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        wrong_imatrix, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-wrong-imatrix-model"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            wrong_imatrix, metadata_bytes
+        )
+        manifest["calibration"]["arguments"][2] = manifest["calibration"]["corpus"][
+            "path"
+        ]
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "imatrix ordered arguments"
+        ):
+            provenance.validate_publication(
+                [wrong_imatrix],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        wrong_settings, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-wrong-settings"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            wrong_settings, metadata_bytes
+        )
+        manifest["calibration"]["settings"]["process_output"] = True
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "settings are not allowlisted"
+        ):
+            provenance.validate_publication(
+                [wrong_settings],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        wrong_arguments, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-wrong-arguments"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            wrong_arguments, metadata_bytes
+        )
+        manifest["quantization"]["arguments"][3] = (
+            r"^blk\.[0-9]+\.attn_v\.weight$=Q5_K"
+        )
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "ordered arguments"
+        ):
+            provenance.validate_publication(
+                [wrong_arguments],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        bad_sidecar, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-bad-sidecar"
+        )
+        manifest_path, manifest, assets = self.write_calibration_manifest(
+            bad_sidecar, metadata_bytes
+        )
+        sidecar = json.loads(assets["metadata"].read_text(encoding="utf-8"))
+        sidecar["output"]["sha256"] = "sha256:" + "0" * 64
+        sidecar_bytes = encoded_json(sidecar)
+        assets["metadata"].write_bytes(sidecar_bytes)
+        manifest["calibration"]["metadata"].update(
+            {"bytes": len(sidecar_bytes), "sha256": digest(sidecar_bytes)}
+        )
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "output does not match"
+        ):
+            provenance.validate_publication(
+                [bad_sidecar],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
+        incomplete, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibration-incomplete-source"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            incomplete, metadata_bytes
+        )
+        manifest["source_model"]["files"].pop()
+        manifest_path.write_bytes(encoded_json(manifest))
+        with self.assertRaisesRegex(
+            provenance.ProvenanceValidationError, "exact directory inventory"
+        ):
+            provenance.validate_publication(
+                [incomplete],
+                manifest["artifact_tree_digest"],
+                8955436,
+                calibration_manifest=manifest_path,
+            )
+
     def test_malformed_metrics_are_rejected(self) -> None:
         cases: list[tuple[str, str, str]] = []
 
@@ -608,14 +1219,21 @@ class PublishProvenanceTests(unittest.TestCase):
         self.assert_invalid([irregular], "not a regular file")
 
     def test_real_client_path_requires_credentials_only_after_validation(self) -> None:
-        directory, _metadata, _metrics, _bytes = self.write_stage("credential-check")
+        directory, _metadata, _metrics, metadata_bytes = self.write_stage(
+            "credential-check"
+        )
+        calibration_path, calibration, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
         arguments = [
             "--training-dir",
             str(directory),
             "--artifact-digest",
-            ARTIFACT_DIGEST,
+            calibration["artifact_tree_digest"],
             "--finished-block",
             "1",
+            "--calibration-manifest",
+            str(calibration_path),
         ]
         with (
             mock.patch.dict(provenance.os.environ, {}, clear=True),
