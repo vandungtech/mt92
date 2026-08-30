@@ -1,0 +1,60 @@
+{
+  "active_artifact_unchanged": {
+    "artifact_tree_digest": "sha256:3c9a5b064e2641570989cb605f605aaa8db7b5cfbaa73f36bbb0d2ff25fb5d66",
+    "file_sha256": "sha256:903b76dfae36ecb650808e282800333e96da8a606f96355cc735455bf8651ddd",
+    "path": "runtime/artifact/model.gguf"
+  },
+  "candidate": {
+    "boundary_manifest": {
+      "path": "runtime/training/experiments/soup-r64-equal3-boundary-e1/boundary_contrastive_manifest.json",
+      "sha256": "sha256:c30d94e309cbe17a71a60839468cec42406ba6886a79cfb5fbce2fa9bf6f2bd5"
+    },
+    "merged_weights": {
+      "path": "runtime/training/experiments/soup-r64-equal3-boundary-e1/merged/model.safetensors",
+      "sha256": "sha256:dd21cf5f1f2643068149d4de5977a6e806c9a0d1914a52474070b1847c209123"
+    },
+    "training_metadata": {
+      "path": "runtime/training/experiments/soup-r64-equal3-boundary-e1/training_metadata.json",
+      "sha256": "sha256:552558762c3b252934e7ea6fd16e3ad0dc097d52075b50944d5f37b9dc42e7a5"
+    }
+  },
+  "decision": {
+    "outcome": "rejected",
+    "reason": "candidate BF16 entity_micro_f1 is below the predeclared minimum",
+    "retry_allowed": false
+  },
+  "declaration": {
+    "commit": "60c4e039c4b5b3e8f69e7dc6fff306c2b99da747",
+    "path": "training/experiment_specs/soup-r64-equal3-boundary-e1.json",
+    "sha256": "sha256:50ebc8e79fa3e46439a1c970dbf230a757e86f5c77255ed4dd054f0da18454a0"
+  },
+  "evaluated_gate": {
+    "baseline_entity_micro_f1": 0.9948792977322605,
+    "candidate": {
+      "entity_micro_f1": 0.9838945827232797,
+      "false_negative": 11,
+      "false_positive": 11,
+      "jsonl": {
+        "path": "runtime/training/experiments/soup-r64-equal3-boundary-e1/inner-boundary-v1-bf16-384.jsonl",
+        "sha256": "sha256:193d05cd073a3d8af7f46210c1e04b786ae12e026beb979d059ab8354a2b1626"
+      },
+      "malformed_outputs": 0,
+      "summary": {
+        "path": "runtime/training/experiments/soup-r64-equal3-boundary-e1/inner-boundary-v1-bf16-384.summary.json",
+        "sha256": "sha256:5f45b0472586d87b09965d85a3b5ae78f20ebcbaae01944117dd8df9c607c5f8"
+      },
+      "true_positive": 672
+    },
+    "entity_micro_f1_minimum": 0.9978792977322605,
+    "gate": "bf16",
+    "passed": false
+  },
+  "schema": "microtensor.experiment-decision.v1",
+  "skipped_after_rejection": {
+    "historical_outer_audit": true,
+    "q4_conversion": true,
+    "q4_evaluation": true,
+    "selfcheck": true,
+    "promotion": true
+  }
+}
