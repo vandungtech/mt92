@@ -1,0 +1,164 @@
+{
+  "baseline": {
+    "bf16": {
+      "entity_micro_f1": 0.9948792977322605,
+      "false_negative": 3,
+      "false_positive": 4,
+      "jsonl": {
+        "path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-bf16-384.jsonl",
+        "sha256": "sha256:9f4dbaf17928b5a7328ff230605147eb0353ae92d127c9b9228b8d8ff06a67fe"
+      },
+      "malformed_outputs": 0,
+      "summary": {
+        "path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-bf16-384.summary.json",
+        "sha256": "sha256:96787275a3632f00290e46b0427b7642940388a03998d6d44f06ebe3ba608203"
+      },
+      "true_positive": 680
+    },
+    "error_taxonomy": {
+      "out_of_input_hallucinations": 0,
+      "pure_omissions": 1,
+      "strict_boundary_pairs": {
+        "contraction": 1,
+        "expansion": 1,
+        "total": 2
+      },
+      "unpaired_input_supported_false_positives": 2
+    },
+    "q4": {
+      "jsonl_path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-q4-imatrix-384.jsonl",
+      "status_at_declaration": "running; result not observed",
+      "summary_path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-q4-imatrix-384.summary.json"
+    }
+  },
+  "candidate": {
+    "id": "soup-r64-equal3-boundary-e1",
+    "output_directory": "runtime/training/experiments/soup-r64-equal3-boundary-e1",
+    "single_candidate_only": true
+  },
+  "command": {
+    "arguments": [
+      "--corpus",
+      "runtime/training/corpus/extract-fb5f1332493b1abe.json",
+      "--base",
+      "runtime/training/soups/r64-seed92-equal3",
+      "--out",
+      "runtime/training/experiments/soup-r64-equal3-boundary-e1",
+      "--seed",
+      "92",
+      "--epochs",
+      "1",
+      "--batch-size",
+      "8",
+      "--gradient-accumulation",
+      "4",
+      "--learning-rate",
+      "0.00005",
+      "--weight-decay",
+      "0.01",
+      "--warmup-ratio",
+      "0.05",
+      "--max-length",
+      "512",
+      "--training-method",
+      "lora",
+      "--lora-rank",
+      "64",
+      "--lora-alpha",
+      "128",
+      "--lora-dropout",
+      "0.05",
+      "--disease-row-weight",
+      "1.0",
+      "--validation-examples",
+      "384",
+      "--gold-canonicalization",
+      "none",
+      "--entity-text-token-weight",
+      "1.0",
+      "--entity-substitution-examples",
+      "0",
+      "--boundary-contrastive",
+      "--boundary-contrastive-examples",
+      "512",
+      "--boundary-contrastive-lambda",
+      "0.1",
+      "--boundary-contrastive-margin",
+      "0.0"
+    ],
+    "program": "training/train_extract.py",
+    "python_environment": "/tmp/mt-train-venv"
+  },
+  "code": {
+    "commit": "58af6be19a7a7e3e9f18b69f275bfe384ba63239",
+    "dirty_worktree_allowed": false
+  },
+  "evaluation": {
+    "corpus_file_digest": "sha256:fb5f1332493b1abe759da91cec1bd2cdd932c7076c5fae8163b5f33cfbea05a2",
+    "inner_validation_refs_digest": "sha256:3ae12b94d723c4ea627fa391500b64d0516eea800c86a7b1635217082c9f7a3c",
+    "ordered_inner_validation_refs_digest": "sha256:12817194c09aaf96e1f4d67c5193863c4c20bbfcf5a5f4e5576edb22c752035c",
+    "selection": "boundary-inner-v1"
+  },
+  "promotion_gates": {
+    "bf16": {
+      "entity_micro_f1_minimum": 0.9978792977322605,
+      "malformed_outputs_maximum": 0,
+      "out_of_input_hallucinations_maximum": 0,
+      "pure_omissions_maximum": 1,
+      "strict_boundary_contraction_pairs_maximum": 1,
+      "strict_boundary_expansion_pairs_maximum": 1,
+      "strict_boundary_pairs_maximum": 1,
+      "unpaired_input_supported_false_positives_maximum": 2
+    },
+    "q4": {
+      "entity_micro_f1_improvement_over_declared_running_baseline_minimum": 0.003,
+      "malformed_outputs_maximum": 0
+    },
+    "selfcheck": {
+      "cost_maximum": 3550,
+      "must_remain_eligible": true
+    }
+  },
+  "provenance": {
+    "base": {
+      "directory": "runtime/training/soups/r64-seed92-equal3",
+      "index_digest": "sha256:a9291111e64caafb4bb8b4703e0b90ab00999dc9474276da6b4d94efac5edda5",
+      "kind": "deterministic_weight_soup",
+      "output_manifest_digest": "sha256:4dd85b2ff353591eb26abdd26df073813ec550d5ceecba48fbf02244a25e4db7",
+      "soup_metadata_digest": "sha256:4237e19e8997edb4a9895461f758974d9a05270d38328983acb3d0eb72cff1c4",
+      "tokenizer_digest": "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    "boundary_manifest_required": true,
+    "public_corpus_path": "runtime/training/corpus/extract-fb5f1332493b1abe.json"
+  },
+  "recipe": {
+    "batch_size": 8,
+    "boundary_contrastive": true,
+    "boundary_contrastive_examples": 512,
+    "boundary_contrastive_lambda": 0.1,
+    "boundary_contrastive_margin": 0.0,
+    "disease_row_weight": 1.0,
+    "entity_substitution_examples": 0,
+    "entity_text_token_weight": 1.0,
+    "epochs": 1,
+    "gold_canonicalization": "none",
+    "gradient_accumulation": 4,
+    "learning_rate": 0.00005,
+    "lora_alpha": 128,
+    "lora_dropout": 0.05,
+    "lora_rank": 64,
+    "max_length": 512,
+    "seed": 92,
+    "training_method": "lora",
+    "validation_examples": 384,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01
+  },
+  "schema": "microtensor.experiment-declaration.v1",
+  "selection_policy": {
+    "candidate_may_replace_active_only_if_every_gate_passes": true,
+    "historical_outer_reserve": "audit only after candidate freeze; never a tuning or promotion gate",
+    "no_hyperparameter_retry_if_rejected": true,
+    "official_rank_must_be_verified_from_public_leaderboard": true
+  }
+}
