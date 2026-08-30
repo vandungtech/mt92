@@ -26,9 +26,16 @@ python training/evaluate_extract.py \
   --output runtime/training/qwen3-0.6b-extract/heldout.jsonl
 ```
 
-The script reserves the same deterministic 384 examples for an honest
-pre-quantization benchmark. It writes a LoRA adapter, merged model, metadata,
-and an append-only metric trail.
+The default recipe reserves the same deterministic 384 examples before constructing the
+training loader. Controlled public-only experiments may select `--training-method full`,
+set `--lora-dropout`, or use `--disease-row-weight` at or above 1.0. Disease weighting
+deterministically appends only extra copies of disease-containing public training rows
+after the reserve is split, and records both source and added row counts in metadata.
+
+Every run writes a merged model, complete settings and input identities, and an
+append-only metric trail; LoRA runs also write an adapter. The reserve is never optimized
+by that run. After multiple hyperparameters are compared against the same reserve, its
+scores are selection evidence rather than an unbiased hidden-performance estimate.
 
 Convert with the pinned checkout:
 

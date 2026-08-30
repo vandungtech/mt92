@@ -36,6 +36,7 @@ BASE_TOKENIZER_DIGEST = "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed
 
 @dataclass(frozen=True)
 class Settings:
+    training_method: str
     seed: int
     epochs: int
     batch_size: int
@@ -46,6 +47,8 @@ class Settings:
     max_length: int
     lora_rank: int
     lora_alpha: int
+    lora_dropout: float
+    disease_row_weight: float
     validation_examples: int
 
 
@@ -117,10 +120,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", type=float, default=0.05)
     parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--training-method", choices=("lora", "full"), default="lora")
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument("--disease-row-weight", type=float, default=1.0)
     parser.add_argument("--validation-examples", type=int, default=384)
     return parser.parse_args()
+
+
+def row_has_disease(row: dict[str, Any]) -> bool:
+    raw = row.get("gold")
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid gold JSON for {row.get('ref', '<unknown>')}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("entities"), list):
+        raise ValueError(f"invalid gold entities for {row.get('ref', '<unknown>')}")
+    return any(
+        isinstance(entity, dict) and str(entity.get("type", "")).casefold() == "disease"
+        for entity in payload["entities"]
+    )
+
+
+def oversample_disease_rows(
+    rows: list[dict[str, Any]], weight: float, seed: int
+) -> tuple[list[dict[str, Any]], int, int]:
+    if not math.isfinite(weight) or weight < 1.0:
+        raise ValueError("disease row weight must be finite and at least 1.0")
+    disease_rows = [row for row in rows if row_has_disease(row)]
+    extra_count = round((weight - 1.0) * len(disease_rows))
+    if extra_count == 0:
+        return list(rows), len(disease_rows), 0
+    repeats, remainder = divmod(extra_count, len(disease_rows))
+    extras = disease_rows * repeats
+    if remainder:
+        extras.extend(random.Random(seed ^ 0xD15EA5E).sample(disease_rows, remainder))
+    return [*rows, *extras], len(disease_rows), len(extras)
 
 
 def sha256(path: Path) -> str:
@@ -201,6 +237,7 @@ def main() -> int:
         raise SystemExit("CUDA is required for this training recipe")
 
     settings = Settings(
+        training_method=args.training_method,
         seed=args.seed,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -211,8 +248,12 @@ def main() -> int:
         max_length=args.max_length,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        disease_row_weight=args.disease_row_weight,
         validation_examples=args.validation_examples,
     )
+    if not 0.0 <= settings.lora_dropout < 1.0:
+        raise SystemExit("--lora-dropout must be in [0, 1)")
     random.seed(settings.seed)
     torch.manual_seed(settings.seed)
     torch.cuda.manual_seed_all(settings.seed)
@@ -227,7 +268,10 @@ def main() -> int:
     rows = load_rows(args.corpus)
     random.Random(settings.seed).shuffle(rows)
     validation_rows = rows[: settings.validation_examples]
-    train_rows = rows[settings.validation_examples :]
+    source_train_rows = rows[settings.validation_examples :]
+    train_rows, disease_source_examples, disease_extra_examples = oversample_disease_rows(
+        source_train_rows, settings.disease_row_weight, settings.seed
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(args.base, local_files_only=True)
     if tokenizer.pad_token_id is None:
@@ -265,25 +309,26 @@ def main() -> int:
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
-    model = get_peft_model(
-        model,
-        LoraConfig(
-            r=settings.lora_rank,
-            lora_alpha=settings.lora_alpha,
-            lora_dropout=0.05,
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules=[
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
-        ),
-    )
+    if settings.training_method == "lora":
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r=settings.lora_rank,
+                lora_alpha=settings.lora_alpha,
+                lora_dropout=settings.lora_dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+                target_modules=[
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ],
+            ),
+        )
     device = torch.device("cuda:0")
     model.to(device)
 
@@ -309,6 +354,9 @@ def main() -> int:
         "corpus_file_digest": sha256(args.corpus),
         "settings": asdict(settings),
         "training_examples": len(train_data),
+        "source_training_examples": len(source_train_rows),
+        "disease_source_examples": disease_source_examples,
+        "disease_extra_examples": disease_extra_examples,
         "validation_examples": len(validation_data),
         "skipped_training_examples": train_data.skipped,
         "skipped_validation_examples": validation_data.skipped,
@@ -320,7 +368,13 @@ def main() -> int:
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(json.dumps(metadata, indent=2, sort_keys=True), flush=True)
-    model.print_trainable_parameters()
+    trainable_count = sum(parameter.numel() for parameter in trainable)
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    print(
+        f"trainable params: {trainable_count:,} || all params: {parameter_count:,} || "
+        f"trainable%: {100.0 * trainable_count / parameter_count:.4f}",
+        flush=True,
+    )
 
     optimizer.zero_grad(set_to_none=True)
     update = 0
@@ -367,11 +421,12 @@ def main() -> int:
         }
         append_metric(metrics_path, metric)
         print(json.dumps(metric, sort_keys=True), flush=True)
-        model.save_pretrained(adapter_dir, safe_serialization=True)
-        tokenizer.save_pretrained(adapter_dir)
+        if settings.training_method == "lora":
+            model.save_pretrained(adapter_dir, safe_serialization=True)
+            tokenizer.save_pretrained(adapter_dir)
 
     model.config.use_cache = True
-    merged = model.merge_and_unload()
+    merged = model.merge_and_unload() if settings.training_method == "lora" else model
     merged.save_pretrained(merged_dir, safe_serialization=True, max_shard_size="2GB")
     tokenizer.save_pretrained(merged_dir)
     metadata["finished_at_unix"] = int(time.time())
