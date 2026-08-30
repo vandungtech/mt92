@@ -38,7 +38,12 @@ else:  # pragma: no cover - covered by the direct-script help smoke test
 
 STANDARD_Q4_PROFILE = "q4_k_m"
 ATTN_V_Q6_PROFILE = "q4_k_m_attn_v_q6"
-QUANTIZATION_PROFILES = (STANDARD_Q4_PROFILE, ATTN_V_Q6_PROFILE)
+STANDARD_Q5_PROFILE = provenance.STANDARD_Q5_PROFILE
+QUANTIZATION_PROFILES = (
+    STANDARD_Q4_PROFILE,
+    ATTN_V_Q6_PROFILE,
+    STANDARD_Q5_PROFILE,
+)
 ATTESTATION_SEMANTICS = (
     "caller_attests_canonical_recipe_and_clean_pinned_checkout;"
     "not_a_historical_execution_receipt"
@@ -435,8 +440,13 @@ def _prepare(request: ManifestRequest) -> _PreparedManifest:
         quantization_arguments.extend(
             ("--tensor-type", provenance.ATTN_V_Q6_OVERRIDE)
         )
+    quantization_type = (
+        "Q5_K_M"
+        if request.quantization_profile == STANDARD_Q5_PROFILE
+        else "Q4_K_M"
+    )
     quantization_arguments.extend(
-        (converted_relative, artifact_relative, "Q4_K_M")
+        (converted_relative, artifact_relative, quantization_type)
     )
     try:
         artifact_tree_digest = provenance._artifact_tree_digest(
@@ -514,6 +524,8 @@ def _prepare(request: ManifestRequest) -> _PreparedManifest:
             ),
         },
     }
+    if request.quantization_profile == STANDARD_Q5_PROFILE:
+        manifest["quantization"]["profile"] = STANDARD_Q5_PROFILE
     payload = _json_bytes(manifest)
     if len(payload) > provenance.MAX_METADATA_BYTES:
         raise ManifestBuildError("generated calibration manifest is too large")

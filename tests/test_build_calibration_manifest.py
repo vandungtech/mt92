@@ -146,6 +146,10 @@ class BuildCalibrationManifestTests(unittest.TestCase):
         self.assertEqual(built.manifest, manifest)
         self.assertEqual(built.manifest_digest, digest(payload))
         self.assertEqual(
+            built.manifest_digest,
+            "sha256:bf747145d04ac541969d6fecc0b2ec29dfee91e91aad1f392017761c69b29503",
+        )
+        self.assertEqual(
             built.artifact_tree_digest,
             builder.provenance._artifact_tree_digest(self.artifact_dir),
         )
@@ -213,6 +217,10 @@ class BuildCalibrationManifestTests(unittest.TestCase):
                 "Q4_K_M",
             ],
         )
+        self.assertEqual(
+            frozenset(manifest["quantization"]),
+            frozenset({"tool", "arguments", "output"}),
+        )
         names = [entry["path"] for entry in manifest["source_model"]["files"]]
         self.assertEqual(names, sorted(path.name for path in self.source.iterdir()))
         self.assertEqual(
@@ -242,6 +250,40 @@ class BuildCalibrationManifestTests(unittest.TestCase):
                 "evidence/model-f16.gguf",
                 "candidate/model.gguf",
                 "Q4_K_M",
+            ],
+        )
+        self.assertEqual(
+            frozenset(built.manifest["quantization"]),
+            frozenset({"tool", "arguments", "output"}),
+        )
+        self.assertEqual(
+            built.manifest_digest,
+            "sha256:48270b0c76d6dc4c9c4308c71d4fc94836d22e4fe2be0c51c722e43007369060",
+        )
+
+    def test_standard_q5_profile_has_only_the_exact_profile_and_arguments(self) -> None:
+        output = self.root / "q5.json"
+        request = dataclasses.replace(
+            self.request,
+            output=output,
+            quantization_profile=builder.STANDARD_Q5_PROFILE,
+        )
+
+        built = self.build(request)
+        quantization = built.manifest["quantization"]
+        self.assertEqual(
+            frozenset(quantization),
+            frozenset({"tool", "arguments", "output", "profile"}),
+        )
+        self.assertEqual(quantization["profile"], builder.STANDARD_Q5_PROFILE)
+        self.assertEqual(
+            quantization["arguments"],
+            [
+                "--imatrix",
+                "evidence/model.imatrix.gguf",
+                "evidence/model-f16.gguf",
+                "candidate/model.gguf",
+                "Q5_K_M",
             ],
         )
 
@@ -297,15 +339,19 @@ class BuildCalibrationManifestTests(unittest.TestCase):
                 self.assertFalse(output.exists())
 
     def test_rejects_unallowlisted_profile_and_non_gguf_evidence(self) -> None:
-        profile_output = self.root / "bad-profile.json"
-        profile_request = dataclasses.replace(
-            self.request,
-            output=profile_output,
-            quantization_profile="q5_k_m",
-        )
-        with self.assertRaisesRegex(builder.ManifestBuildError, "profile must be"):
-            builder.build_calibration_manifest(profile_request)
-        self.assertFalse(profile_output.exists())
+        for index, profile in enumerate(("q5_k_m", "standard_Q5_K_M")):
+            profile_output = self.root / f"bad-profile-{index}.json"
+            profile_request = dataclasses.replace(
+                self.request,
+                output=profile_output,
+                quantization_profile=profile,
+            )
+            with (
+                self.subTest(profile=profile),
+                self.assertRaisesRegex(builder.ManifestBuildError, "profile must be"),
+            ):
+                builder.build_calibration_manifest(profile_request)
+            self.assertFalse(profile_output.exists())
 
         (self.root / self.request.converted_model).write_bytes(b"not-gguf")
         gguf_output = self.root / "bad-gguf.json"

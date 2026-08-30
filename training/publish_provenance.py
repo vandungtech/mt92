@@ -77,6 +77,7 @@ CALIBRATION_LINEAGE_SCHEMA = "microtensor.gguf-imatrix-lineage.v1"
 IMATRIX_CORPUS_SCHEMA = "microtensor.imatrix-corpus.v1"
 LLAMA_CPP_REVISION = "c589f0ed10c643678c4707dd160c21ac7633ebc0"
 ATTN_V_Q6_OVERRIDE = r"^blk\.[0-9]+\.attn_v\.weight$=Q6_K"
+STANDARD_Q5_PROFILE = "standard_q5_k_m"
 WEIGHT_SOUP_SCHEMA = "microtensor.extract-weight-soup.v1"
 WEIGHT_SOUP_METADATA_FILENAME = "soup_metadata.json"
 _WEIGHT_SOUP_INPUT_FIELDS = frozenset(
@@ -1806,9 +1807,16 @@ def _validate_calibration_lineage(
     )
     _require_gguf(imatrix_path, "calibration imatrix")
 
+    legacy_quantization_fields = frozenset({"tool", "arguments", "output"})
+    q5_quantization_fields = legacy_quantization_fields | frozenset({"profile"})
+    quantization_value = manifest["quantization"]
+    is_q5_profile = (
+        isinstance(quantization_value, dict)
+        and frozenset(quantization_value) == q5_quantization_fields
+    )
     quantization = _require_exact_fields(
-        manifest["quantization"],
-        frozenset({"tool", "arguments", "output"}),
+        quantization_value,
+        q5_quantization_fields if is_q5_profile else legacy_quantization_fields,
         "calibration quantization",
     )
     output_path, output_identity = _validate_file_claim(
@@ -1827,10 +1835,19 @@ def _validate_calibration_lineage(
         ATTN_V_Q6_OVERRIDE,
         *base_arguments[2:],
     ]
-    if (
-        quantization["tool"] != "llama-quantize"
-        or quantization["arguments"] not in (base_arguments, override_arguments)
-    ):
+    q5_arguments = [*base_arguments[:-1], "Q5_K_M"]
+    if is_q5_profile:
+        quantization_is_allowlisted = (
+            quantization["tool"] == "llama-quantize"
+            and quantization["profile"] == STANDARD_Q5_PROFILE
+            and quantization["arguments"] == q5_arguments
+        )
+    else:
+        quantization_is_allowlisted = (
+            quantization["tool"] == "llama-quantize"
+            and quantization["arguments"] in (base_arguments, override_arguments)
+        )
+    if not quantization_is_allowlisted:
         raise ProvenanceValidationError(
             "calibration quantization ordered arguments are not allowlisted"
         )

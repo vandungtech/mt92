@@ -525,6 +525,18 @@ class PublishProvenanceTests(unittest.TestCase):
             "imatrix": imatrix_path,
         }
 
+    @staticmethod
+    def use_standard_q5_quantization(manifest: dict[str, Any]) -> None:
+        quantization = manifest["quantization"]
+        quantization["profile"] = provenance.STANDARD_Q5_PROFILE
+        quantization["arguments"] = [
+            "--imatrix",
+            manifest["calibration"]["imatrix"]["path"],
+            manifest["conversion"]["output"]["path"],
+            quantization["output"]["path"],
+            "Q5_K_M",
+        ]
+
     def invoke_main(
         self,
         directories: list[Path],
@@ -1348,6 +1360,113 @@ class PublishProvenanceTests(unittest.TestCase):
             calibration_manifest=manifest_path,
         )
         self.assertIsNotNone(publication.calibration)
+
+    def test_q5_calibration_lineage_is_published_with_exact_manifest_digest(self) -> None:
+        directory, _metadata, _records, metadata_bytes = self.write_stage(
+            "calibrated-q5"
+        )
+        manifest_path, manifest, _assets = self.write_calibration_manifest(
+            directory, metadata_bytes
+        )
+        self.use_standard_q5_quantization(manifest)
+        manifest_path.write_bytes(encoded_json(manifest))
+
+        fake = FakeWandb()
+        self.assertEqual(
+            self.invoke_main(
+                [directory],
+                fake,
+                calibration_manifest=manifest_path,
+                artifact_digest=manifest["artifact_tree_digest"],
+            ),
+            0,
+        )
+        self.assertEqual(
+            fake.init_calls[0]["config"]["mt_calibration_lineage"],
+            {
+                "manifest": manifest,
+                "manifest_digest": digest(encoded_json(manifest)),
+            },
+        )
+        self.assertEqual(
+            fake.run.summary["mt_calibration_manifest_digest"],
+            digest(encoded_json(manifest)),
+        )
+
+    def test_q5_calibration_lineage_rejects_every_profile_argument_near_miss(self) -> None:
+        def wrong_profile(quantization: dict[str, Any]) -> None:
+            quantization["profile"] = "q4_k_m"
+
+        def wrong_profile_case(quantization: dict[str, Any]) -> None:
+            quantization["profile"] = "standard_Q5_K_M"
+
+        def wrong_profile_field_case(quantization: dict[str, Any]) -> None:
+            quantization["Profile"] = quantization.pop("profile")
+
+        def wrong_quantization_case(quantization: dict[str, Any]) -> None:
+            quantization["arguments"][-1] = "q5_k_m"
+
+        def unallowlisted_quantization(quantization: dict[str, Any]) -> None:
+            quantization["arguments"][-1] = "Q5_K_S"
+
+        def missing_profile(quantization: dict[str, Any]) -> None:
+            del quantization["profile"]
+
+        def q4_argument(quantization: dict[str, Any]) -> None:
+            quantization["arguments"][-1] = "Q4_K_M"
+
+        def tensor_override(quantization: dict[str, Any]) -> None:
+            quantization["arguments"][2:2] = [
+                "--tensor-type",
+                provenance.ATTN_V_Q6_OVERRIDE,
+            ]
+
+        def wrong_output(quantization: dict[str, Any]) -> None:
+            quantization["arguments"][3] = quantization["arguments"][2]
+
+        cases = (
+            ("profile-swap", wrong_profile, "ordered arguments"),
+            ("profile-case", wrong_profile_case, "ordered arguments"),
+            (
+                "profile-field-case",
+                wrong_profile_field_case,
+                "must contain exactly",
+            ),
+            ("quantization-case", wrong_quantization_case, "ordered arguments"),
+            (
+                "unallowlisted-quantization",
+                unallowlisted_quantization,
+                "ordered arguments",
+            ),
+            ("missing-profile", missing_profile, "ordered arguments"),
+            ("q4-argument", q4_argument, "ordered arguments"),
+            ("tensor-override", tensor_override, "ordered arguments"),
+            ("output-path", wrong_output, "ordered arguments"),
+        )
+        for index, (label, mutate, error) in enumerate(cases):
+            directory, _metadata, _records, metadata_bytes = self.write_stage(
+                f"calibrated-q5-near-miss-{index}"
+            )
+            manifest_path, manifest, _assets = self.write_calibration_manifest(
+                directory, metadata_bytes
+            )
+            self.use_standard_q5_quantization(manifest)
+            mutate(manifest["quantization"])
+            manifest_path.write_bytes(encoded_json(manifest))
+
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(
+                    provenance.ProvenanceValidationError,
+                    error,
+                ),
+            ):
+                provenance.validate_publication(
+                    [directory],
+                    manifest["artifact_tree_digest"],
+                    8955436,
+                    calibration_manifest=manifest_path,
+                )
 
     def test_every_artifact_requires_calibration_manifest(self) -> None:
         directory, _metadata, _records, _metadata_bytes = self.write_stage(
