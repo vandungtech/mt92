@@ -1,0 +1,53 @@
+{
+  "active_artifact_unchanged": {
+    "artifact_tree_digest": "sha256:3c9a5b064e2641570989cb605f605aaa8db7b5cfbaa73f36bbb0d2ff25fb5d66",
+    "bytes": 396704736,
+    "file_sha256": "sha256:903b76dfae36ecb650808e282800333e96da8a606f96355cc735455bf8651ddd",
+    "inode": 5761552,
+    "path": "runtime/artifact/model.gguf"
+  },
+  "candidate": {
+    "artifact": {
+      "bytes": 444414944,
+      "file_sha256": "sha256:50403ead1879a3bc8cb126e2cdeadca1231ca8b17e0cd050710e2ef4530f006d",
+      "path": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact/model.gguf",
+      "tree_digest": "sha256:47e88c6138ee7d0f5d9c9eaa765c5be239b3071468b9ff6302a964c2b9f68925"
+    },
+    "artifact_completion_record": {
+      "chain_block": 8958050,
+      "path": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/artifact-completion.json",
+      "sha256": "sha256:728838ce02e0cf5a074ed0b12e844fe8060aa0924324332adc1042dc2420b8d8"
+    },
+    "quantization": "Q5_K_M",
+    "quantizer_attempts_started": 1,
+    "quantizer_exit_code": 0
+  },
+  "decision": {
+    "decided_at_utc": "2026-08-30T12:38:29Z",
+    "outcome": "rejected",
+    "reason": "the predeclared no-clobber calibration manifest build failed because deterministic weight-soup validation dependencies were unavailable",
+    "retry_allowed": false
+  },
+  "declaration": {
+    "commit": "b22bfeace37441edb6b8c08e19d9ddea6ad360ef",
+    "path": "training/experiment_specs/soup-r64-equal3-full-e1-q5-imatrix.json",
+    "sha256": "sha256:654ac1826c21f6592b1ef7d8fe55dae8d945034e9906331d371777de73bdf0ca"
+  },
+  "evaluated_gate": {
+    "error": "generated manifest failed publication validation: deterministic weight-soup validation dependencies are unavailable",
+    "exit_code": 1,
+    "gate": "calibration_manifest",
+    "output_path": "calibration-lineage.soup-r64-equal3-full-e1-q5.json",
+    "output_path_absent_after_failure": true,
+    "passed": false,
+    "temporary_files_absent_after_failure": true
+  },
+  "schema": "microtensor.experiment-decision.v1",
+  "skipped_after_rejection": {
+    "boundary_inner_evaluation": true,
+    "historical_outer_audit": true,
+    "promotion": true,
+    "selfcheck": true,
+    "submission": true
+  }
+}
