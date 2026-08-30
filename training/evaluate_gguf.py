@@ -46,6 +46,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def entity_confusion_counts(
+    predictions: list[set[tuple[str, str]] | None],
+    golds: list[set[tuple[str, str]]],
+) -> tuple[int, int, int]:
+    """Return the exact set-based TP, FP, and FN used by entity micro-F1."""
+    if len(predictions) != len(golds):
+        raise ValueError("predictions and golds must align by document index")
+
+    true_positive = false_positive = false_negative = 0
+    for prediction, gold in zip(predictions, golds, strict=True):
+        found = prediction or set()
+        true_positive += len(found & gold)
+        false_positive += len(found - gold)
+        false_negative += len(gold - found)
+    return true_positive, false_positive, false_negative
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -124,14 +141,20 @@ def main() -> int:
 
     ordered_latency = sorted(latency_ms)
     p95_index = max(0, min(len(ordered_latency) - 1, int(len(ordered_latency) * 0.95)))
+    true_positive, false_positive, false_negative = entity_confusion_counts(
+        predictions, golds
+    )
     summary = {
         "examples": len(rows),
         "entity_micro_f1": micro_f1(predictions, golds),
+        "false_negative": false_negative,
+        "false_positive": false_positive,
         "malformed_outputs": malformed,
         "mean_latency_ms": sum(latency_ms) / max(1, len(latency_ms)),
         "p95_latency_ms": ordered_latency[p95_index] if ordered_latency else 0.0,
         "elapsed_s": round(time.monotonic() - started, 3),
         "selection": selected.manifest,
+        "true_positive": true_positive,
     }
     summary_path = args.output.with_suffix(".summary.json")
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
