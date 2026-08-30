@@ -1,0 +1,501 @@
+{
+  "baseline": {
+    "active_artifact": {
+      "artifact_tree_digest": "sha256:3c9a5b064e2641570989cb605f605aaa8db7b5cfbaa73f36bbb0d2ff25fb5d66",
+      "bytes": 396704736,
+      "file_sha256": "sha256:903b76dfae36ecb650808e282800333e96da8a606f96355cc735455bf8651ddd",
+      "path": "runtime/artifact/model.gguf",
+      "quantization": "Q4_K_M"
+    },
+    "boundary_inner_bf16": {
+      "entity_micro_f1": 0.9948792977322605,
+      "false_negative": 3,
+      "false_positive": 4,
+      "jsonl_path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-bf16-384.jsonl",
+      "jsonl_sha256": "sha256:9f4dbaf17928b5a7328ff230605147eb0353ae92d127c9b9228b8d8ff06a67fe",
+      "malformed_outputs": 0,
+      "pinned_micro_f1_replay": 0.9948792977322602,
+      "summary_path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-bf16-384.summary.json",
+      "summary_sha256": "sha256:96787275a3632f00290e46b0427b7642940388a03998d6d44f06ebe3ba608203",
+      "true_positive": 680
+    },
+    "boundary_inner_q4": {
+      "entity_micro_f1": 0.9919649379108838,
+      "false_negative": 4,
+      "false_positive": 7,
+      "jsonl_path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-q4-imatrix-384.jsonl",
+      "jsonl_sha256": "sha256:e0be0d214701b5b3dfc2aa0c470736fd9d652a9545275fb2bbabfc2278396974",
+      "malformed_outputs": 0,
+      "mean_latency_ms": 3455.887996319992,
+      "p95_latency_ms": 5885.121716186404,
+      "pinned_micro_f1_replay": 0.9919649379108838,
+      "summary_path": "runtime/training/experiments/soup-r64-equal3-full-e1/inner-boundary-v1-q4-imatrix-384.summary.json",
+      "summary_sha256": "sha256:b7b5a2492bb728fa53a520bab25982722b78d6ae897746e1511ff672000e70aa",
+      "true_positive": 679
+    },
+    "selfcheck_q4": {
+      "binding_path": "runtime/upstream/selfcheck.binding.json",
+      "binding_sha256": "sha256:496eb8a8c6c571e7aa66044fcee65d23138742545f020bf4d8d941042c9f990b",
+      "estimated_200_task_round_cpu_seconds": 3465,
+      "measured_ttft_p95_ms": 3715,
+      "pending_provenance_path": "runtime/pending-provenance.json",
+      "pending_provenance_sha256": "sha256:6ad8a9044fa49656cfe0184e5ac582eabb5911499d5421d9b06fcce715b6019a",
+      "proposed_peak_rss_bytes": 899759308,
+      "proposed_p95_latency_ms": 4086,
+      "proposed_size_bytes": 436375209,
+      "selfcheck_path": "runtime/upstream/selfcheck.json",
+      "selfcheck_sha256": "sha256:f6ed5aa907d0a6d899c9665aace5664e700c934284f7e5b4ea7f610eb179bc79",
+      "throughput_tokens_per_second": 18.8
+    }
+  },
+  "build": {
+    "arguments": [
+      "--imatrix",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact/model.gguf",
+      "Q5_K_M"
+    ],
+    "candidate_directory_mode": "0700",
+    "dependency_closure": [
+      {
+        "path": "/lib64/ld-linux-x86-64.so.2",
+        "sha256": "sha256:cd4df4f3c7b83673d61189bf2eaebd33ca4f2853ab9772b8a25e025ef99b1e81"
+      },
+      {
+        "path": "/tmp/llama.cpp/build/bin/libggml-base.so.0",
+        "sha256": "sha256:73106e6e34d4f6dcd9f4ffca57f132070c48e93c9dd409df2333eea1b7c4806f"
+      },
+      {
+        "path": "/tmp/llama.cpp/build/bin/libggml-cpu.so.0",
+        "sha256": "sha256:196c9f2c112e51f17b79375e80b102c72bc872b3e4fc17295ab1564533812807"
+      },
+      {
+        "path": "/tmp/llama.cpp/build/bin/libggml.so.0",
+        "sha256": "sha256:eaea0b8964d5acee7ce26bb4895137df772ad24387f45fbb51158495f596fa29"
+      },
+      {
+        "path": "/tmp/llama.cpp/build/bin/libllama-common.so.0",
+        "sha256": "sha256:ce12dd60805687b1dfbd574033d5163089979a1b2b556cb8a6c65b85af7048f5"
+      },
+      {
+        "path": "/tmp/llama.cpp/build/bin/libllama-quantize-impl.so",
+        "sha256": "sha256:d79664774038f0f42eccee8b1d5772b2bbe0f7840181401c73e30f2986113cbb"
+      },
+      {
+        "path": "/tmp/llama.cpp/build/bin/libllama.so.0",
+        "sha256": "sha256:8c809635a537f48c79bb058034ae9eb3c437693bc8b4fc13e0035c0be7bad8ed"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        "sha256": "sha256:8db37cf3f2169f59a0f07ef1fea308c35656668c64c8ff294e1860f4121eb161"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+        "sha256": "sha256:c19c2cf8d7cf91c4f273b1d3bbc56a9d19c91a739bfe57ad630756ee8ede7b77"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+        "sha256": "sha256:02f3f192bf5f79b811f1e34a650fea443d407408703448906585232383957f60"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libgomp.so.1",
+        "sha256": "sha256:16c68465193c58900805106b70b26eecd6da5da42155f237ccddb922a3280ee6"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+        "sha256": "sha256:e9c4b28d340e415b8137480ec442662f981e1399386c5931dae0e886e3639e91"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libssl.so.3",
+        "sha256": "sha256:63597a81ef19496ad0423cbaaf04d5b0244c7a9e261e331a5a7f3ac0fcdb9590"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+        "sha256": "sha256:a68762c86d371e6041f03f03a33a78fa235809ae7d81c90185940c93c3535aed"
+      }
+    ],
+    "environment": {
+      "LD_LIBRARY_PATH": "unset"
+    },
+    "failure_policy": {
+      "interrupted_nonzero_exit_partial_or_malformed_output_is_permanent_rejection": true,
+      "no_retry_after_execution_begins": true,
+      "preexisting_output_is_permanent_rejection": true,
+      "retain_rejected_evidence": true
+    },
+    "hash_output_immediately_after_success_before_any_other_candidate_action": true,
+    "llama_cpp_checkout": {
+      "commit": "c589f0ed10c643678c4707dd160c21ac7633ebc0",
+      "directory": "/tmp/llama.cpp",
+      "must_be_clean_before_and_after": true,
+      "recursive_submodules_must_match": true
+    },
+    "output_must_not_exist_before_execution": true,
+    "program": "/tmp/llama.cpp/build/bin/llama-quantize",
+    "program_sha256": "sha256:e7d4504b4db541f9a17ae920a8b505bc07159055400319ee056f4309bd800580",
+    "quantization_profile": "standard_q5_k_m",
+    "working_directory": "/workspace/microtensor-miner"
+  },
+  "candidate": {
+    "artifact_directory": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact",
+    "evidence_directory": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence",
+    "id": "soup-r64-equal3-full-e1-q5-imatrix",
+    "output": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact/model.gguf",
+    "single_candidate_only": true
+  },
+  "calibration_manifest": {
+    "arguments": [
+      "-m",
+      "training.build_calibration_manifest",
+      "--output",
+      "calibration-lineage.soup-r64-equal3-full-e1-q5.json",
+      "--training-dir",
+      "runtime/training/experiments/soup-r64-equal3-full-e1",
+      "--source-model-dir",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/merged",
+      "--converted-model",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "--corpus",
+      "runtime/training/imatrix/final-seed92-r0-n512.txt",
+      "--corpus-metadata",
+      "runtime/training/imatrix/final-seed92-r0-n512.txt.metadata.json",
+      "--imatrix",
+      "runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf",
+      "--quantized-artifact",
+      "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact/model.gguf",
+      "--quantization-profile",
+      "standard_q5_k_m",
+      "--finished-block",
+      "8956890",
+      "--llama-cpp-dir",
+      "/tmp/llama.cpp",
+      "--weight-soup-checkpoint",
+      "1",
+      "runtime/training/soups/r64-seed92-equal3"
+    ],
+    "attestation_semantics": "caller_attests_canonical_recipe_and_clean_pinned_checkout;not_a_historical_execution_receipt",
+    "execution_policy": {
+      "execute_once_only_after_artifact_completion_record_and_output_hash_exist": true,
+      "interrupted_nonzero_missing_or_malformed_manifest_is_permanent_rejection": true,
+      "no_retry_after_execution_begins": true,
+      "output_must_not_exist_before_execution": true
+    },
+    "program": ".venv/bin/python",
+    "program_sha256": "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e",
+    "publisher_validator_sha256": "sha256:684dc0dbaa61c53c61481932ebc8ee2bee5331b858fa8028d20f9da5d8a96f6d",
+    "script_sha256": "sha256:a651d1ac70fdb89a0a7f4b9fd399974389379dafe9b7443abd71a165e1899e98",
+    "working_directory": "/workspace/microtensor-miner"
+  },
+  "code": {
+    "repository_base_commit": "8e786c8f1364d2636ad13351dfcd674af82d952e",
+    "untracked_receipt_wrapper_is_excluded_from_this_direct_build": true
+  },
+  "evaluation": {
+    "arguments": [
+      "training/evaluate_gguf.py",
+      "--corpus",
+      "runtime/training/corpus/extract-fb5f1332493b1abe.json",
+      "--model",
+      "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact/model.gguf",
+      "--output",
+      "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/evaluation/inner-boundary-v1-q5-384.jsonl",
+      "--selection",
+      "boundary-inner-v1",
+      "--examples",
+      "384",
+      "--quantization",
+      "Q5_K_M"
+    ],
+    "confusion_count_derivation": {
+      "implementation": "training/evaluate_gguf.py:entity_confusion_counts",
+      "malformed_prediction_semantics": "None is the empty predicted set",
+      "set_semantics": "per document: TP=|prediction intersect gold|, FP=|prediction minus gold|, FN=|gold minus prediction|; sum each count across all documents",
+      "summary_fields": [
+        "true_positive",
+        "false_positive",
+        "false_negative"
+      ]
+    },
+    "console_capture": {
+      "consumer_arguments": [
+        "--",
+        "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/evaluation/evaluation.console.txt"
+      ],
+      "consumer_program": "/usr/bin/tee",
+      "producer_stderr_merged_into_stdout": true,
+      "required_pipeline_exit_status": 0,
+      "shell": "/bin/bash",
+      "shell_options": [
+        "pipefail"
+      ]
+    },
+    "corpus": "runtime/training/corpus/extract-fb5f1332493b1abe.json",
+    "corpus_file_digest": "sha256:fb5f1332493b1abe759da91cec1bd2cdd932c7076c5fae8163b5f33cfbea05a2",
+    "environment": {
+      "LLAMA_CPP_LIB_PATH": "unset",
+      "MT_ENGINES": "unset",
+      "PYTHONHOME": "unset",
+      "PYTHONNOUSERSITE": "1",
+      "PYTHONPATH": "unset"
+    },
+    "execution_policy": {
+      "console_jsonl_and_summary_must_not_exist_before_execution": true,
+      "execute_once_only_after_build_output_is_hashed": true,
+      "hash_console_jsonl_and_summary_immediately_after_success": true,
+      "interrupted_nonzero_partial_missing_or_malformed_evidence_is_permanent_rejection": true,
+      "no_retry_after_execution_begins": true,
+      "retain_rejected_evidence": true,
+      "validate_exactly_384_unique_declared_refs_and_all_summary_fields_before_gate": true
+    },
+    "examples": 384,
+    "inner_validation_refs_digest": "sha256:3ae12b94d723c4ea627fa391500b64d0516eea800c86a7b1635217082c9f7a3c",
+    "ordered_inner_validation_refs_digest": "sha256:12817194c09aaf96e1f4d67c5193863c4c20bbfcf5a5f4e5576edb22c752035c",
+    "output": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/evaluation/inner-boundary-v1-q5-384.jsonl",
+    "program": "/tmp/mt-inspect-venv/bin/python",
+    "program_sha256": "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e",
+    "quantization": "Q5_K_M",
+    "runtime": {
+      "llama_cpp_python": {
+        "metadata_sha256": "sha256:f9a4e0f49cbd6b2237b85ae0417d150aba5e3dde8833d6fba2beb9818448cd62",
+        "init_sha256": "sha256:0bc471fb193a0821d4fc4200b3ecffa1a0d577486c0bd5f9f3da4b258e3d5fd1",
+        "llama_cpp_py_sha256": "sha256:83ae7f29c45bec14e0cef2a5ec6b9207129382ad1b4d0f312e860db330c57d02",
+        "llama_py_sha256": "sha256:fff35cbe5f93076683089447cf7b38195c85a9d7bb344459fa22361994b1f228",
+        "native_libraries": {
+          "libggml-base.so": "sha256:c59ae74ce8b458ab1118d112bac223c850749df7a5eceb8516ff6fa09cb260d7",
+          "libggml-cpu.so": "sha256:c40cfc34e84fc2af4b5cbe7ada8d44f31f425c901bba1de8dd7d30a6f6069afe",
+          "libggml.so": "sha256:3afc4cacb58712613d88b10e9ef28fed77c5100b4f7f46b063cbfe6ea538b7d5",
+          "libllama.so": "sha256:3fe9f0b72563321066551eb19ae8c20335f0b4dca41ecae0b745bc653ecd230a",
+          "libmtmd.so": "sha256:62f28298c0a39d3c53b5477d95d877142dd28cc59eac818bc5e58e492f95f6cd"
+        },
+        "record_entries_must_all_verify": true,
+        "record_sha256": "sha256:dc5cc6945b1cb55afe8652bb46b3650ac5b65aaa7dba0532bd0b140bae735613",
+        "version": "0.3.35"
+      },
+      "microtensor_checkout": {
+        "boundary_selection_sha256": "sha256:25adb1c8110458b979e5a80563842b4d00de9655743634c46f738e56a95dea99",
+        "commit": "73815395e03daa0d6a25ad93030bdb5124cb61cf",
+        "directory": "/workspace/microtensor-subnet",
+        "direct_url_path": "/tmp/mt-inspect-venv/lib/python3.11/site-packages/microtensor_subnet-0.1.14.dist-info/direct_url.json",
+        "direct_url_sha256": "sha256:70ad9951c4356d7abcb36c30112b0375105893963cbb695307ff7b8e799932ca",
+        "editable_finder_sha256": "sha256:3a3808a9fa0a1cc37c0970f1d4d7f664ccfd3d6e86a69e8667875aa6e7a05287",
+        "editable_pth_sha256": "sha256:090c9a34c1d06bfae3100ab257643d32228464ce4cb9f178418ce09202cae7aa",
+        "engine_sha256": "sha256:034a20f608574fee10fa2a59de0ce894d4aba58e0112d320419a5eb3b15eb7ac",
+        "metric_sha256": "sha256:4f3cc92bd87f41375aff7f7ca54792f5fc4479ee463c2bc7c98f383a9c356213",
+        "must_be_clean_before_and_after": true
+      }
+    },
+    "script_sha256": "sha256:ab113c62c585f6dca647e402454fb9cec26c8631f4d4ec2000bd8ab6209fe922",
+    "selection": "boundary-inner-v1",
+    "selection_script_sha256": "sha256:611dc066f39ac5f71791bd3049784f126abad68ba43bd271609a3e55de187109",
+    "summary_output": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/evaluation/inner-boundary-v1-q5-384.summary.json",
+    "working_directory": "/workspace/microtensor-miner"
+  },
+  "inputs": {
+    "calibration_corpus": {
+      "path": "runtime/training/imatrix/final-seed92-r0-n512.txt",
+      "sha256": "sha256:0588fa83ddf7768846d5e491c7878b2c7b66fe4ba0c9afd12ca4fd118b82bf9d"
+    },
+    "calibration_metadata": {
+      "path": "runtime/training/imatrix/final-seed92-r0-n512.txt.metadata.json",
+      "sha256": "sha256:7be2a3835d05781667e80f4d4aff55ccad55e548c6c75a17655a5fb815fb105b"
+    },
+    "converted_f16": {
+      "bytes": 1198182080,
+      "path": "runtime/training/experiments/soup-r64-equal3-full-e1/model-f16.gguf",
+      "sha256": "sha256:2562a6afb8e75683e06c3054724fd0a0e4a528ed83a8af6951a0a7f4be564275"
+    },
+    "imatrix": {
+      "bytes": 1177088,
+      "path": "runtime/training/experiments/soup-r64-equal3-full-e1/model-imatrix.gguf",
+      "sha256": "sha256:9dc4a84b75775f4c357a82d7534ad388eacbbc187a761022beed00637a526d93"
+    },
+    "merged_weights": {
+      "path": "runtime/training/experiments/soup-r64-equal3-full-e1/merged/model.safetensors",
+      "sha256": "sha256:8ad9367d4d1b530f675b591fa29118542af76f84fd3a570379edd474018410a5"
+    },
+    "training_metadata": {
+      "path": "runtime/training/experiments/soup-r64-equal3-full-e1/training_metadata.json",
+      "sha256": "sha256:c6d65337a035932aceae77941ee8371e48a8dd4625ac3a637b6bb2a5a4ea5eb2"
+    }
+  },
+  "promotion_gates": {
+    "boundary_inner_quality": {
+      "entity_micro_f1_improvement_over_q4_minimum": 0.0029143598213764443,
+      "entity_micro_f1_minimum": 0.9948792977322602,
+      "false_negative_maximum": 3,
+      "false_positive_maximum": 4,
+      "malformed_outputs_maximum": 0,
+      "true_positive_minimum": 680
+    },
+    "provenance": {
+      "artifact_tree_and_load_spec_digests_required": true,
+      "calibration_manifest_must_validate_locally": true,
+      "historical_execution_receipt_required": false,
+      "manifest_attestation_must_not_be_described_as_execution_proof": true,
+      "quantization_profile": "standard_q5_k_m"
+    },
+    "selfcheck": {
+      "artifact_actual_bytes_maximum": 525000000,
+      "estimated_200_task_round_cpu_seconds_maximum": 3465,
+      "measured_peak_rss_bytes_maximum": 1200000000,
+      "measured_ttft_p95_ms_maximum": 3715,
+      "must_be_admitted": true,
+      "proposed_peak_rss_bytes_maximum": 1320000000,
+      "proposed_p95_latency_ms_maximum": 4086,
+      "proposed_size_bytes_maximum": 577500000
+    }
+  },
+  "protocol_context": {
+    "q4_runtime_comparability": "strong inference, not a historical execution proof: this was the only known usable retained GGUF runtime and predates the Q4 measurements; the Q4 evidence lacks a runtime receipt",
+    "lowest_observed_anchored_cpu_budget_seconds": 6000,
+    "running_unreleased_pin_default_cpu_budget_seconds": 12000,
+    "signed_release_supports_live_extract_competition": false,
+    "stale_leaderboard_is_context_only_not_a_gate": {
+      "leader_cost_ms": 3550,
+      "leader_hotkey": "5ED3LzEW7i1WjeGE9Dw1FGse1P5VhX8pyanSTstmD8qn3Gye",
+      "leader_quality": 0.9526,
+      "round": 1237
+    }
+  },
+  "provenance": {
+    "artifact_completion_block_record": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/artifact-completion.json",
+    "artifact_completion_block_record_required_fields": [
+      "schema",
+      "observed_at_utc",
+      "chain_block",
+      "artifact_path",
+      "artifact_bytes",
+      "artifact_sha256"
+    ],
+    "artifact_completion_block_record_schema": "microtensor.artifact-completion.v1",
+    "artifact_completion_block_must_be_recorded_after_build": true,
+    "attestation_semantics": "caller_attests_canonical_recipe_and_clean_pinned_checkout;not_a_historical_execution_receipt",
+    "llama_cpp_revision": "c589f0ed10c643678c4707dd160c21ac7633ebc0",
+    "manifest_output": "calibration-lineage.soup-r64-equal3-full-e1-q5.json",
+    "source_training_finished_block": 8956890
+  },
+  "selfcheck_procedure": {
+    "arguments": [
+      "miner",
+      "selfcheck",
+      "--netuid",
+      "92",
+      "--network",
+      "finney",
+      "--wallet-name",
+      "you-cold",
+      "--wallet-hotkey",
+      "you-hot1",
+      "--wallet-path",
+      "/root/.bittensor/wallets",
+      "--home",
+      "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/selfcheck-home",
+      "--artifact",
+      "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/artifact",
+      "--track",
+      "extract",
+      "--hardware-class",
+      "mt-3g",
+      "--source",
+      "s3:selfcheck-local-q5",
+      "--entrypoint",
+      "model.gguf",
+      "--format",
+      "gguf",
+      "--quantization",
+      "Q5_K_M",
+      "--max-input-tokens",
+      "512",
+      "--tokenizer",
+      "tokenizer.json",
+      "--base-model",
+      "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca",
+      "--allow-unsandboxed",
+      "--profile-seconds",
+      "60"
+    ],
+    "console_capture": {
+      "consumer_arguments": [
+        "--",
+        "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/selfcheck.console.txt"
+      ],
+      "consumer_program": "/usr/bin/tee",
+      "producer_stderr_merged_into_stdout": true,
+      "required_pipeline_exit_status": 0,
+      "shell": "/bin/bash",
+      "shell_options": [
+        "pipefail"
+      ]
+    },
+    "environment": {
+      "LLAMA_CPP_LIB_PATH": "unset",
+      "MT_ENGINES": "unset",
+      "PYTHONHOME": "unset",
+      "PYTHONNOUSERSITE": "1",
+      "PYTHONPATH": "unset"
+    },
+    "execution_policy": {
+      "console_and_json_must_not_exist_before_execution": true,
+      "execute_once_only_after_quality_gate_passes": true,
+      "hash_console_and_json_immediately_after_success": true,
+      "no_retry_after_execution_begins": true,
+      "nonzero_exit_or_missing_or_malformed_evidence_is_permanent_rejection": true,
+      "retain_rejected_evidence": true
+    },
+    "gguf_runtime": {
+      "metadata_sha256": "sha256:f9a4e0f49cbd6b2237b85ae0417d150aba5e3dde8833d6fba2beb9818448cd62",
+      "init_sha256": "sha256:0bc471fb193a0821d4fc4200b3ecffa1a0d577486c0bd5f9f3da4b258e3d5fd1",
+      "llama_cpp_py_sha256": "sha256:83ae7f29c45bec14e0cef2a5ec6b9207129382ad1b4d0f312e860db330c57d02",
+      "llama_py_sha256": "sha256:fff35cbe5f93076683089447cf7b38195c85a9d7bb344459fa22361994b1f228",
+      "native_libraries": {
+        "libggml-base.so": "sha256:c59ae74ce8b458ab1118d112bac223c850749df7a5eceb8516ff6fa09cb260d7",
+        "libggml-cpu.so": "sha256:c40cfc34e84fc2af4b5cbe7ada8d44f31f425c901bba1de8dd7d30a6f6069afe",
+        "libggml.so": "sha256:3afc4cacb58712613d88b10e9ef28fed77c5100b4f7f46b063cbfe6ea538b7d5",
+        "libllama.so": "sha256:3fe9f0b72563321066551eb19ae8c20335f0b4dca41ecae0b745bc653ecd230a",
+        "libmtmd.so": "sha256:62f28298c0a39d3c53b5477d95d877142dd28cc59eac818bc5e58e492f95f6cd"
+      },
+      "record_entries_must_all_verify": true,
+      "record_sha256": "sha256:dc5cc6945b1cb55afe8652bb46b3650ac5b65aaa7dba0532bd0b140bae735613",
+      "version": "0.3.35"
+    },
+    "installed_source": {
+      "checkout_directory": "/workspace/microtensor-subnet",
+      "commit": "73815395e03daa0d6a25ad93030bdb5124cb61cf",
+      "direct_url_path": "/tmp/mt-inspect-venv/lib/python3.11/site-packages/microtensor_subnet-0.1.14.dist-info/direct_url.json",
+      "direct_url_sha256": "sha256:70ad9951c4356d7abcb36c30112b0375105893963cbb695307ff7b8e799932ca",
+      "editable_finder_sha256": "sha256:3a3808a9fa0a1cc37c0970f1d4d7f664ccfd3d6e86a69e8667875aa6e7a05287",
+      "editable_pth_sha256": "sha256:090c9a34c1d06bfae3100ab257643d32228464ce4cb9f178418ce09202cae7aa",
+      "engine_sha256": "sha256:034a20f608574fee10fa2a59de0ce894d4aba58e0112d320419a5eb3b15eb7ac",
+      "jail_sha256": "sha256:5f437c03a64a7b33fc89b107f4ef913b12e48d2fd3f07839b55d2fc63bcc09bd",
+      "limits_sha256": "sha256:08a9a70480adf5b7bbfd56315835800a95b285768443fd84f72878c42d79b8b5",
+      "must_be_clean_before_and_after": true,
+      "profiler_sha256": "sha256:4e21a280a0596f0b30e3c180a30affc209afa4d19de054994b484f7f0a9ad838",
+      "protocol_sha256": "sha256:6ffff00a8d7edaaab275bf98ac02cd41901ffc87343f786ac45d34621dcf140b",
+      "repository_url": "https://github.com/microtensor-io/microtensor-subnet.git",
+      "selfcheck_sha256": "sha256:6c82ac1b1bd03e3e693b20fd8d6d5400a6ff95f6f067d95f2df84a3ba0ee17ba",
+      "tracks_sha256": "sha256:7b535ae383ddbc444e05acf0350d63fbccf731111b341dcc02687c7c27976321"
+    },
+    "json_output": "runtime/candidates/soup-r64-equal3-full-e1-q5-imatrix/evidence/selfcheck-home/selfcheck.json",
+    "measurement_sources": {
+      "estimated_200_task_round_cpu_seconds": "selfcheck console",
+      "measured_ttft_p95_ms": "selfcheck console before the 10 percent proposal margin",
+      "proposed_peak_rss_bytes_proposed_p95_latency_ms_and_proposed_size_bytes": "serialized selfcheck JSON"
+    },
+    "program": "/tmp/mt-inspect-venv/bin/mt",
+    "program_sha256": "sha256:a7743d3fbc42e3d423cae02d5883f134c1f4e5ef8071c262f688514ed7922c79",
+    "working_directory": "/workspace/microtensor-miner"
+  },
+  "schema": "microtensor.quantization-experiment-declaration.v1",
+  "selection_policy": {
+    "active_q4_must_remain_byte_and_inode_unchanged_until_atomic_promotion": true,
+    "candidate_may_replace_active_only_if_every_gate_passes": true,
+    "build_must_never_be_retried_after_execution_begins": true,
+    "fresh_anchored_round_and_public_rank_are_the_only_official_rank_evidence": true,
+    "historical_outer_reserve": "optional non-gating audit only after all promotion gates pass",
+    "manual_error_taxonomy": "diagnostic only; not a promotion gate until a deterministic pinned tool and ledger exist",
+    "no_alternate_quantization_profile_or_calibration": true,
+    "no_rebuild_or_threshold_change_after_observing_candidate_results": true,
+    "rejected_candidate_must_never_be_promoted_or_submitted": true
+  }
+}
