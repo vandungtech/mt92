@@ -67,11 +67,14 @@ The publisher intentionally has no anonymous fallback. The live mechanism
 requires a resolvable run in `microtensor/training-runs`; without a real
 `WANDB_API_KEY`, a miner must wait instead of claiming admission.
 
-After the exact artifact digest is known:
+After the exact artifact digest is known, export `WANDB_API_KEY` through a
+secure method and pass every training directory oldest to newest. The
+publisher validates the complete local lineage before importing W&B:
 
 ```bash
-WANDB_API_KEY=... python training/publish_provenance.py \
-  --training-dir runtime/training/qwen3-0.6b-extract-final \
+python training/publish_provenance.py \
+  --training-dir runtime/training/experiments/lora-r64-e2-seed92 \
+  --training-dir runtime/training/experiments/lora-r64-e2-full-e1 \
   --artifact-digest sha256:... \
   --finished-block FINNEY_BLOCK
 ```
