@@ -103,6 +103,36 @@ final all-public calibration, use `--reserve-examples 0`.
 
 Changing calibration data or quantizer settings creates new artifact bytes and
 must be recorded in provenance and re-run through the exact validator engine.
+
+## Deterministic weight soups
+
+`build_weight_soup.py` combines completed merged Qwen3 checkpoints without
+mixing their tokenizer or configuration files. It validates the exact pinned
+base, source architectures and tensor schemas, and each parent
+`training_metadata.json`. Finite nonnegative weights are normalized before the
+ordered float32 CPU calculation `base + sum(weight * (source - base))`.
+
+```bash
+python training/build_weight_soup.py \
+  --base /path/to/Qwen3-0.6B \
+  --source runtime/training/experiment-a/merged 1 \
+  --source runtime/training/experiment-b/merged 1 \
+  --output runtime/training/soups/a-b-equal
+```
+
+The destination must not exist. One tensor is written per safetensors shard in
+a sibling staging directory before an atomic rename. Config and tokenizer
+files are copied byte-for-byte from the base. `soup_metadata.json` binds the
+source model/config/tokenizer and parent-metadata hashes, normalized weights,
+algorithm settings, schemas, and every output hash.
+
+This constructs a candidate; it does not establish quality. Evaluate the HF
+model, independently convert/calibrate its GGUF, run the exact validator
+self-check, and publish the complete training lineage plus soup metadata. The
+tied `lm_head.weight` is omitted only after equality with the embedding is
+verified. Output bytes depend on the pinned PyTorch and safetensors versions
+recorded in metadata.
+
 ## Provenance
 
 The publisher intentionally has no anonymous fallback. The live mechanism
