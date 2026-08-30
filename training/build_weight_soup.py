@@ -36,6 +36,12 @@ PINNED_BASE_MODEL = f"{BASE_MODEL}@{BASE_REVISION}"
 MODEL_FILENAME = "model.safetensors"
 INDEX_FILENAME = "model.safetensors.index.json"
 METADATA_FILENAME = "soup_metadata.json"
+PINNED_ARCHITECTURE_SHA256 = (
+    "sha256:5f0f2e485a250e54bf3ab880b8af55bdc80cc91592320ca2c387e8ffc5b8a809"
+)
+PINNED_TENSOR_SCHEMA_SHA256 = (
+    "sha256:eba4e804eb1647727e4fdfe05bbc096f885994125c5b45e9a441324c0f48ea82"
+)
 DEFAULT_CHUNK_BYTES = 64 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -69,6 +75,8 @@ class BaseAllowlist:
     model: str
     revision: str
     files: Mapping[str, str]
+    architecture_digest: str
+    tensor_schema_digest: str
     copy_files: tuple[str, ...]
     tied_aliases: tuple[tuple[str, str], ...]
 
@@ -81,6 +89,8 @@ PINNED_ALLOWLIST = BaseAllowlist(
     model=BASE_MODEL,
     revision=BASE_REVISION,
     files=PINNED_BASE_FILES,
+    architecture_digest=PINNED_ARCHITECTURE_SHA256,
+    tensor_schema_digest=PINNED_TENSOR_SCHEMA_SHA256,
     copy_files=PINNED_COPY_FILES,
     tied_aliases=PINNED_TIED_ALIASES,
 )
@@ -111,6 +121,14 @@ class TensorSpec:
     def bytes(self) -> int:
         count = math.prod(self.shape)
         return count * _ELEMENT_BYTES[self.dtype]
+
+
+@dataclass(frozen=True)
+class ValidatedSoupCheckpoint:
+    metadata_digest: str
+    output_manifest_digest: str
+    index_digest: str
+    tokenizer_digest: str
 
 
 @dataclass(frozen=True)
@@ -225,11 +243,19 @@ def _read_json(snapshot: FileSnapshot, label: str) -> dict[str, Any]:
     if snapshot.size > MAX_JSON_BYTES:
         raise SoupValidationError(f"{label} exceeds the {MAX_JSON_BYTES}-byte limit")
     try:
+        payload = snapshot.path.read_bytes()
+        if (
+            len(payload) != snapshot.size
+            or "sha256:" + hashlib.sha256(payload).hexdigest() != snapshot.digest
+        ):
+            raise SoupValidationError(f"{label} changed between hashing and parsing")
         parsed = json.loads(
-            snapshot.path.read_text(encoding="utf-8"),
+            payload.decode("utf-8"),
             parse_constant=_reject_constant,
             object_pairs_hook=_strict_object,
         )
+    except SoupValidationError:
+        raise
     except (OSError, UnicodeError, ValueError) as exc:
         raise SoupValidationError(f"{label} is not strict UTF-8 JSON: {exc}") from exc
     if not isinstance(parsed, dict):
@@ -328,29 +354,70 @@ def _require_digest(value: object, label: str) -> str:
     return value
 
 
+def _validate_training_input_identity(
+    training_input: object,
+    allowlist: BaseAllowlist,
+    *,
+    label: str = "source training input",
+) -> None:
+    if not isinstance(training_input, Mapping):
+        raise SoupValidationError(f"{label} must be an object")
+    kind = training_input.get("kind")
+    if kind == "huggingface_snapshot":
+        weights_digest = _require_digest(
+            training_input.get("weights_digest"),
+            f"{label} weights_digest",
+        )
+        tokenizer_digest = _require_digest(
+            training_input.get("tokenizer_digest"),
+            f"{label} tokenizer_digest",
+        )
+        if training_input.get("revision") != allowlist.revision:
+            raise SoupValidationError(f"{label} has the wrong base revision")
+        if weights_digest != allowlist.files[MODEL_FILENAME]:
+            raise SoupValidationError(f"{label} has the wrong base weight identity")
+        if tokenizer_digest != allowlist.files["tokenizer.json"]:
+            raise SoupValidationError(f"{label} has the wrong base tokenizer identity")
+    elif kind == "derived_model":
+        _require_digest(training_input.get("weights_digest"), f"{label} weights_digest")
+        _require_digest(training_input.get("tokenizer_digest"), f"{label} tokenizer_digest")
+        _require_digest(
+            training_input.get("parent_metadata_digest"),
+            f"{label} parent_metadata_digest",
+        )
+    elif kind == "deterministic_weight_soup":
+        required = {
+            "kind",
+            "soup_schema",
+            "soup_metadata_digest",
+            "output_manifest_digest",
+            "index_digest",
+            "tokenizer_digest",
+        }
+        if set(training_input) != required or training_input.get("soup_schema") != SCHEMA:
+            raise SoupValidationError(f"{label} does not match the weight-soup v1 schema")
+        for field in (
+            "soup_metadata_digest",
+            "output_manifest_digest",
+            "index_digest",
+            "tokenizer_digest",
+        ):
+            _require_digest(training_input[field], f"{label} {field}")
+        if training_input["tokenizer_digest"] != allowlist.files["tokenizer.json"]:
+            raise SoupValidationError(f"{label} has the wrong base tokenizer identity")
+    else:
+        raise SoupValidationError(
+            f"{label} kind must be a snapshot, derived model, or deterministic weight soup"
+        )
+
+
 def _validate_training_metadata(metadata: Mapping[str, Any], allowlist: BaseAllowlist) -> None:
     if metadata.get("base_model") != allowlist.identity:
         raise SoupValidationError("source training metadata is not bound to the allowlisted base")
     training_input = metadata.get("training_input")
     if not isinstance(training_input, dict):
         raise SoupValidationError("source training metadata has no training_input object")
-    kind = training_input.get("kind")
-    _require_digest(training_input.get("weights_digest"), "training input weights_digest")
-    _require_digest(training_input.get("tokenizer_digest"), "training input tokenizer_digest")
-    if kind == "huggingface_snapshot":
-        if training_input.get("revision") != allowlist.revision:
-            raise SoupValidationError("source training input has the wrong base revision")
-        if training_input["weights_digest"] != allowlist.files[MODEL_FILENAME]:
-            raise SoupValidationError("source training input has the wrong base weight identity")
-        if training_input["tokenizer_digest"] != allowlist.files["tokenizer.json"]:
-            raise SoupValidationError("source training input has the wrong base tokenizer identity")
-    elif kind == "derived_model":
-        _require_digest(
-            training_input.get("parent_metadata_digest"),
-            "training input parent_metadata_digest",
-        )
-    else:
-        raise SoupValidationError("source training input kind must be a snapshot or derived model")
+    _validate_training_input_identity(training_input, allowlist)
     finished = metadata.get("finished_at_unix")
     updates = metadata.get("updates")
     elapsed = metadata.get("elapsed_s")
@@ -532,6 +599,324 @@ def _source_metadata_record(source: ValidatedSource, position: int) -> dict[str,
     }
 
 
+def _file_binding(value: object, label: str) -> tuple[int, str]:
+    if not isinstance(value, Mapping) or set(value) != {"bytes", "sha256"}:
+        raise SoupValidationError(f"{label} must contain exactly bytes and sha256")
+    size = value["bytes"]
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        raise SoupValidationError(f"{label} bytes must be a positive integer")
+    return size, _require_digest(value["sha256"], f"{label} sha256")
+
+
+def _plain_filename(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        raise SoupValidationError(f"{label} must be a plain file name")
+    return value
+
+
+def _inspect_checkpoint_shards(
+    directory: Path,
+    weight_map: Mapping[str, Any],
+    chunk_bytes: int,
+) -> dict[str, TensorSpec]:
+    specs: dict[str, TensorSpec] = {}
+    for tensor_name, raw_shard in weight_map.items():
+        if not tensor_name:
+            raise SoupValidationError("weight-soup model index has an empty tensor name")
+        shard_name = _plain_filename(raw_shard, f"weight-soup tensor {tensor_name!r} shard")
+        shard_specs, _metadata = _inspect_safetensors(
+            directory / shard_name,
+            f"weight-soup shard {shard_name}",
+        )
+        if set(shard_specs) != {tensor_name}:
+            raise SoupValidationError(
+                f"weight-soup shard {shard_name} does not contain exactly {tensor_name!r}"
+            )
+        spec = shard_specs[tensor_name]
+        with safe_open(directory / shard_name, framework="pt", device="cpu") as handle:
+            rows = _chunk_rows(spec, chunk_bytes)
+            for start in range(0, spec.shape[0], rows):
+                stop = min(spec.shape[0], start + rows)
+                if not bool(torch.isfinite(_tensor_chunk(handle, tensor_name, start, stop)).all()):
+                    raise SoupValidationError(
+                        f"weight-soup tensor {tensor_name!r} contains a non-finite value"
+                    )
+        specs[tensor_name] = spec
+    return specs
+
+
+def validate_weight_soup_checkpoint(
+    model_dir: Path,
+    allowlist: BaseAllowlist = PINNED_ALLOWLIST,
+) -> ValidatedSoupCheckpoint:
+    """Revalidate one published v1 soup before it is used as a training input."""
+
+    directory = _directory(model_dir, "weight-soup checkpoint")
+    metadata_file = _snapshot(
+        directory / METADATA_FILENAME,
+        "weight-soup metadata",
+        maximum=MAX_JSON_BYTES,
+    )
+    metadata = _read_json(metadata_file, "weight-soup metadata")
+    if set(metadata) != {"schema", "base", "algorithm", "sources", "runtime", "output"}:
+        raise SoupValidationError("weight-soup metadata does not match the complete v1 schema")
+    if metadata["schema"] != SCHEMA:
+        raise SoupValidationError("weight-soup metadata has an unsupported schema")
+
+    base = metadata["base"]
+    expected_base_fields = {
+        "identity",
+        "files",
+        "architecture_sha256",
+        "tensor_schema_sha256",
+        "tied_aliases_omitted",
+    }
+    if (
+        not isinstance(base, Mapping)
+        or set(base) != expected_base_fields
+        or base["identity"] != allowlist.identity
+    ):
+        raise SoupValidationError("weight soup is not bound to the complete allowlisted base")
+    base_files = base["files"]
+    if not isinstance(base_files, Mapping) or set(base_files) != set(allowlist.files):
+        raise SoupValidationError("weight-soup base file manifest is incomplete")
+    for name, expected_digest in allowlist.files.items():
+        _size, digest = _file_binding(base_files[name], f"weight-soup base {name}")
+        if digest != expected_digest:
+            raise SoupValidationError(f"weight-soup base {name} has the wrong digest")
+    if base["architecture_sha256"] != allowlist.architecture_digest:
+        raise SoupValidationError("weight-soup architecture digest is not allowlisted")
+    if base["tensor_schema_sha256"] != allowlist.tensor_schema_digest:
+        raise SoupValidationError("weight-soup tensor schema digest is not allowlisted")
+    expected_aliases = [
+        {"alias": alias, "target": target} for alias, target in allowlist.tied_aliases
+    ]
+    if base["tied_aliases_omitted"] != expected_aliases:
+        raise SoupValidationError("weight-soup tied aliases do not match the allowlist")
+
+    expected_algorithm = {
+        "formula": "base + sum(normalized_weight_i * (source_i - base))",
+        "accumulation_dtype": "float32",
+        "source_order_is_significant": True,
+        "torch_num_threads": 1,
+        "output_dtype": "exactly_match_each_base_tensor",
+        "sharding": "one_tensor_per_safetensors_file",
+    }
+    algorithm = metadata["algorithm"]
+    if (
+        not isinstance(algorithm, Mapping)
+        or set(algorithm) != {*expected_algorithm, "chunk_bytes"}
+        or any(algorithm.get(key) != value for key, value in expected_algorithm.items())
+        or isinstance(algorithm.get("chunk_bytes"), bool)
+        or not isinstance(algorithm.get("chunk_bytes"), int)
+        or algorithm["chunk_bytes"] <= 0
+    ):
+        raise SoupValidationError(
+            "weight-soup algorithm does not match the deterministic v1 schema"
+        )
+
+    sources = metadata["sources"]
+    if not isinstance(sources, list) or len(sources) < 2:
+        raise SoupValidationError("weight soup must bind at least two sources")
+    normalized_decimals: list[Decimal] = []
+    normalized_weights: list[float] = []
+    expected_source_fields = {
+        "position",
+        "supplied_model_dir",
+        "normalized_weight_decimal",
+        "normalized_weight_float_hex",
+        "files",
+        "parent_training_metadata",
+    }
+    for position, source in enumerate(sources, start=1):
+        label = f"weight-soup source {position}"
+        if (
+            not isinstance(source, Mapping)
+            or set(source) != expected_source_fields
+            or source["position"] != position
+            or not isinstance(source["supplied_model_dir"], str)
+            or not source["supplied_model_dir"]
+        ):
+            raise SoupValidationError(f"{label} does not match the complete v1 schema")
+        files = source["files"]
+        required_files = {"config.json", MODEL_FILENAME, "tokenizer.json"}
+        if not isinstance(files, Mapping) or set(files) != required_files:
+            raise SoupValidationError(f"{label} file bindings are incomplete")
+        for name in required_files:
+            _file_binding(files[name], f"{label} {name}")
+        parent = source["parent_training_metadata"]
+        if not isinstance(parent, Mapping) or set(parent) != {
+            "bytes",
+            "sha256",
+            "training_input",
+        }:
+            raise SoupValidationError(f"{label} parent metadata binding is incomplete")
+        parent_size = parent["bytes"]
+        if isinstance(parent_size, bool) or not isinstance(parent_size, int) or parent_size <= 0:
+            raise SoupValidationError(f"{label} parent metadata bytes are invalid")
+        _require_digest(parent["sha256"], f"{label} parent metadata sha256")
+        _validate_training_input_identity(
+            parent["training_input"],
+            allowlist,
+            label=f"{label} parent training_input",
+        )
+
+        decimal_text = source["normalized_weight_decimal"]
+        hexadecimal = source["normalized_weight_float_hex"]
+        try:
+            decimal = Decimal(decimal_text) if isinstance(decimal_text, str) else Decimal("NaN")
+            weight = float.fromhex(hexadecimal) if isinstance(hexadecimal, str) else math.nan
+        except (InvalidOperation, ValueError) as exc:
+            raise SoupValidationError(f"{label} normalized weight is invalid") from exc
+        if (
+            not decimal.is_finite()
+            or decimal < 0
+            or _canonical_decimal(decimal) != decimal_text
+            or not math.isfinite(weight)
+            or weight < 0
+            or weight.hex() != hexadecimal
+        ):
+            raise SoupValidationError(f"{label} normalized weight is invalid")
+        normalized_decimals.append(decimal)
+        normalized_weights.append(weight)
+    with localcontext() as context:
+        context.prec = 100
+        decimal_total = sum(normalized_decimals, Decimal(0))
+    if decimal_total != Decimal(1):
+        raise SoupValidationError("weight-soup decimal weights do not sum exactly to 1")
+    if math.fsum(normalized_weights) != 1.0:
+        raise SoupValidationError("weight-soup float weights do not sum exactly to 1.0")
+
+    runtime = metadata["runtime"]
+    if (
+        not isinstance(runtime, Mapping)
+        or set(runtime) != {"python", "safetensors", "torch"}
+        or any(not isinstance(runtime[field], str) or not runtime[field] for field in runtime)
+    ):
+        raise SoupValidationError("weight-soup runtime does not match the complete v1 schema")
+
+    output = metadata["output"]
+    if not isinstance(output, Mapping) or set(output) != {
+        "files",
+        "manifest_sha256",
+        "model_tensor_bytes",
+        "tensor_count",
+    }:
+        raise SoupValidationError("weight-soup output does not match the v1 schema")
+    records = output["files"]
+    if not isinstance(records, list) or not records:
+        raise SoupValidationError("weight-soup output file manifest is empty")
+    snapshots: dict[str, FileSnapshot] = {}
+    paths: list[str] = []
+    for position, record in enumerate(records, start=1):
+        label = f"weight-soup output file {position}"
+        if not isinstance(record, Mapping) or set(record) != {"bytes", "path", "sha256"}:
+            raise SoupValidationError(f"{label} does not match the v1 schema")
+        name = _plain_filename(record["path"], label)
+        if name in snapshots:
+            raise SoupValidationError(f"weight-soup output repeats {name}")
+        expected_size = record["bytes"]
+        if (
+            isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or expected_size <= 0
+        ):
+            raise SoupValidationError(f"{label} bytes are invalid")
+        expected_digest = _require_digest(record["sha256"], f"{label} sha256")
+        snapshot = _snapshot(directory / name, label)
+        if snapshot.size != expected_size or snapshot.digest != expected_digest:
+            raise SoupValidationError(f"weight-soup output {name} does not match its record")
+        snapshots[name] = snapshot
+        paths.append(name)
+    if paths != sorted(paths):
+        raise SoupValidationError("weight-soup output manifest is not sorted")
+    manifest_digest = _manifest_digest(records)
+    if output["manifest_sha256"] != manifest_digest:
+        raise SoupValidationError("weight-soup output manifest digest is invalid")
+
+    for name in allowlist.copy_files:
+        if name not in snapshots:
+            raise SoupValidationError(f"weight-soup output is missing {name}")
+        base_size, base_digest = _file_binding(base_files[name], f"weight-soup base {name}")
+        if (snapshots[name].size, snapshots[name].digest) != (base_size, base_digest):
+            raise SoupValidationError(f"weight-soup output {name} is not bound to the base")
+
+    index_file = snapshots.get(INDEX_FILENAME)
+    if index_file is None:
+        raise SoupValidationError("weight-soup output is missing its model index")
+    index = _read_json(index_file, "weight-soup model index")
+    if set(index) != {"metadata", "weight_map"}:
+        raise SoupValidationError("weight-soup model index has an invalid schema")
+    weight_map = index["weight_map"]
+    index_metadata = index["metadata"]
+    if not isinstance(weight_map, Mapping) or not weight_map:
+        raise SoupValidationError("weight-soup model index has no weights")
+    if not isinstance(index_metadata, Mapping) or set(index_metadata) != {"total_size"}:
+        raise SoupValidationError("weight-soup model index metadata is invalid")
+    shards = {
+        _plain_filename(shard, "weight-soup index shard") for shard in weight_map.values()
+    }
+    if (
+        len(shards) != len(weight_map)
+        or any(not shard.endswith(".safetensors") or shard == MODEL_FILENAME for shard in shards)
+    ):
+        raise SoupValidationError("weight-soup model index has invalid one-tensor sharding")
+    tensor_count = output["tensor_count"]
+    tensor_bytes = output["model_tensor_bytes"]
+    if (
+        isinstance(tensor_count, bool)
+        or tensor_count != len(weight_map)
+        or isinstance(tensor_bytes, bool)
+        or not isinstance(tensor_bytes, int)
+        or tensor_bytes <= 0
+        or isinstance(index_metadata["total_size"], bool)
+        or not isinstance(index_metadata["total_size"], int)
+        or index_metadata["total_size"] != tensor_bytes
+    ):
+        raise SoupValidationError("weight-soup model index summary does not match its metadata")
+
+    declared_shards = {name for name in snapshots if name.endswith(".safetensors")}
+    expected_outputs = {*allowlist.copy_files, INDEX_FILENAME, *shards}
+    if set(snapshots) != expected_outputs or declared_shards != shards:
+        raise SoupValidationError("weight-soup output manifest and model index differ")
+    actual_shards = {
+        candidate.name
+        for candidate in directory.iterdir()
+        if candidate.name.endswith(".safetensors")
+    }
+    if actual_shards != shards:
+        raise SoupValidationError("weight-soup directory has missing or unlisted weight shards")
+
+    actual_specs = _inspect_checkpoint_shards(
+        directory,
+        weight_map,
+        algorithm["chunk_bytes"],
+    )
+    if _manifest_digest(_schema_records(actual_specs)) != allowlist.tensor_schema_digest:
+        raise SoupValidationError("weight-soup shard tensor schema is not allowlisted")
+    actual_tensor_bytes = sum(spec.bytes for spec in actual_specs.values())
+    if len(actual_specs) != tensor_count or actual_tensor_bytes != tensor_bytes:
+        raise SoupValidationError("weight-soup shard contents do not match the index summary")
+
+    _assert_unchanged(metadata_file, "weight-soup metadata")
+    for name, snapshot in snapshots.items():
+        _assert_unchanged(snapshot, f"weight-soup output {name}")
+
+    return ValidatedSoupCheckpoint(
+        metadata_digest=metadata_file.digest,
+        output_manifest_digest=manifest_digest,
+        index_digest=index_file.digest,
+        tokenizer_digest=snapshots["tokenizer.json"].digest,
+    )
+
+
 def build_weight_soup(
     *,
     base_dir: Path,
@@ -581,6 +966,10 @@ def build_weight_soup(
     schema_records = _schema_records(base_specs)
     tensor_schema_digest = _manifest_digest(schema_records)
     architecture_digest = _manifest_digest(normalized_base_config)
+    if architecture_digest != allowlist.architecture_digest:
+        raise SoupValidationError("base architecture digest is not allowlisted")
+    if tensor_schema_digest != allowlist.tensor_schema_digest:
+        raise SoupValidationError("base tensor schema digest is not allowlisted")
 
     validated: list[ValidatedSource] = []
     seen_directories: set[Path] = set()

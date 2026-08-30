@@ -27,6 +27,13 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedule_with_warmup
 
 
+try:
+    from training import build_weight_soup as weight_soup
+except ModuleNotFoundError as exc:
+    if exc.name != "training":
+        raise
+    import build_weight_soup as weight_soup
+
 BASE_MODEL = "Qwen/Qwen3-0.6B"
 BASE_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
 CORPUS_VERSION = "sha256:492ea6e7b791f03be0989b07eee0dc9ba722d35d2f274743c6dc33420c383ff8"
@@ -744,6 +751,24 @@ def sha256(path: Path) -> str:
 
 
 def verify_training_input(path: Path) -> dict[str, str]:
+    soup_metadata = path / weight_soup.METADATA_FILENAME
+    soup_index = path / weight_soup.INDEX_FILENAME
+    if (
+        soup_metadata.exists()
+        or soup_metadata.is_symlink()
+        or soup_index.exists()
+        or soup_index.is_symlink()
+    ):
+        validated = weight_soup.validate_weight_soup_checkpoint(path)
+        return {
+            "kind": "deterministic_weight_soup",
+            "soup_schema": weight_soup.SCHEMA,
+            "soup_metadata_digest": validated.metadata_digest,
+            "output_manifest_digest": validated.output_manifest_digest,
+            "index_digest": validated.index_digest,
+            "tokenizer_digest": validated.tokenizer_digest,
+        }
+
     weights = path / "model.safetensors"
     tokenizer = path / "tokenizer.json"
     if not weights.is_file() or not tokenizer.is_file():
@@ -858,6 +883,7 @@ def main() -> int:
     metrics_path.unlink(missing_ok=True)
 
     training_input = verify_training_input(args.base)
+    is_weight_soup = training_input["kind"] == "deterministic_weight_soup"
     rows = load_rows(args.corpus)
     random.Random(settings.seed).shuffle(rows)
     validation_rows = rows[: settings.validation_examples]
@@ -926,12 +952,26 @@ def main() -> int:
         persistent_workers=True,
     )
 
+    if is_weight_soup and verify_training_input(args.base) != training_input:
+        raise ValueError("weight-soup input identity changed before model load")
+
     model = AutoModelForCausalLM.from_pretrained(
         args.base,
         local_files_only=True,
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
     )
+    if is_weight_soup:
+        parameters = tuple(model.parameters())
+        buffers = tuple(model.buffers())
+        if any(tensor.is_meta for tensor in (*parameters, *buffers)):
+            raise ValueError("weight-soup model was not fully materialized by Transformers")
+        with torch.no_grad():
+            for tensor in (*parameters, *buffers):
+                tensor.data = tensor.detach().clone()
+        if verify_training_input(args.base) != training_input:
+            raise ValueError("weight-soup input identity changed during model load")
+
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()

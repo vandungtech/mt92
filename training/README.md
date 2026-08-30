@@ -126,6 +126,28 @@ files are copied byte-for-byte from the base. `soup_metadata.json` binds the
 source model/config/tokenizer and parent-metadata hashes, normalized weights,
 algorithm settings, schemas, and every output hash.
 
+A soup checkpoint can also be used as a continuation base:
+
+```bash
+python training/train_extract.py \
+  --corpus runtime/upstream/public-corpus.json \
+  --base runtime/training/soups/a-b-equal \
+  --out runtime/training/experiments/a-b-continuation
+```
+
+Before loading model weights, the trainer revalidates the pinned base and
+tokenizer, deterministic algorithm, source parent-metadata bindings, exact
+declared output hashes and manifest digest, and model index. It opens every
+shard to derive and pin tensor keys, shapes, dtypes, byte count, and finiteness.
+Missing or undeclared weight shards and partial soup markers are rejected.
+
+For soup bases, the complete check runs again immediately before and after
+Transformers loads the model. Loaded parameters and buffers must be non-meta
+and are cloned away from loader/file backing before the post-load check. The
+new run's `training_metadata.json` records `training_input.kind` as
+`deterministic_weight_soup` together with the soup metadata, output manifest,
+index, and tokenizer digests.
+
 This constructs a candidate; it does not establish quality. Evaluate the HF
 model, independently convert/calibrate its GGUF, run the exact validator
 self-check, and publish the complete training lineage plus soup metadata. The

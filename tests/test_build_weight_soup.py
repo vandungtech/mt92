@@ -84,10 +84,21 @@ class BuildWeightSoupTests(unittest.TestCase):
             metadata={"format": "pt"},
         )
         base_files = {path.name: digest(path) for path in self.base.iterdir() if path.is_file()}
+        base_specs, _metadata = soup._inspect_safetensors(
+            self.base / soup.MODEL_FILENAME,
+            "fixture base",
+        )
+        effective_specs = {
+            name: spec for name, spec in base_specs.items() if name != "lm_head.weight"
+        }
         self.allowlist = soup.BaseAllowlist(
             model="Fixture/Qwen3",
             revision="fixture-revision",
             files=base_files,
+            architecture_digest=soup._manifest_digest(
+                soup._normalize_config(self.base_config, "fixture base")
+            ),
+            tensor_schema_digest=soup._manifest_digest(soup._schema_records(effective_specs)),
             copy_files=tuple(sorted(name for name in base_files if name != soup.MODEL_FILENAME)),
             tied_aliases=(("lm_head.weight", "model.embed_tokens.weight"),),
         )
@@ -355,6 +366,124 @@ class BuildWeightSoupTests(unittest.TestCase):
                 output_dir=self.root / "duplicate-output",
                 allowlist=self.allowlist,
             )
+
+    def refresh_output_record(
+        self,
+        destination: Path,
+        metadata: dict[str, object],
+        filename: str,
+    ) -> None:
+        records = metadata["output"]["files"]
+        record = next(item for item in records if item["path"] == filename)
+        record["bytes"] = (destination / filename).stat().st_size
+        record["sha256"] = digest(destination / filename)
+        metadata["output"]["manifest_sha256"] = soup._manifest_digest(records)
+        (destination / soup.METADATA_FILENAME).write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n"
+        )
+
+    def test_validates_published_checkpoint_and_ignores_nonweight_sidecars(self) -> None:
+        destination, metadata = self.build("validated")
+        (destination / "heldout-results.jsonl").write_text("{}\n")
+        (destination / "model-q4-imatrix.gguf").write_bytes(b"evaluation-sidecar")
+
+        validated = soup.validate_weight_soup_checkpoint(destination, self.allowlist)
+
+        self.assertEqual(validated.metadata_digest, digest(destination / soup.METADATA_FILENAME))
+        self.assertEqual(
+            validated.output_manifest_digest,
+            metadata["output"]["manifest_sha256"],
+        )
+        self.assertEqual(validated.index_digest, digest(destination / soup.INDEX_FILENAME))
+        self.assertEqual(validated.tokenizer_digest, digest(destination / "tokenizer.json"))
+
+    def test_checkpoint_validation_rejects_missing_and_unlisted_weight_shards(self) -> None:
+        missing, missing_metadata = self.build("missing-shard")
+        missing_shard = next(
+            record["path"]
+            for record in missing_metadata["output"]["files"]
+            if record["path"].endswith(".safetensors")
+        )
+        (missing / missing_shard).unlink()
+        with self.assertRaisesRegex(soup.SoupValidationError, "readable regular file"):
+            soup.validate_weight_soup_checkpoint(missing, self.allowlist)
+
+        extra, _extra_metadata = self.build("extra-shard")
+        (extra / "extra.safetensors").write_bytes(b"undeclared")
+        with self.assertRaisesRegex(soup.SoupValidationError, "unlisted weight shards"):
+            soup.validate_weight_soup_checkpoint(extra, self.allowlist)
+
+    def test_checkpoint_validation_derives_schema_and_finiteness_from_shards(self) -> None:
+        forged, forged_metadata = self.build("forged-schema")
+        index = json.loads((forged / soup.INDEX_FILENAME).read_text())
+        tensor_name, shard_name = next(iter(index["weight_map"].items()))
+        del index["weight_map"][tensor_name]
+        index["weight_map"]["forged.weight"] = shard_name
+        save_file(
+            {"forged.weight": torch.zeros((2, 2), dtype=torch.bfloat16)},
+            forged / shard_name,
+            metadata={"format": "pt"},
+        )
+        (forged / soup.INDEX_FILENAME).write_text(
+            json.dumps(index, indent=2, sort_keys=True) + "\n"
+        )
+        self.refresh_output_record(forged, forged_metadata, shard_name)
+        self.refresh_output_record(forged, forged_metadata, soup.INDEX_FILENAME)
+        with self.assertRaisesRegex(soup.SoupValidationError, "tensor schema"):
+            soup.validate_weight_soup_checkpoint(forged, self.allowlist)
+
+        nonfinite, nonfinite_metadata = self.build("nonfinite-checkpoint")
+        nonfinite_index = json.loads((nonfinite / soup.INDEX_FILENAME).read_text())
+        tensor_name, shard_name = next(iter(nonfinite_index["weight_map"].items()))
+        bad_tensor = torch.zeros((2, 2), dtype=torch.bfloat16)
+        bad_tensor[0, 0] = float("nan")
+        save_file(
+            {tensor_name: bad_tensor},
+            nonfinite / shard_name,
+            metadata={"format": "pt"},
+        )
+        self.refresh_output_record(nonfinite, nonfinite_metadata, shard_name)
+        with self.assertRaisesRegex(soup.SoupValidationError, "non-finite"):
+            soup.validate_weight_soup_checkpoint(nonfinite, self.allowlist)
+
+
+    def test_checkpoint_validation_rejects_tampered_files_index_base_and_parent(self) -> None:
+        corrupt, corrupt_metadata = self.build("corrupt-output")
+        shard = next(
+            record["path"]
+            for record in corrupt_metadata["output"]["files"]
+            if record["path"].endswith(".safetensors")
+        )
+        with (corrupt / shard).open("ab") as handle:
+            handle.write(b"tampered")
+        with self.assertRaisesRegex(soup.SoupValidationError, "does not match its record"):
+            soup.validate_weight_soup_checkpoint(corrupt, self.allowlist)
+
+        bad_index, index_metadata = self.build("bad-index")
+        index = json.loads((bad_index / soup.INDEX_FILENAME).read_text())
+        index["weight_map"].pop(next(iter(index["weight_map"])))
+        (bad_index / soup.INDEX_FILENAME).write_text(
+            json.dumps(index, indent=2, sort_keys=True) + "\n"
+        )
+        self.refresh_output_record(bad_index, index_metadata, soup.INDEX_FILENAME)
+        with self.assertRaisesRegex(soup.SoupValidationError, "index summary"):
+            soup.validate_weight_soup_checkpoint(bad_index, self.allowlist)
+
+        bad_base, base_metadata = self.build("bad-checkpoint-base")
+        base_metadata["base"]["identity"] = "Wrong/Base@revision"
+        (bad_base / soup.METADATA_FILENAME).write_text(
+            json.dumps(base_metadata, indent=2, sort_keys=True) + "\n"
+        )
+        with self.assertRaisesRegex(soup.SoupValidationError, "allowlisted base"):
+            soup.validate_weight_soup_checkpoint(bad_base, self.allowlist)
+
+        bad_parent, parent_metadata = self.build("bad-checkpoint-parent")
+        parent_metadata["sources"][0]["parent_training_metadata"].pop("sha256")
+        (bad_parent / soup.METADATA_FILENAME).write_text(
+            json.dumps(parent_metadata, indent=2, sort_keys=True) + "\n"
+        )
+        with self.assertRaisesRegex(soup.SoupValidationError, "binding is incomplete"):
+            soup.validate_weight_soup_checkpoint(bad_parent, self.allowlist)
 
 
 if __name__ == "__main__":
