@@ -164,11 +164,15 @@ The superseded active artifact and its self-check remain privately at
 
 The local pending record is at ignored `runtime/pending-provenance.json`.
 
-**This artifact remains unsubmitted.** GitHub and W&B credentials are configured, but
-credentials and operator authorization do not make an incompatible artifact eligible.
-As of 2026-08-31, the anchored coordinator advertises `code/mt-3g` under mechanism
-`0.2.0`, while these bytes and the reviewed controller target `extract/mt-3g` under
-mechanism `0.1.2`. The controller therefore remains in dry-run and has created no
-release asset or on-chain commitment for these bytes. Treating local quality evidence,
-the dry-run plan, or a local manifest as an official submission or rank would be
+**This artifact remains unsubmitted.** Its exact validated public W&B provenance was
+published as finished run
+[`8fhpjghg`](https://wandb.ai/microtensor/training-runs/runs/8fhpjghg). The persisted
+run was read back with the expected hotkey, track, artifact digest, finished block,
+152-record count, and calibration digest; anonymous reachability was also verified.
+No GitHub release asset or chain commitment was created. Credentials and operator
+authorization do not make an incompatible artifact eligible. As of 2026-08-31, the
+anchored coordinator advertises `code/mt-3g` under mechanism `0.2.0`, while these
+bytes and the reviewed controller target `extract/mt-3g` under mechanism `0.1.2`.
+The controller therefore remains in dry-run. Treating local quality evidence, the
+dry-run plan, or a local manifest as an official submission or rank would be
 inaccurate.
