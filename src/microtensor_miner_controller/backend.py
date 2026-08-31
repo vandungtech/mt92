@@ -8,12 +8,28 @@ import re
 import stat
 import tempfile
 import time
+from collections.abc import Mapping
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Protocol
 
 from .binding import validate_binding
-from .config import ControllerConfig, UPSTREAM_COMMIT, UPSTREAM_RELEASE
-from .errors import PreflightError, VerificationError
+from .config import (
+    AUTHORIZED_GITHUB_REPOSITORY,
+    AUTHORIZED_HOTKEY_SS58,
+    BITTENSOR_VERSION,
+    BITTENSOR_WALLET_VERSION,
+    FINNEY_GENESIS_HASH,
+    FINNEY_RUNTIME_CODE_HASH,
+    FINNEY_RUNTIME_SPEC_VERSION,
+    FINNEY_TRANSACTION_VERSION,
+    SUBSTRATE_INTERFACE_VERSION,
+    TRANSACTION_AUTHORIZATION,
+    UPSTREAM_COMMIT,
+    UPSTREAM_RELEASE,
+    ControllerConfig,
+)
+from .errors import AuthorizationRefused, PreflightError, VerificationError
 from .models import (
     PackagedArtifact,
     PreflightSnapshot,
@@ -24,6 +40,14 @@ from .models import (
 log = logging.getLogger(__name__)
 
 _PINNED_MODEL = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{7,40}$")
+_AUTHORIZED_CALL_MODULE = "Commitments"
+_AUTHORIZED_CALL_FUNCTION = "set_commitment"
+_AUTHORIZED_PERIOD_BLOCKS = 128
+_AUTHORIZED_MAX_FEE_RAO = 0
+_AUTHORIZED_MAX_DEPOSIT_RAO = 0
+_AUTHORIZED_SIGNATURE_VERSION = 1
+_RUNTIME_CODE_STORAGE_KEY = "0x3a636f6465"
+_HASH = re.compile(r"^0x[0-9a-f]{64}$")
 
 
 def _publishable_files(manifest: Any) -> tuple[str, ...]:
@@ -86,6 +110,7 @@ class MicrotensorBackend:
         return self._hotkey
 
     def preflight(self) -> PreflightSnapshot:
+        self._verify_transaction_dependencies()
         commit, version = self._verify_upstream()
         self._validate_artifact_config()
 
@@ -136,6 +161,25 @@ class MicrotensorBackend:
             upstream_version=version,
             upstream_commit=commit,
         )
+
+    @staticmethod
+    def _verify_transaction_dependencies() -> None:
+        expected = {
+            "bittensor": BITTENSOR_VERSION,
+            "bittensor-wallet": BITTENSOR_WALLET_VERSION,
+            "async-substrate-interface": SUBSTRATE_INTERFACE_VERSION,
+        }
+        for distribution, required in expected.items():
+            try:
+                observed = importlib.metadata.version(distribution)
+            except importlib.metadata.PackageNotFoundError as exc:
+                raise PreflightError(
+                    f"required transaction dependency is missing: {distribution}"
+                ) from exc
+            if observed != required:
+                raise PreflightError(
+                    f"{distribution} version is {observed}, expected exact audited pin {required}"
+                )
 
     def _verify_upstream(self) -> tuple[str, str]:
         try:
@@ -517,10 +561,21 @@ class MicrotensorBackend:
         from microtensor.core.constants import MAX_COMMITMENT_BYTES
         from microtensor.miner.publish import commitment_for
 
+        native = self._native(packaged)
+        if (
+            packaged.sealed
+            or getattr(native, "sealed", None) is not None
+            or packaged.hotkey != self.hotkey
+            or getattr(native, "hotkey", "") != self.hotkey
+            or not getattr(native, "signature", "")
+        ):
+            raise VerificationError(
+                "commitment requires an unsealed manifest signed by the configured hotkey"
+            )
         try:
             payload = commitment_for(
                 self._miner_config(packaged.source),
-                self._native(packaged),
+                native,
                 packaged.round_index,
             ).encode()
         except Exception as exc:
@@ -529,6 +584,458 @@ class MicrotensorBackend:
         if len(encoded) > MAX_COMMITMENT_BYTES:
             raise VerificationError("encoded commitment exceeds the 128-byte chain limit")
         return payload
+
+    @staticmethod
+    def _authorization_integer(value: Any, label: str) -> int:
+        try:
+            raw = value.rao
+        except AttributeError:
+            try:
+                raw = value.value
+            except AttributeError:
+                raw = value
+            except Exception as exc:
+                raise AuthorizationRefused(f"{label} could not be proven") from exc
+        except Exception as exc:
+            raise AuthorizationRefused(f"{label} could not be proven") from exc
+        if isinstance(raw, bool) or not isinstance(raw, Integral):
+            raise AuthorizationRefused(f"{label} was not an exact integer")
+        converted = int(raw)
+        if converted < 0:
+            raise AuthorizationRefused(f"{label} was negative")
+        return converted
+
+    @classmethod
+    def _authorized_chain_head(cls, substrate: Any) -> str:
+        try:
+            genesis = str(substrate.get_block_hash(0)).lower()
+            head = str(substrate.get_chain_head()).lower()
+            runtime = substrate.get_block_runtime_info(head)
+            code_response = substrate.rpc_request(
+                "state_getStorageHash", [_RUNTIME_CODE_STORAGE_KEY, head]
+            )
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"Finney runtime identity could not be proven before signing: {exc}"
+            ) from exc
+        if genesis != FINNEY_GENESIS_HASH:
+            raise AuthorizationRefused(
+                f"chain genesis is {genesis}, not the authorized Finney genesis"
+            )
+        if not _HASH.fullmatch(head):
+            raise AuthorizationRefused("chain head response was not a canonical hash")
+        if not isinstance(runtime, Mapping):
+            raise AuthorizationRefused("runtime version response was incomplete")
+        if "specVersion" not in runtime or "transactionVersion" not in runtime:
+            raise AuthorizationRefused("runtime version response omitted pinned fields")
+        spec = cls._authorization_integer(runtime["specVersion"], "runtime spec version")
+        transaction = cls._authorization_integer(
+            runtime["transactionVersion"], "runtime transaction version"
+        )
+        if spec != FINNEY_RUNTIME_SPEC_VERSION:
+            raise AuthorizationRefused(
+                f"runtime spec is {spec}, expected pinned {FINNEY_RUNTIME_SPEC_VERSION}"
+            )
+        if transaction != FINNEY_TRANSACTION_VERSION:
+            raise AuthorizationRefused(
+                "runtime transaction version is "
+                f"{transaction}, expected pinned {FINNEY_TRANSACTION_VERSION}"
+            )
+        if not isinstance(code_response, Mapping) or not isinstance(
+            code_response.get("result"), str
+        ):
+            raise AuthorizationRefused("runtime code hash response was incomplete")
+        code_hash = str(code_response["result"]).lower()
+        if code_hash != FINNEY_RUNTIME_CODE_HASH:
+            raise AuthorizationRefused(
+                f"runtime code hash is {code_hash}, not the audited Finney runtime"
+            )
+        return head
+
+    def _assert_live_transaction_policy(self) -> None:
+        config = self.config
+        if config.dry_run:
+            raise AuthorizationRefused("chain submission is forbidden while MMC_DRY_RUN=true")
+        if config.transaction_authorization != TRANSACTION_AUTHORIZATION:
+            raise AuthorizationRefused("the exact zero-cost transaction authorization is absent")
+        if config.netuid != 92 or config.expected_uid != 32:
+            raise AuthorizationRefused("authorized netuid 92 / UID 32 identity changed")
+        if (config.wallet_name, config.wallet_hotkey) != ("you-cold", "you-hot1"):
+            raise AuthorizationRefused("authorized you-cold / you-hot1 wallet selection changed")
+        if self.hotkey != AUTHORIZED_HOTKEY_SS58:
+            raise AuthorizationRefused("loaded hotkey is not the authorized UID-32 you-hot1 key")
+        if config.network != "finney" or config.endpoint:
+            raise AuthorizationRefused("live commitment requires finney with no custom endpoint")
+        try:
+            self._verify_transaction_dependencies()
+            source = config.source_for(0, self.hotkey)
+            coordinates = config.github_release_coordinates(source)
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"live dependency or artifact-source policy could not be proven: {exc}"
+            ) from exc
+        if (
+            coordinates is None
+            or f"{coordinates[0]}/{coordinates[1]}" != AUTHORIZED_GITHUB_REPOSITORY
+        ):
+            raise AuthorizationRefused(
+                "artifact source is not the authorized vandungtech/mt92 repo"
+            )
+
+    def _assert_authorized_registration(self) -> None:
+        self._assert_live_transaction_policy()
+        if self._client is None:
+            raise AuthorizationRefused("chain client has not passed preflight")
+        client_netuid = self._authorization_integer(
+            getattr(self._client, "netuid", None), "chain client netuid"
+        )
+        if self.config.netuid != 92 or client_netuid != 92:
+            raise AuthorizationRefused("authorized netuid changed from 92")
+        try:
+            self.assert_registered()
+        except VerificationError as exc:
+            raise AuthorizationRefused(
+                f"you-hot1 registration at UID 32 could not be proven: {exc}"
+            ) from exc
+
+    @classmethod
+    def _inspect_signed_extrinsic(
+        cls,
+        extrinsic: Any,
+        signer: Any,
+        expected_call: Mapping[str, Any],
+        nonce: int,
+        era: Mapping[str, int],
+    ) -> str:
+        value = getattr(extrinsic, "value", None)
+        expected_keys = {
+            "account_id",
+            "address",
+            "asset_id",
+            "call",
+            "call_args",
+            "call_function",
+            "call_module",
+            "era",
+            "mode",
+            "nonce",
+            "signature",
+            "signature_version",
+            "tip",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected_keys:
+            raise AuthorizationRefused("signed extrinsic fields differ from the audited shape")
+        try:
+            expected_account = "0x" + signer.public_key.hex()
+        except Exception as exc:
+            raise AuthorizationRefused("signing account identity could not be proven") from exc
+        if value["account_id"] != expected_account or value["address"] != expected_account:
+            raise AuthorizationRefused("signed extrinsic uses a different account")
+        if (
+            value["call_module"] != expected_call["call_module"]
+            or value["call_function"] != expected_call["call_function"]
+            or value["call_args"] != expected_call["call_args"]
+            or value["call"] != expected_call
+        ):
+            raise AuthorizationRefused("signed extrinsic contains a different call")
+        if cls._authorization_integer(value["nonce"], "signed nonce") != nonce:
+            raise AuthorizationRefused("signed extrinsic nonce differs from the fee estimate")
+        signed_era = value["era"]
+        if not isinstance(signed_era, Mapping) or dict(signed_era) != dict(era):
+            raise AuthorizationRefused("signed extrinsic era differs from the fee estimate")
+        if cls._authorization_integer(value["tip"], "signed tip") != 0:
+            raise AuthorizationRefused("signed extrinsic contains a nonzero tip")
+        asset = value["asset_id"]
+        if (
+            not isinstance(asset, Mapping)
+            or set(asset) != {"tip", "asset_id"}
+            or cls._authorization_integer(asset["tip"], "signed asset tip") != 0
+            or asset["asset_id"] is not None
+        ):
+            raise AuthorizationRefused("signed extrinsic contains an unauthorized fee asset")
+        if value["mode"] != "Disabled":
+            raise AuthorizationRefused("signed extrinsic enables an unauthorized mode")
+        if (
+            cls._authorization_integer(
+                value["signature_version"], "signed signature version"
+            )
+            != _AUTHORIZED_SIGNATURE_VERSION
+        ):
+            raise AuthorizationRefused("signed extrinsic uses an unexpected signature version")
+        signature = value["signature"]
+        if not isinstance(signature, str) or not re.fullmatch(r"0x[0-9a-f]{128}", signature):
+            raise AuthorizationRefused("signed extrinsic signature could not be proven")
+        data = getattr(extrinsic, "data", None)
+        if data is None or not str(data).startswith("0x") or len(str(data)) <= 2:
+            raise AuthorizationRefused("signed extrinsic has no encoded data")
+        try:
+            raw_hash = str(extrinsic.extrinsic_hash.hex()).lower()
+        except Exception as exc:
+            raise AuthorizationRefused("signed extrinsic hash could not be proven") from exc
+        extrinsic_hash = raw_hash if raw_hash.startswith("0x") else f"0x{raw_hash}"
+        if not _HASH.fullmatch(extrinsic_hash):
+            raise AuthorizationRefused("signed extrinsic hash was not canonical")
+        return extrinsic_hash
+
+    def _submit_authorized_commitment(self, payload: str) -> None:
+        """Submit exactly one direct zero-cost commitment or stop permanently.
+
+        This deliberately does not call the SDK's higher-level metadata helper: the
+        exact composed call is inspected, estimated, and then passed unchanged to the
+        direct signer. There is no internal retry; the controller reconciles chain state
+        before a later attempt if an inclusion response is ambiguous.
+        """
+        self._assert_live_transaction_policy()
+        if self._client is None or self._wallet is None:
+            raise AuthorizationRefused("wallet and chain client have not passed preflight")
+        self._assert_authorized_registration()
+
+        try:
+            encoded = payload.encode("ascii")
+        except UnicodeEncodeError:
+            raise AuthorizationRefused("commitment payload is not ASCII") from None
+        if not 1 <= len(encoded) <= 128:
+            raise AuthorizationRefused("commitment payload is outside the Raw1-Raw128 allowlist")
+
+        subtensor = self._client.subtensor
+        substrate = getattr(subtensor, "substrate", None)
+        if substrate is None:
+            raise AuthorizationRefused("direct Substrate transaction interface is unavailable")
+        signer = getattr(self._wallet, "hotkey", None)
+        if (
+            signer is None
+            or str(getattr(signer, "ss58_address", "")) != self.hotkey
+            or self.hotkey != AUTHORIZED_HOTKEY_SS58
+        ):
+            raise AuthorizationRefused("the direct signer is not the registered you-hot1 hotkey")
+
+        try:
+            head_before = self._authorized_chain_head(substrate)
+            info = {"fields": [[{f"Raw{len(encoded)}": encoded}]]}
+            call_args: dict[str, Any] = {"netuid": 92, "info": info}
+            expected_call: dict[str, Any] = {
+                "call_module": _AUTHORIZED_CALL_MODULE,
+                "call_function": _AUTHORIZED_CALL_FUNCTION,
+                "call_args": call_args,
+            }
+            call = substrate.compose_call(
+                call_module=_AUTHORIZED_CALL_MODULE,
+                call_function=_AUTHORIZED_CALL_FUNCTION,
+                call_params=call_args,
+                block_hash=head_before,
+            )
+        except AuthorizationRefused:
+            raise
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"authorized commitment call could not be composed: {exc}"
+            ) from exc
+
+        if getattr(call, "value", None) != expected_call:
+            raise AuthorizationRefused(
+                "composed transaction differs from Commitments.set_commitment(netuid=92)"
+            )
+
+        deposits: dict[str, int] = {}
+        try:
+            for name in ("InitialDeposit", "FieldDeposit"):
+                deposits[name] = self._authorization_integer(
+                    substrate.get_constant("Commitments", name, block_hash=head_before),
+                    f"Commitments.{name}",
+                )
+        except AuthorizationRefused:
+            raise
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"commitment deposit could not be proven before signing: {exc}"
+            ) from exc
+        required_deposit = deposits["InitialDeposit"] + deposits["FieldDeposit"]
+        if required_deposit != _AUTHORIZED_MAX_DEPOSIT_RAO:
+            raise AuthorizationRefused(
+                f"required commitment deposit is {required_deposit} rao, authorized maximum is 0"
+            )
+
+        try:
+            nonce = self._authorization_integer(
+                substrate.get_account_next_index(signer.ss58_address),
+                "hotkey account nonce",
+            )
+            era: dict[str, int] = {"period": _AUTHORIZED_PERIOD_BLOCKS}
+            payment = substrate.get_payment_info(
+                call=call,
+                keypair=signer,
+                era=era,
+                nonce=nonce,
+                tip=0,
+                tip_asset_id=None,
+            )
+        except AuthorizationRefused:
+            raise
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"transaction fee could not be estimated before signing: {exc}"
+            ) from exc
+        if not isinstance(payment, Mapping) or "partial_fee" not in payment:
+            raise AuthorizationRefused("transaction fee estimate response was incomplete")
+        estimated_fee = self._authorization_integer(
+            payment["partial_fee"], "estimated transaction fee"
+        )
+        if estimated_fee != _AUTHORIZED_MAX_FEE_RAO:
+            raise AuthorizationRefused(
+                f"estimated transaction fee is {estimated_fee} rao, authorized maximum is 0"
+            )
+        if not isinstance(era, dict) or set(era) != {"period", "current"}:
+            raise AuthorizationRefused("fee estimate did not use an explicit mortal era")
+        if self._authorization_integer(era["period"], "mortal era period") != 128:
+            raise AuthorizationRefused("fee estimate changed the authorized 128-block era")
+        self._authorization_integer(era["current"], "mortal era current block")
+        if getattr(call, "value", None) != expected_call:
+            raise AuthorizationRefused("fee estimation mutated the authorized commitment call")
+
+        # Refresh all mutable authorization inputs immediately before the only
+        # private-key operation, including the nonce used by the fee estimate.
+        self._assert_authorized_registration()
+        self._authorized_chain_head(substrate)
+        try:
+            nonce_before_signing = self._authorization_integer(
+                substrate.get_account_next_index(signer.ss58_address),
+                "pre-sign hotkey account nonce",
+            )
+        except AuthorizationRefused:
+            raise
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"hotkey nonce could not be refreshed before signing: {exc}"
+            ) from exc
+        if nonce_before_signing != nonce:
+            raise AuthorizationRefused("hotkey nonce changed after the fee estimate")
+
+        try:
+            refreshed_era = dict(era)
+            refreshed_payment = substrate.get_payment_info(
+                call=call,
+                keypair=signer,
+                era=refreshed_era,
+                nonce=nonce,
+                tip=0,
+                tip_asset_id=None,
+            )
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"transaction fee could not be refreshed before signing: {exc}"
+            ) from exc
+        if not isinstance(refreshed_payment, Mapping) or "partial_fee" not in refreshed_payment:
+            raise AuthorizationRefused("refreshed transaction fee response was incomplete")
+        refreshed_fee = self._authorization_integer(
+            refreshed_payment["partial_fee"], "refreshed transaction fee"
+        )
+        if refreshed_fee != _AUTHORIZED_MAX_FEE_RAO:
+            raise AuthorizationRefused(
+                f"refreshed transaction fee is {refreshed_fee} rao, authorized maximum is 0"
+            )
+        if refreshed_era != dict(era):
+            raise AuthorizationRefused("refreshed fee estimate changed the signed mortal era")
+
+        signed_era = dict(era)
+        try:
+            extrinsic = substrate.create_signed_extrinsic(
+                call=call,
+                keypair=signer,
+                era=signed_era,
+                nonce=nonce,
+                tip=0,
+                tip_asset_id=None,
+            )
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"signed commitment could not be created; no submission attempted: {exc}"
+            ) from exc
+        extrinsic_hash = self._inspect_signed_extrinsic(
+            extrinsic, signer, expected_call, nonce, era
+        )
+
+        # Signing does not authorize submission under stale state. Recheck policy,
+        # registration, chain identity, and nonce immediately before broadcasting.
+        self._assert_authorized_registration()
+        self._authorized_chain_head(substrate)
+        try:
+            nonce_before_submit = self._authorization_integer(
+                substrate.get_account_next_index(signer.ss58_address),
+                "pre-submit hotkey account nonce",
+            )
+        except AuthorizationRefused:
+            raise
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"hotkey nonce could not be refreshed before submission: {exc}"
+            ) from exc
+        if nonce_before_submit != nonce:
+            raise AuthorizationRefused("hotkey nonce changed after signing")
+
+        try:
+            final_era = dict(era)
+            final_payment = substrate.get_payment_info(
+                call=call,
+                keypair=signer,
+                era=final_era,
+                nonce=nonce,
+                tip=0,
+                tip_asset_id=None,
+            )
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"transaction fee could not be proven immediately before submit: {exc}"
+            ) from exc
+        if not isinstance(final_payment, Mapping) or "partial_fee" not in final_payment:
+            raise AuthorizationRefused("final transaction fee response was incomplete")
+        final_fee = self._authorization_integer(
+            final_payment["partial_fee"], "final transaction fee"
+        )
+        if final_fee != _AUTHORIZED_MAX_FEE_RAO:
+            raise AuthorizationRefused(
+                f"final transaction fee is {final_fee} rao, authorized maximum is 0"
+            )
+        if final_era != dict(era) or getattr(call, "value", None) != expected_call:
+            raise AuthorizationRefused("final fee estimate changed the signed transaction envelope")
+        self._inspect_signed_extrinsic(extrinsic, signer, expected_call, nonce, era)
+
+        try:
+            receipt = substrate.submit_extrinsic(
+                extrinsic=extrinsic,
+                wait_for_inclusion=True,
+                wait_for_finalization=True,
+            )
+        except Exception as exc:
+            raise AuthorizationRefused(
+                "commitment submission outcome is ambiguous; operator reconciliation "
+                "is required before any retry"
+            ) from exc
+
+        try:
+            receipt_hash = str(getattr(receipt, "extrinsic_hash", "")).lower()
+            block_hash = str(getattr(receipt, "block_hash", "")).lower()
+            if getattr(receipt, "finalized", None) is not True:
+                raise AuthorizationRefused("commitment receipt did not prove finalization")
+            if receipt_hash != extrinsic_hash or not _HASH.fullmatch(receipt_hash):
+                raise AuthorizationRefused("receipt does not identify the signed extrinsic")
+            if not _HASH.fullmatch(block_hash):
+                raise AuthorizationRefused("commitment receipt omitted a canonical block hash")
+            if getattr(receipt, "is_success", None) is not True:
+                raise AuthorizationRefused("finalized commitment did not prove success")
+            charged_fee = self._authorization_integer(
+                getattr(receipt, "total_fee_amount", None), "receipt total fee"
+            )
+        except AuthorizationRefused:
+            raise
+        except Exception as exc:
+            raise AuthorizationRefused(
+                "finalized commitment receipt could not be proven; operator reconciliation "
+                "is required before any retry"
+            ) from exc
+        if charged_fee != _AUTHORIZED_MAX_FEE_RAO:
+            raise AuthorizationRefused(
+                f"commitment receipt reports a nonzero fee ({charged_fee} rao)"
+            )
 
     def upload(self, packaged: PackagedArtifact) -> None:
         if self.config.dry_run:
@@ -634,17 +1141,28 @@ class MicrotensorBackend:
         if not verdict.admissible:
             raise VerificationError(f"provenance rejected: {verdict.reason}")
     def publish(self, packaged: PackagedArtifact) -> PublishReceipt:
-        from microtensor.miner.publish import publish
-
-        if self._client is None:
-            raise PreflightError("chain client has not passed preflight")
-        result = publish(
-            self._miner_config(packaged.source),
-            self._client,
-            packaged.round_index,
-            self._native(packaged),
-        )
-        return PublishReceipt(round_index=result.round_index, payload=result.payload)
+        self._assert_live_transaction_policy()
+        if packaged.hotkey != self.hotkey:
+            raise AuthorizationRefused("packaged artifact is signed by a different hotkey")
+        try:
+            expected_source = self.config.source_for(packaged.round_index, self.hotkey)
+            coordinates = self.config.github_release_coordinates(packaged.source)
+        except Exception as exc:
+            raise AuthorizationRefused(
+                f"packaged artifact source could not be proven: {exc}"
+            ) from exc
+        if packaged.source != expected_source:
+            raise AuthorizationRefused(
+                "packaged artifact source differs from the authorized round release"
+            )
+        if (
+            coordinates is None
+            or f"{coordinates[0]}/{coordinates[1]}" != AUTHORIZED_GITHUB_REPOSITORY
+        ):
+            raise AuthorizationRefused("packaged artifact is not in vandungtech/mt92")
+        payload = self.validate_commitment(packaged)
+        self._submit_authorized_commitment(payload)
+        return PublishReceipt(round_index=packaged.round_index, payload=payload)
 
     def verify_on_chain(self, packaged: PackagedArtifact) -> str:
         if self._client is None:

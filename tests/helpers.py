@@ -28,6 +28,9 @@ def base_env(root: Path, *, dry_run: bool = True) -> dict[str, str]:
         "MMC_SOURCE_TEMPLATE": "s3:public/uid-{uid}/round-{round}",
         "MMC_COORDINATOR_URL": "https://coordinator.example",
         "MMC_DRY_RUN": "true" if dry_run else "false",
+        "MMC_TRANSACTION_AUTHORIZATION": (
+            "netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1"
+        ),
         "MMC_VERIFY_INTERVAL_SECONDS": "900",
     }
 

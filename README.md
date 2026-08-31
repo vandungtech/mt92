@@ -4,8 +4,11 @@ This repository supervises one registered Microtensor hotkey safely across round
 boundaries. It is pinned to upstream commit
 `d0e002f887d038bf3ea4af65b499137a755620d7`, which reports version `0.1.14`,
 netuid 92 on Finney, wallet `you-cold/you-hot1`, expected UID 32, and the
-currently live `extract/mt-3g` competition. That commit is unreleased and is not
-the application-signed v0.1.14 release commit; the signed release does not yet
+controller target `extract/mt-3g`. As of 2026-08-31, the live coordinator instead
+advertises only `code/mt-3g` under mechanism `0.2.0`, so submission remains
+fail-closed until a compatible, signed upstream release and matching anchored round exist.
+That pinned commit is unreleased and is not the application-signed v0.1.14 release
+commit; the signed release does not yet
 contain the live extraction rules. Version equality is therefore not treated as
 release-signature proof, and any live cycle requires a fresh exact-round audit.
 
@@ -112,8 +115,9 @@ Use the exact Microtensor HTTPS locator form below; it intentionally has no `//`
 `https:`:
 
 ```dotenv
-MMC_SOURCE_TEMPLATE=https:github.com/YOURUSER/mt92/releases/download/r{round}
+MMC_SOURCE_TEMPLATE=https:github.com/vandungtech/mt92/releases/download/r{round}
 MMC_GITHUB_TOKEN_FILE=/etc/microtensor-miner/github.token
+MMC_TRANSACTION_AUTHORIZATION=netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1
 ```
 
 The repository must already be public and initialized with at least one commit. Keep the
@@ -159,6 +163,21 @@ Live mode is supported only for the immutable GitHub source. Before setting
 - the protected token file passes preflight and has the permissions described above;
 - the exact artifact digest has admissible public W&B provenance; and
 - the coordinator reports a coherent, anchored submissions phase with enough blocks left.
+
+The authorization identifier does not relax any check and is not permission to spend
+TAO. Immediately before signing, the controller refreshes the UID 32 registration,
+verifies the audited Finney genesis and runtime identity, composes exactly
+`Commitments.set_commitment(netuid=92)`, and checks `InitialDeposit=0` and
+`FieldDeposit=0`. It estimates the exact nonce, mortal era, zero-tip envelope that it
+would sign and requires `partial_fee=0`. The signed envelope is then decoded and checked
+again before direct submission with `you-hot1`; MEV Shield is never invoked.
+
+A nonzero or unprovable cost, changed registration/runtime, different call or signer, or
+anomalous receipt writes a durable authorization-refusal latch and exits 3. A separate
+submission-pending marker is flushed before broadcast and is cleared only after exact
+on-chain readback. After a crash or ambiguous response the controller reconciles that
+marker read-only and never blindly resubmits. Supervisor treats exit 3 as an expected
+stop, so it will not retry until the operator has reviewed the condition.
 
 S3 and R2 remain configuration diagnostics only and are categorically refused for live
 upload. An interrupted draft is recoverable: matching assets are reused, missing assets
@@ -210,6 +229,10 @@ State is atomically replaced with mode 0600:
 - `$MMC_STATE_DIR/health.json`: compact supervisor-facing health;
 - `$MMC_STATE_DIR/rank.json`: best-effort public leaderboard standing for the configured
   hotkey, refreshed independently every five minutes; and
+- `$MMC_STATE_DIR/authorization-refusal.json`: durable fail-stop reason requiring
+  operator review;
+- `$MMC_STATE_DIR/submission-pending.json`: pre-broadcast recovery marker that prevents
+  automatic duplicate submission; and
 - `$MMC_STATE_DIR/controller.lock`: prevents duplicate signers.
 
 ```bash

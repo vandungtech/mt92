@@ -11,6 +11,18 @@ from .errors import ConfigError
 
 UPSTREAM_COMMIT = "d0e002f887d038bf3ea4af65b499137a755620d7"
 UPSTREAM_RELEASE = "0.1.14"
+BITTENSOR_VERSION = "10.5.0"
+BITTENSOR_WALLET_VERSION = "4.1.1"
+SUBSTRATE_INTERFACE_VERSION = "2.2.1"
+FINNEY_GENESIS_HASH = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03"
+FINNEY_RUNTIME_SPEC_VERSION = 452
+FINNEY_TRANSACTION_VERSION = 1
+FINNEY_RUNTIME_CODE_HASH = (
+    "0x40a8c3c99a47d6739b086236308535fab26d5fd4cc5c88eb83f6a3c8b928f7cc"
+)
+TRANSACTION_AUTHORIZATION = "netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1"
+AUTHORIZED_GITHUB_REPOSITORY = "vandungtech/mt92"
+AUTHORIZED_HOTKEY_SS58 = "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
 EXPECTED_ENTRYPOINT = "model.gguf"
 EXPECTED_FORMAT = "gguf"
 EXPECTED_QUANTIZATION = "Q4_K_M"
@@ -109,6 +121,7 @@ class ControllerConfig:
     allow_chain_schedule_fallback: bool
     require_anchored_coordinator: bool
     dry_run: bool
+    transaction_authorization: str
     allow_unverified_upstream: bool
     poll_seconds: int
     retry_seconds: int
@@ -174,6 +187,7 @@ class ControllerConfig:
                 source, "MMC_REQUIRE_ANCHORED_COORDINATOR", True
             ),
             dry_run=_boolean(source, "MMC_DRY_RUN", True),
+            transaction_authorization=_text(source, "MMC_TRANSACTION_AUTHORIZATION"),
             allow_unverified_upstream=_boolean(source, "MMC_ALLOW_UNVERIFIED_UPSTREAM", False),
             poll_seconds=_integer(source, "MMC_POLL_SECONDS", 30, minimum=1),
             retry_seconds=_integer(source, "MMC_RETRY_SECONDS", 30, minimum=1),
@@ -200,8 +214,12 @@ class ControllerConfig:
     def _validate(self) -> None:
         if self.netuid != 92:
             raise ConfigError("this deployment is pinned to Microtensor netuid 92")
+        if not self.dry_run and self.network != "finney":
+            raise ConfigError("live mode requires MT_NETWORK=finney")
+        if not self.dry_run and self.endpoint:
+            raise ConfigError("live mode refuses custom MT_ENDPOINT values")
         if self.network != "finney" and not self.endpoint:
-            raise ConfigError("MT_NETWORK must be finney unless MT_ENDPOINT is explicitly set")
+            raise ConfigError("non-finney diagnostics require an explicit MT_ENDPOINT")
         if self.wallet_name != "you-cold":
             raise ConfigError("MT_WALLET_NAME must be you-cold for this deployment")
         if self.wallet_hotkey != "you-hot1":
@@ -240,6 +258,12 @@ class ControllerConfig:
                 "https release"
             )
         self.source_for(0, "5ConfigProbe")
+        if self.transaction_authorization not in {"", TRANSACTION_AUTHORIZATION}:
+            raise ConfigError("MMC_TRANSACTION_AUTHORIZATION is not an approved policy")
+        if not self.dry_run and self.transaction_authorization != TRANSACTION_AUTHORIZATION:
+            raise ConfigError(
+                "live mode requires the exact zero-cost MMC_TRANSACTION_AUTHORIZATION"
+            )
         if scheme == "https" and self.github_token_file is None and not self.dry_run:
             raise ConfigError("MMC_GITHUB_TOKEN_FILE is required for live GitHub releases")
         if scheme != "https" and self.github_token_file is not None:
@@ -292,6 +316,10 @@ class ControllerConfig:
                     "https sources must be github.com/OWNER/REPO/releases/download/TAG"
                 )
             owner, repo, tag = coordinates
+            if f"{owner}/{repo}" != AUTHORIZED_GITHUB_REPOSITORY:
+                raise ConfigError(
+                    "GitHub release source is not the authorized vandungtech/mt92 repository"
+                )
             if (
                 "--" in owner
                 or repo.casefold().endswith(".git")

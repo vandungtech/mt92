@@ -8,8 +8,10 @@ version = "0.1.0"
 description = "Fail-closed, round-aware supervision for a Microtensor subnet miner"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
 dependencies = [
+  "async-substrate-interface==2.2.1",
+  "bittensor==10.5.0",
+  "bittensor-wallet==4.1.1",
   "microtensor-subnet[provenance,s3] @ git+https://github.com/microtensor-io/microtensor-subnet.git@d0e002f887d038bf3ea4af65b499137a755620d7",
 ]
 

@@ -32,7 +32,16 @@ wandb/
 *.pth
 *.ckpt
 *credentials*
+*credential*
 *secrets*
+*secret*
 *.token
 *.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
 *.log

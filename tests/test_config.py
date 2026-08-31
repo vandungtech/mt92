@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from microtensor_miner_controller.config import ControllerConfig, UPSTREAM_COMMIT
+from microtensor_miner_controller.config import (
+    TRANSACTION_AUTHORIZATION,
+    UPSTREAM_COMMIT,
+    ControllerConfig,
+)
 from microtensor_miner_controller.errors import ConfigError
 
 from helpers import base_env
@@ -46,17 +50,17 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             env = base_env(Path(temporary))
             env["MMC_SOURCE_TEMPLATE"] = (
-                "https:github.com/miner-artifacts/public/releases/download/r{round}"
+                "https:github.com/vandungtech/mt92/releases/download/r{round}"
             )
             config = ControllerConfig.from_env(env)
         self.assertIsNone(config.github_token_file)
         self.assertEqual(
             config.source_for(41, "5Hotkey"),
-            "https:github.com/miner-artifacts/public/releases/download/r41",
+            "https:github.com/vandungtech/mt92/releases/download/r41",
         )
         self.assertEqual(
             config.github_release_coordinates(config.source_for(41, "5Hotkey")),
-            ("miner-artifacts", "public", "r41"),
+            ("vandungtech", "mt92", "r41"),
         )
 
     def test_live_github_source_requires_token_file_path(self) -> None:
@@ -64,7 +68,7 @@ class ConfigTests(unittest.TestCase):
             root = Path(temporary)
             env = base_env(root, dry_run=False)
             env["MMC_SOURCE_TEMPLATE"] = (
-                "https:github.com/miner-artifacts/public/releases/download/r{round}"
+                "https:github.com/vandungtech/mt92/releases/download/r{round}"
             )
             with self.assertRaisesRegex(ConfigError, "MMC_GITHUB_TOKEN_FILE"):
                 ControllerConfig.from_env(env)
@@ -82,11 +86,34 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(ConfigError, "live S3/R2 activation is refused"):
                     ControllerConfig.from_env(env)
 
+    def test_live_requires_exact_transaction_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = base_env(root, dry_run=False)
+            env["MMC_SOURCE_TEMPLATE"] = (
+                "https:github.com/vandungtech/mt92/releases/download/r{round}"
+            )
+            env["MMC_GITHUB_TOKEN_FILE"] = str(root / "github.token")
+            env.pop("MMC_TRANSACTION_AUTHORIZATION")
+            with self.assertRaisesRegex(ConfigError, "exact zero-cost"):
+                ControllerConfig.from_env(env)
+            env["MMC_TRANSACTION_AUTHORIZATION"] = TRANSACTION_AUTHORIZATION
+            self.assertFalse(ControllerConfig.from_env(env).dry_run)
+
+    def test_other_github_repository_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            env = base_env(Path(temporary))
+            env["MMC_SOURCE_TEMPLATE"] = (
+                "https:github.com/example/other/releases/download/r{round}"
+            )
+            with self.assertRaisesRegex(ConfigError, "authorized vandungtech/mt92"):
+                ControllerConfig.from_env(env)
+
     def test_invalid_github_release_tag_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             env = base_env(Path(temporary))
             env["MMC_SOURCE_TEMPLATE"] = (
-                "https:github.com/miner-artifacts/public/releases/download/r{round}.lock"
+                "https:github.com/vandungtech/mt92/releases/download/r{round}.lock"
             )
             with self.assertRaisesRegex(ConfigError, "GitHub release source is invalid"):
                 ControllerConfig.from_env(env)

@@ -16,7 +16,7 @@ from microtensor_miner_controller.models import PackagedArtifact
 from helpers import base_env
 
 TOKEN = "github_pat_backend_test_secret"  # noqa: S105
-SOURCE_TEMPLATE = "https:github.com/miner-artifacts/public/releases/download/r{round}"
+SOURCE_TEMPLATE = "https:github.com/vandungtech/mt92/releases/download/r{round}"
 
 
 class GitHubBackendTests(unittest.TestCase):
@@ -151,8 +151,8 @@ class GitHubBackendTests(unittest.TestCase):
             backend.upload(self.packaged)
 
         publisher_class.assert_called_once_with(
-            owner="miner-artifacts",
-            repo="public",
+            owner="vandungtech",
+            repo="mt92",
             tag="r7",
             token=TOKEN,
         )

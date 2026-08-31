@@ -164,8 +164,11 @@ The superseded active artifact and its self-check remain privately at
 
 The local pending record is at ignored `runtime/pending-provenance.json`.
 
-**This artifact is unpublished and unsubmitted.** No public W&B run, immutable
-public URL, coordinator submission, or on-chain commitment exists for these
-bytes. The required credentials are absent, and the coordinator is serving a
-stale settled round. Treating the dry-run controller, local quality result, or
-local manifest as an official submission or rank would be inaccurate.
+**This artifact remains unsubmitted.** GitHub and W&B credentials are configured, but
+credentials and operator authorization do not make an incompatible artifact eligible.
+As of 2026-08-31, the anchored coordinator advertises `code/mt-3g` under mechanism
+`0.2.0`, while these bytes and the reviewed controller target `extract/mt-3g` under
+mechanism `0.1.2`. The controller therefore remains in dry-run and has created no
+release asset or on-chain commitment for these bytes. Treating local quality evidence,
+the dry-run plan, or a local manifest as an official submission or rank would be
+inaccurate.

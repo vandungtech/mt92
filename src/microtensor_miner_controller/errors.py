@@ -16,3 +16,7 @@ class RoundRefused(ControllerError):
 
 class VerificationError(ControllerError):
     """A required postcondition could not be proven."""
+
+
+class AuthorizationRefused(ControllerError):
+    """A transaction fell outside the operator's explicit authorization."""
