@@ -14,6 +14,10 @@ class RoundRefused(ControllerError):
     """No trustworthy current submission round could be established."""
 
 
+class RoundNotOpen(RoundRefused):
+    """The trusted coordinator has no currently usable submission round."""
+
+
 class VerificationError(ControllerError):
     """A required postcondition could not be proven."""
 

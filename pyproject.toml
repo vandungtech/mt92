@@ -12,12 +12,12 @@ dependencies = [
   "async-substrate-interface==2.2.1",
   "bittensor==10.5.0",
   "bittensor-wallet==4.1.1",
-  "microtensor-subnet[provenance,s3] @ git+https://github.com/microtensor-io/microtensor-subnet.git@d0e002f887d038bf3ea4af65b499137a755620d7",
+  "microtensor-subnet[provenance,s3] @ https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.0/microtensor_subnet-0.3.0-py3-none-any.whl",
 ]
 
 [project.optional-dependencies]
 selfcheck = [
-  "microtensor-subnet[validator,gguf] @ git+https://github.com/microtensor-io/microtensor-subnet.git@d0e002f887d038bf3ea4af65b499137a755620d7",
+  "microtensor-subnet[validator,gguf] @ https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.0/microtensor_subnet-0.3.0-py3-none-any.whl",
 ]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 

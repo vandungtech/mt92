@@ -90,6 +90,176 @@ RECOMMENDED_BASE_FILES: Final[dict[str, dict[str, int | str]]] = {
 }
 RECOMMENDED_BASE_REQUIRED_BYTES: Final[int] = 999_586_348
 RECOMMENDED_BASE_REPOSITORY_BYTES: Final[int] = 999_604_233
+
+QWEN25_CODER_1_5B_BASE_MODEL: Final[str] = ALLOWED_BASE_MODELS[1]
+QWEN25_CODER_1_5B_BASE_FILES: Final[dict[str, dict[str, int | str]]] = {
+    "config.json": {"size": 660, "git_blob": "b4831594221a81ea1540f0c6aeae93b6a8aeae56"},
+    "generation_config.json": {
+        "size": 242,
+        "git_blob": "b7849b3dad857bc1e227afd6ca21d1e4cb3f8f82",
+    },
+    "merges.txt": {
+        "size": 1_671_839,
+        "git_blob": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+    },
+    "model.safetensors": {
+        "size": 3_087_467_144,
+        "sha256": "c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8",
+    },
+    "tokenizer.json": {
+        "size": 7_031_645,
+        "git_blob": "443909a61d429dff23010e5bddd28ff530edda00",
+    },
+    "tokenizer_config.json": {
+        "size": 7_305,
+        "git_blob": "acee076f49bf3c0298e15de0909d1da7b392f0c3",
+    },
+    "vocab.json": {
+        "size": 2_776_833,
+        "git_blob": "4783fe10ac3adce15ac8f358ef5462739852c569",
+    },
+}
+QWEN25_CODER_1_5B_BASE_REQUIRED_BYTES: Final[int] = 3_098_955_668
+QWEN25_CODER_1_5B_BASE_REPOSITORY_BYTES: Final[int] = 3_098_973_788
+
+QWEN3_BASE_MODEL: Final[str] = ALLOWED_BASE_MODELS[2]
+QWEN3_BASE_FILES: Final[dict[str, dict[str, int | str]]] = {
+    "config.json": {"size": 726, "git_blob": "f5c3703b78ae2a478ae15b247e9f855e0ce2107b"},
+    "generation_config.json": {
+        "size": 239,
+        "git_blob": "20a8a9156fc8c3f25295ca067f61fdf120d517c5",
+    },
+    "merges.txt": {
+        "size": 1_671_853,
+        "git_blob": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+    },
+    "model.safetensors": {
+        "size": 1_503_300_328,
+        "sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
+    },
+    # tokenizer.json is an LFS object at this revision, so its content SHA-256
+    # is authoritative rather than the Git identity of its small pointer file.
+    "tokenizer.json": {
+        "size": 11_422_654,
+        "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    },
+    "tokenizer_config.json": {
+        "size": 9_732,
+        "git_blob": "417d038a63fa3de29cfde265caedae14d1a58d92",
+    },
+    "vocab.json": {
+        "size": 2_776_833,
+        "git_blob": "4783fe10ac3adce15ac8f358ef5462739852c569",
+    },
+}
+QWEN3_BASE_REQUIRED_BYTES: Final[int] = 1_519_182_365
+QWEN3_BASE_REPOSITORY_BYTES: Final[int] = 1_519_209_243
+
+QWEN3_1_7B_BASE_MODEL: Final[str] = ALLOWED_BASE_MODELS[3]
+QWEN3_1_7B_BASE_FILES: Final[dict[str, dict[str, int | str]]] = {
+    "config.json": {"size": 726, "git_blob": "044a86ecf7cb32238f3fae4184e55d354787edec"},
+    "generation_config.json": {
+        "size": 239,
+        "git_blob": "20a8a9156fc8c3f25295ca067f61fdf120d517c5",
+    },
+    "merges.txt": {
+        "size": 1_671_853,
+        "git_blob": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+    },
+    "model-00001-of-00002.safetensors": {
+        "size": 3_441_185_608,
+        "sha256": "169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5",
+    },
+    "model-00002-of-00002.safetensors": {
+        "size": 622_329_984,
+        "sha256": "912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9",
+    },
+    "model.safetensors.index.json": {
+        "size": 25_605,
+        "git_blob": "986d7db875b47d21f68530f6baac038f1b297b39",
+    },
+    # tokenizer.json is the same pinned LFS object as the Qwen3 0.6B base.
+    "tokenizer.json": {
+        "size": 11_422_654,
+        "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    },
+    "tokenizer_config.json": {
+        "size": 9_732,
+        "git_blob": "417d038a63fa3de29cfde265caedae14d1a58d92",
+    },
+    "vocab.json": {
+        "size": 2_776_833,
+        "git_blob": "4783fe10ac3adce15ac8f358ef5462739852c569",
+    },
+}
+QWEN3_1_7B_BASE_REQUIRED_BYTES: Final[int] = 4_079_423_234
+QWEN3_1_7B_BASE_REPOSITORY_BYTES: Final[int] = 4_079_450_110
+CANONICAL_TARGET_EOS_TOKEN_ID: Final[int] = 151_645
+CANONICAL_PAD_TOKEN_ID: Final[int] = 151_643
+ACCEPTED_GENERATION_STOP_TOKEN_IDS: Final[tuple[int, ...]] = (151_645, 151_643)
+
+
+@dataclass(frozen=True)
+class BaseSnapshotContract:
+    """Exact local identity and raw-generation contract for one supported base."""
+
+    model: str
+    files: Mapping[str, Mapping[str, int | str]]
+    required_bytes: int
+    repository_bytes: int
+    target_eos_token_id: int
+    pad_token_id: int
+    generation_stop_token_ids: tuple[int, ...]
+    thinking_token_ids: tuple[int, ...] = ()
+
+
+RECOMMENDED_BASE_CONTRACT: Final[BaseSnapshotContract] = BaseSnapshotContract(
+    model=RECOMMENDED_BASE_MODEL,
+    files=RECOMMENDED_BASE_FILES,
+    required_bytes=RECOMMENDED_BASE_REQUIRED_BYTES,
+    repository_bytes=RECOMMENDED_BASE_REPOSITORY_BYTES,
+    target_eos_token_id=CANONICAL_TARGET_EOS_TOKEN_ID,
+    pad_token_id=CANONICAL_PAD_TOKEN_ID,
+    generation_stop_token_ids=ACCEPTED_GENERATION_STOP_TOKEN_IDS,
+)
+QWEN25_CODER_1_5B_BASE_CONTRACT: Final[BaseSnapshotContract] = BaseSnapshotContract(
+    model=QWEN25_CODER_1_5B_BASE_MODEL,
+    files=QWEN25_CODER_1_5B_BASE_FILES,
+    required_bytes=QWEN25_CODER_1_5B_BASE_REQUIRED_BYTES,
+    repository_bytes=QWEN25_CODER_1_5B_BASE_REPOSITORY_BYTES,
+    target_eos_token_id=CANONICAL_TARGET_EOS_TOKEN_ID,
+    pad_token_id=CANONICAL_PAD_TOKEN_ID,
+    generation_stop_token_ids=ACCEPTED_GENERATION_STOP_TOKEN_IDS,
+)
+QWEN3_BASE_CONTRACT: Final[BaseSnapshotContract] = BaseSnapshotContract(
+    model=QWEN3_BASE_MODEL,
+    files=QWEN3_BASE_FILES,
+    required_bytes=QWEN3_BASE_REQUIRED_BYTES,
+    repository_bytes=QWEN3_BASE_REPOSITORY_BYTES,
+    target_eos_token_id=CANONICAL_TARGET_EOS_TOKEN_ID,
+    pad_token_id=CANONICAL_PAD_TOKEN_ID,
+    generation_stop_token_ids=ACCEPTED_GENERATION_STOP_TOKEN_IDS,
+    thinking_token_ids=(151_667, 151_668),
+)
+QWEN3_1_7B_BASE_CONTRACT: Final[BaseSnapshotContract] = BaseSnapshotContract(
+    model=QWEN3_1_7B_BASE_MODEL,
+    files=QWEN3_1_7B_BASE_FILES,
+    required_bytes=QWEN3_1_7B_BASE_REQUIRED_BYTES,
+    repository_bytes=QWEN3_1_7B_BASE_REPOSITORY_BYTES,
+    target_eos_token_id=CANONICAL_TARGET_EOS_TOKEN_ID,
+    pad_token_id=CANONICAL_PAD_TOKEN_ID,
+    generation_stop_token_ids=ACCEPTED_GENERATION_STOP_TOKEN_IDS,
+    thinking_token_ids=(151_667, 151_668),
+)
+SUPPORTED_BASE_CONTRACTS: Final[dict[str, BaseSnapshotContract]] = {
+    contract.model: contract
+    for contract in (
+        RECOMMENDED_BASE_CONTRACT,
+        QWEN25_CODER_1_5B_BASE_CONTRACT,
+        QWEN3_BASE_CONTRACT,
+        QWEN3_1_7B_BASE_CONTRACT,
+    )
+}
 MIN_TRAINING_TMPFS_FREE_BYTES: Final[int] = 12 * 1024**3
 MAX_SELECTED_ARTIFACT_BYTES: Final[int] = 1_610_612_736
 TMPFS_MOUNT: Final[Path] = Path("/dev/shm")  # noqa: S108 - required volatile mount
@@ -105,6 +275,12 @@ INPUT_KEYS: Final[frozenset[str]] = frozenset({"code_prompt", "entry_point", "li
 REF_PATTERN: Final[re.Pattern[str]] = re.compile(r"^bigcodebench-[0-9]+$")
 DATASET_SCHEMA: Final[str] = "microtensor.code.prepared.v1"
 SPLIT_ALGORITHM: Final[str] = "sha256_seed_ref_ascending_v1"
+DEVELOPMENT_QUALITY_CLAIM: Final[str] = (
+    "none: the public release exposes no tests; holdout supports only structural diagnostics"
+)
+FINAL_ALL_PUBLIC_QUALITY_CLAIM: Final[str] = (
+    "none: all 94 public examples are training inputs; no holdout or public execution tests exist"
+)
 PREPARED_ROW_KEYS: Final[frozenset[str]] = frozenset(
     {"completion", "max_output_tokens", "prompt", "ref"}
 )
@@ -145,6 +321,7 @@ class CorpusValidation:
 
 @dataclass(frozen=True)
 class ResourcePlan:
+    base_model: str
     base_repository_download_bytes: int
     corpus_download_bytes: int
     minimum_tmpfs_free_bytes: int
@@ -371,42 +548,133 @@ def _git_blob_digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def verify_recommended_base_snapshot(path: Path) -> dict[str, Any]:
-    root = assert_tmpfs_path(path, must_exist=True)
+def base_contract(model: str) -> BaseSnapshotContract:
+    if not isinstance(model, str) or not model:
+        raise CandidateError("base model must be a non-empty pinned model identifier")
+    contract = SUPPORTED_BASE_CONTRACTS.get(model)
+    if contract is not None:
+        return contract
+    if model in ALLOWED_BASE_MODELS:
+        raise CandidateError(
+            f"base model {model!r} is upstream-allowlisted but has no exact local snapshot contract"
+        )
+    raise CandidateError(f"unsupported base model {model!r}")
+
+
+def _verify_base_snapshot_contract(
+    path: Path,
+    contract: BaseSnapshotContract,
+) -> dict[str, Any]:
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise CandidateError(f"base snapshot root must not be a symlink: {path}")
+    root = assert_tmpfs_path(expanded, must_exist=True)
     if not root.is_dir():
         raise CandidateError(f"base snapshot is not a directory: {root}")
     files: dict[str, dict[str, int | str]] = {}
-    for name, expected in RECOMMENDED_BASE_FILES.items():
-        candidate = root / name
-        if not candidate.is_file():
+    for name, expected in contract.files.items():
+        file_path = root / name
+        if file_path.is_symlink() or not file_path.is_file():
             raise CandidateError(f"base snapshot is missing {name}")
-        resolved = candidate.resolve(strict=True)
+        resolved = file_path.resolve(strict=True)
         shm = TMPFS_MOUNT.resolve(strict=True)
         if resolved != shm and shm not in resolved.parents:
             raise CandidateError(f"base file {name} resolves outside /dev/shm")
-        actual_size = candidate.stat().st_size
+        actual_size = file_path.stat().st_size
         if actual_size != expected["size"]:
             raise CandidateError(
                 f"base file {name} has {actual_size} bytes, expected {expected['size']}"
             )
         if "sha256" in expected:
-            identity = digest_file(candidate).removeprefix("sha256:")
+            identity = digest_file(file_path).removeprefix("sha256:")
             wanted = str(expected["sha256"])
             algorithm = "sha256"
         else:
-            identity = _git_blob_digest(candidate)
+            identity = _git_blob_digest(file_path)
             wanted = str(expected["git_blob"])
             algorithm = "git_blob_sha1"
         if identity != wanted:
             raise CandidateError(f"base file {name} does not match the pinned revision")
         files[name] = {"bytes": actual_size, algorithm: identity}
-    if sum(int(value["bytes"]) for value in files.values()) != RECOMMENDED_BASE_REQUIRED_BYTES:
+    if sum(int(value["bytes"]) for value in files.values()) != contract.required_bytes:
         raise CandidateError("base snapshot byte accounting changed")
     return {
-        "base_model": RECOMMENDED_BASE_MODEL,
-        "required_bytes": RECOMMENDED_BASE_REQUIRED_BYTES,
+        "base_model": contract.model,
+        "required_bytes": contract.required_bytes,
         "files": files,
     }
+
+
+def verify_base_snapshot(
+    path: Path,
+    *,
+    expected_model: str | None = None,
+) -> dict[str, Any]:
+    """Hash one exact supported snapshot, auto-detecting only by pinned file sizes."""
+
+    if expected_model is not None:
+        return _verify_base_snapshot_contract(path, base_contract(expected_model))
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise CandidateError(f"base snapshot root must not be a symlink: {path}")
+    root = assert_tmpfs_path(expanded, must_exist=True)
+    if not root.is_dir():
+        raise CandidateError(f"base snapshot is not a directory: {root}")
+    matches: list[BaseSnapshotContract] = []
+    for contract in SUPPORTED_BASE_CONTRACTS.values():
+        if all(
+            not (root / name).is_symlink()
+            and (root / name).is_file()
+            and (root / name).stat().st_size == expected["size"]
+            for name, expected in contract.files.items()
+        ):
+            matches.append(contract)
+    if not matches:
+        raise CandidateError("base snapshot does not match a supported exact file-size signature")
+    if len(matches) != 1:
+        raise CandidateError("base snapshot file-size signature is ambiguous")
+    return _verify_base_snapshot_contract(root, matches[0])
+
+
+def verify_recommended_base_snapshot(path: Path) -> dict[str, Any]:
+    """Backward-compatible exact verifier for the original Qwen2.5 base."""
+
+    contract = BaseSnapshotContract(
+        model=RECOMMENDED_BASE_MODEL,
+        files=RECOMMENDED_BASE_FILES,
+        required_bytes=RECOMMENDED_BASE_REQUIRED_BYTES,
+        repository_bytes=RECOMMENDED_BASE_REPOSITORY_BYTES,
+        target_eos_token_id=CANONICAL_TARGET_EOS_TOKEN_ID,
+        pad_token_id=CANONICAL_PAD_TOKEN_ID,
+        generation_stop_token_ids=ACCEPTED_GENERATION_STOP_TOKEN_IDS,
+    )
+    return _verify_base_snapshot_contract(path, contract)
+
+
+def contract_for_identity(identity: Mapping[str, Any]) -> BaseSnapshotContract:
+    model = identity.get("base_model")
+    if not isinstance(model, str):
+        raise CandidateError("base identity has no pinned base_model")
+    return base_contract(model)
+
+
+def validate_tokenizer_contract(tokenizer: Any, contract: BaseSnapshotContract) -> None:
+    """Require tokenizer IDs defining training termination and raw generation."""
+
+    observed = {
+        "eos_token_id": getattr(tokenizer, "eos_token_id", None),
+        "pad_token_id": getattr(tokenizer, "pad_token_id", None),
+    }
+    expected = {
+        "eos_token_id": contract.target_eos_token_id,
+        "pad_token_id": contract.pad_token_id,
+    }
+    for name, wanted in expected.items():
+        found = observed[name]
+        if isinstance(found, bool) or not isinstance(found, int) or found != wanted:
+            raise CandidateError(
+                f"tokenizer {name} {found!r} does not match pinned {contract.model} value {wanted}"
+            )
 
 
 def _refs_digest(refs: Sequence[str]) -> str:
@@ -485,8 +753,7 @@ def prepare_dataset(
             "holdout_file_digest": digest_file(holdout_path),
             "target_construction": "inputs.code_prompt + gold",
             "quality_claim": (
-                "none: the public release exposes no tests; holdout supports only "
-                "structural diagnostics"
+                DEVELOPMENT_QUALITY_CLAIM if holdout_rows else FINAL_ALL_PUBLIC_QUALITY_CLAIM
             ),
         }
         _write_json(staging / "manifest.json", manifest)
@@ -557,6 +824,14 @@ def load_prepared_dataset(path: Path) -> tuple[list[dict[str, Any]], dict[str, A
     for key, expected in required.items():
         if manifest.get(key) != expected:
             raise CandidateError(f"prepared dataset manifest field {key!r} changed")
+    holdout_examples = manifest.get("holdout_examples")
+    if isinstance(holdout_examples, bool) or not isinstance(holdout_examples, int):
+        raise CandidateError("prepared dataset holdout_examples must be an integer")
+    expected_quality_claim = (
+        DEVELOPMENT_QUALITY_CLAIM if holdout_examples > 0 else FINAL_ALL_PUBLIC_QUALITY_CLAIM
+    )
+    if manifest.get("quality_claim") != expected_quality_claim:
+        raise CandidateError("prepared dataset quality claim does not match its holdout")
     for data_path, digest_key in (
         (train_path, "train_file_digest"),
         (holdout_path, "holdout_file_digest"),
@@ -589,12 +864,20 @@ def resource_plan(
     tmpfs_root: Path = DEFAULT_TMPFS_ROOT,
     base_path: Path | None = None,
     corpus_path: Path | None = None,
+    base_model: str | None = None,
 ) -> ResourcePlan:
     tmpfs = assert_tmpfs_path(tmpfs_root)
     tmpfs_probe = tmpfs if tmpfs.exists() else tmpfs.parent
     persistent_probe = persistent_path.resolve(strict=True)
+    if base_model is not None:
+        contract = base_contract(base_model)
+    elif base_path is not None and base_path.is_dir():
+        contract = contract_for_identity(verify_base_snapshot(base_path))
+    else:
+        contract = RECOMMENDED_BASE_CONTRACT
     return ResourcePlan(
-        base_repository_download_bytes=RECOMMENDED_BASE_REPOSITORY_BYTES,
+        base_model=contract.model,
+        base_repository_download_bytes=contract.repository_bytes,
         corpus_download_bytes=PUBLIC_CORPUS_RESPONSE_BYTES,
         minimum_tmpfs_free_bytes=MIN_TRAINING_TMPFS_FREE_BYTES,
         maximum_selected_artifact_bytes=MAX_SELECTED_ARTIFACT_BYTES,
@@ -660,10 +943,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     plan.add_argument("--persistent-path", type=Path, default=Path.cwd())
     plan.add_argument("--tmpfs-root", type=Path, default=DEFAULT_TMPFS_ROOT)
     plan.add_argument("--base", type=Path, default=None)
+    plan.add_argument("--base-model", default=None)
     plan.add_argument("--corpus", type=Path, default=None)
 
-    base = actions.add_parser("verify-base", help="hash the exact offline 0.5B base snapshot")
+    base = actions.add_parser("verify-base", help="hash an exact supported offline base snapshot")
     base.add_argument("path", type=Path)
+    base.add_argument("--base-model", default=None, help="require this exact pinned model identity")
     return parser.parse_args(argv)
 
 
@@ -683,7 +968,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
             )
         elif args.action == "verify-base":
-            result = verify_recommended_base_snapshot(args.path)
+            result = verify_base_snapshot(args.path, expected_model=args.base_model)
         else:
             result = asdict(
                 resource_plan(
@@ -691,6 +976,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tmpfs_root=args.tmpfs_root,
                     base_path=args.base,
                     corpus_path=args.corpus,
+                    base_model=args.base_model,
                 )
             )
     except (CandidateError, OSError) as exc:

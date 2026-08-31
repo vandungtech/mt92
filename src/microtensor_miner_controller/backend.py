@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import importlib
 import importlib.metadata
 import json
 import logging
@@ -23,6 +25,10 @@ from .config import (
     FINNEY_RUNTIME_CODE_HASH,
     FINNEY_RUNTIME_SPEC_VERSION,
     FINNEY_TRANSACTION_VERSION,
+    SIGNED_V030_MECHANISM_VERSION,
+    SIGNED_V030_RELEASE,
+    SIGNED_V030_RELEASE_SIGNING_KEY,
+    SIGNED_V030_WHEEL_SHA256,
     SUBSTRATE_INTERFACE_VERSION,
     TRANSACTION_AUTHORIZATION,
     UPSTREAM_COMMIT,
@@ -48,6 +54,24 @@ _AUTHORIZED_MAX_DEPOSIT_RAO = 0
 _AUTHORIZED_SIGNATURE_VERSION = 1
 _RUNTIME_CODE_STORAGE_KEY = "0x3a636f6465"
 _HASH = re.compile(r"^0x[0-9a-f]{64}$")
+
+
+def _strict_json_object(raw: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        found: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in found:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            found[key] = value
+        return found
+
+    def nonfinite(value: str) -> None:
+        raise ValueError(f"non-finite JSON number {value!r}")
+
+    value = json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
+    if not isinstance(value, dict):
+        raise ValueError("JSON value is not an object")
+    return value
 
 
 def _publishable_files(manifest: Any) -> tuple[str, ...]:
@@ -124,7 +148,8 @@ class MicrotensorBackend:
 
         if not is_competable(self.config.track, self.config.hardware_class):
             raise PreflightError(
-                f"{self.config.track}/{self.config.hardware_class} is not live in the pinned upstream"
+                f"{self.config.track}/{self.config.hardware_class} is not live in the "
+                "pinned upstream"
             )
 
         chain = ChainConfig(
@@ -148,7 +173,8 @@ class MicrotensorBackend:
         if actual_uid != self.config.expected_uid:
             self.close()
             raise PreflightError(
-                f"hotkey {self._hotkey} maps to UID {actual_uid}, expected {self.config.expected_uid}"
+                f"hotkey {self._hotkey} maps to UID {actual_uid}, expected "
+                f"{self.config.expected_uid}"
             )
 
         # Constructing the exact upstream config also validates the rendered source and
@@ -187,6 +213,12 @@ class MicrotensorBackend:
             version = distribution.version
         except importlib.metadata.PackageNotFoundError as exc:
             raise PreflightError("microtensor-subnet is not installed") from exc
+
+        if self.config.uses_signed_v030:
+            return self._verify_signed_v030(distribution, version)
+        return self._verify_legacy_upstream(distribution, version)
+
+    def _verify_legacy_upstream(self, distribution: Any, version: str) -> tuple[str, str]:
         if version != UPSTREAM_RELEASE:
             raise PreflightError(
                 f"microtensor-subnet version is {version}, expected {UPSTREAM_RELEASE} from the pin"
@@ -213,6 +245,56 @@ class MicrotensorBackend:
         self._upstream_commit = commit
         return commit, version
 
+    def _verify_signed_v030(self, distribution: Any, version: str) -> tuple[str, str]:
+        if version != SIGNED_V030_RELEASE:
+            raise PreflightError(
+                f"microtensor-subnet version is {version}, expected signed release "
+                f"{SIGNED_V030_RELEASE}"
+            )
+        direct_raw = distribution.read_text("direct_url.json")
+        if not direct_raw:
+            raise PreflightError("signed v0.3 install has no PEP 610 archive identity")
+        try:
+            direct = _strict_json_object(direct_raw)
+            archive = direct["archive_info"]
+            hashes = archive["hashes"]
+            digest = hashes["sha256"]
+            legacy_hash = archive["hash"]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise PreflightError(
+                "signed v0.3 install has malformed PEP 610 archive identity"
+            ) from exc
+        if not isinstance(digest, str) or not isinstance(legacy_hash, str):
+            raise PreflightError("signed v0.3 install has malformed PEP 610 archive hashes")
+        if digest != SIGNED_V030_WHEEL_SHA256 or legacy_hash != f"sha256={digest}":
+            raise PreflightError(
+                f"signed v0.3 wheel hash is {digest or 'missing'}, expected "
+                f"{SIGNED_V030_WHEEL_SHA256}"
+            )
+
+        try:
+            constants = importlib.import_module("microtensor.core.constants")
+            release = constants.RELEASE_VERSION
+            mechanism = constants.MECHANISM_VERSION
+            signing_key = constants.RELEASE_SIGNING_KEY
+        except (AttributeError, ImportError) as exc:
+            raise PreflightError("signed v0.3 runtime identity constants are unavailable") from exc
+        if release != SIGNED_V030_RELEASE:
+            raise PreflightError(
+                f"runtime release identity is {release!r}, expected {SIGNED_V030_RELEASE!r}"
+            )
+        if mechanism != SIGNED_V030_MECHANISM_VERSION:
+            raise PreflightError(
+                f"runtime mechanism identity is {mechanism!r}, expected "
+                f"{SIGNED_V030_MECHANISM_VERSION!r}"
+            )
+        if signing_key != SIGNED_V030_RELEASE_SIGNING_KEY:
+            raise PreflightError("runtime release signing key differs from the audited v0.3 key")
+
+        identity = f"sha256:{digest}"
+        self._upstream_commit = identity
+        return identity, version
+
     def _validate_artifact_config(self) -> None:
         config = self.config
         if config.source_template.startswith("https:") and not config.dry_run:
@@ -229,10 +311,13 @@ class MicrotensorBackend:
         if entrypoint.suffix.lower() != ".gguf":
             raise PreflightError("GGUF load spec requires a .gguf entrypoint")
         if (config.artifact_dir / "artifact.enc").exists():
-            raise PreflightError("artifact.enc exists; this controller categorically refuses sealing")
+            raise PreflightError(
+                "artifact.enc exists; this controller categorically refuses sealing"
+            )
         if not config.selfcheck_path.is_file():
             raise PreflightError(
-                f"selfcheck is missing: {config.selfcheck_path}; run the pinned upstream selfcheck first"
+                f"selfcheck is missing: {config.selfcheck_path}; run the pinned upstream "
+                "selfcheck first"
             )
         self._declared()
         validate_binding(config)
@@ -259,11 +344,7 @@ class MicrotensorBackend:
         try:
             before = path.lstat()
             self._validate_github_token_metadata(before)
-            flags = (
-                os.O_RDONLY
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-            )
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(path, flags)
             opened = os.fstat(descriptor)
             self._validate_github_token_metadata(opened)
@@ -342,7 +423,9 @@ class MicrotensorBackend:
         try:
             metadata = hotkey_file.lstat()
         except OSError as exc:
-            raise PreflightError(f"configured hotkey file is unavailable: {hotkey_file}: {exc}") from exc
+            raise PreflightError(
+                f"configured hotkey file is unavailable: {hotkey_file}: {exc}"
+            ) from exc
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise PreflightError(f"hotkey file must be a regular non-symlink: {hotkey_file}")
         if metadata.st_uid != os.geteuid():
@@ -362,8 +445,7 @@ class MicrotensorBackend:
         try:
             raw = json.loads(self.config.selfcheck_path.read_text(encoding="utf-8"))
             values = {
-                key: int(raw[key])
-                for key in ("size_bytes", "peak_rss_bytes", "p95_latency_ms")
+                key: int(raw[key]) for key in ("size_bytes", "peak_rss_bytes", "p95_latency_ms")
             }
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise PreflightError(f"selfcheck is invalid: {exc}") from exc
@@ -448,6 +530,7 @@ class MicrotensorBackend:
         try:
             from microtensor.chain.anchor import read_anchor
             from microtensor.core.constants import COORDINATOR_HOTKEY
+
             anchor = read_anchor(self._client, COORDINATOR_HOTKEY)
         except Exception as exc:
             raise VerificationError(
@@ -462,6 +545,31 @@ class MicrotensorBackend:
         if anchor.config_hash != window.config_hash:
             raise VerificationError(
                 "served coordinator config hash does not match the independent chain anchor"
+            )
+        self._verify_v030_seed_hash(window)
+
+    def _verify_v030_seed_hash(self, window: RoundWindow) -> None:
+        if not self.config.uses_signed_v030:
+            return
+        if window.seed_block != window.close_block:
+            raise VerificationError("served round seed block differs from its close block")
+        if window.phase == "submissions":
+            if window.block_hash:
+                raise VerificationError("submission phase disclosed a future seed block hash")
+            return
+        if window.phase != "evaluation" or _HASH.fullmatch(window.block_hash) is None:
+            raise VerificationError("evaluation phase has no canonical seed block hash")
+        if self._client is None:
+            raise PreflightError("chain client has not passed preflight")
+        try:
+            observed = str(self._client.block_hash(window.seed_block)).lower()
+        except Exception as exc:
+            raise VerificationError(
+                f"could not independently read seed block {window.seed_block} from chain: {exc}"
+            ) from exc
+        if _HASH.fullmatch(observed) is None or observed != window.block_hash:
+            raise VerificationError(
+                "served evaluation seed hash does not match the independent chain block hash"
             )
 
     def validate_round(self, window: RoundWindow) -> None:
@@ -756,9 +864,7 @@ class MicrotensorBackend:
         if value["mode"] != "Disabled":
             raise AuthorizationRefused("signed extrinsic enables an unauthorized mode")
         if (
-            cls._authorization_integer(
-                value["signature_version"], "signed signature version"
-            )
+            cls._authorization_integer(value["signature_version"], "signed signature version")
             != _AUTHORIZED_SIGNATURE_VERSION
         ):
             raise AuthorizationRefused("signed extrinsic uses an unexpected signature version")
@@ -1060,10 +1166,7 @@ class MicrotensorBackend:
             names = _publishable_files(self._native(packaged))
             if not names or len(names) != len(set(names)):
                 raise VerificationError("publishable artifact file set is invalid")
-            assets = {
-                name: self.config.artifact_dir / name
-                for name in names
-            }
+            assets = {name: self.config.artifact_dir / name for name in names}
             result = GitHubReleasePublisher(
                 owner=owner,
                 repo=repo,
@@ -1087,7 +1190,9 @@ class MicrotensorBackend:
         from microtensor.registry.fetch import fetch_manifest, materialise
 
         local = self._native(packaged)
-        commitment = commitment_for(self._miner_config(packaged.source), local, packaged.round_index)
+        commitment = commitment_for(
+            self._miner_config(packaged.source), local, packaged.round_index
+        )
         verify_root = self.config.state_dir / "verify"
         verify_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
@@ -1099,9 +1204,13 @@ class MicrotensorBackend:
                     attempts=self.config.verify_attempts,
                 )
                 if remote.digest() != packaged.manifest_digest:
-                    raise VerificationError("remote manifest digest differs from the packaged manifest")
+                    raise VerificationError(
+                        "remote manifest digest differs from the packaged manifest"
+                    )
                 if remote.hotkey != self.hotkey or not remote.signature:
-                    raise VerificationError("remote manifest is unsigned or names a different hotkey")
+                    raise VerificationError(
+                        "remote manifest is unsigned or names a different hotkey"
+                    )
                 if not verify_payload(remote.hotkey, remote.body(), remote.signature):
                     raise VerificationError("remote manifest signature is invalid")
                 if remote.sealed is not None:
@@ -1140,6 +1249,7 @@ class MicrotensorBackend:
             raise VerificationError(f"provenance verification failed: {exc}") from exc
         if not verdict.admissible:
             raise VerificationError(f"provenance rejected: {verdict.reason}")
+
     def publish(self, packaged: PackagedArtifact) -> PublishReceipt:
         self._assert_live_transaction_policy()
         if packaged.hotkey != self.hotkey:
@@ -1183,7 +1293,5 @@ class MicrotensorBackend:
     def close(self) -> None:
         client, self._client = self._client, None
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 client.close()
-            except Exception:
-                pass

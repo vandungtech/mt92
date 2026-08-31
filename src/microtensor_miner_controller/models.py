@@ -13,9 +13,19 @@ class RoundWindow:
     phase: str
     source: str
     config_hash: str = ""
+    seed_block: int = 0
+    block_hash: str = ""
     max_size_bytes: int = 0
     max_rss_bytes: int = 0
     max_p95_ms: int = 0
+    mechanism_version: str = ""
+    corpus_version: str = ""
+    corpus_digest: str = ""
+    metric: str = ""
+    emission_share: float = 0.0
+    cpu_seconds_per_artifact: int = 0
+    tasks_per_round: int = 0
+    environment_digest: str = ""
 
     @property
     def accepts_submissions(self) -> bool:

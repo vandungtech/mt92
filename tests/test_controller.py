@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from helpers import base_env, coordinator_payload
+from helpers import base_env, coordinator_payload, v030_coordinator_payload, v030_env
 
 from microtensor_miner_controller.config import UPSTREAM_COMMIT, UPSTREAM_RELEASE, ControllerConfig
 from microtensor_miner_controller.controller import Controller
@@ -28,6 +30,7 @@ class FakeBackend:
         refuse_authorization: bool = False,
         publish_error: Exception | None = None,
         registration_error: Exception | None = None,
+        anchor_error: Exception | None = None,
         onchain_payload: str = "mt1|payload",
     ) -> None:
         self.operations: list[str] = []
@@ -36,6 +39,7 @@ class FakeBackend:
         self.refuse_authorization = refuse_authorization
         self.publish_error = publish_error
         self.registration_error = registration_error
+        self.anchor_error = anchor_error
         self.onchain_payload = onchain_payload
         self.provenance_blocks: list[int] = []
         self.local: PackagedArtifact | None = None
@@ -54,6 +58,8 @@ class FakeBackend:
 
     def verify_round_anchor(self, window: RoundWindow) -> None:
         self.operations.append("anchor")
+        if self.anchor_error is not None:
+            raise self.anchor_error
 
     def validate_round(self, window: RoundWindow) -> None:
         self.operations.append("arena")
@@ -126,6 +132,161 @@ class ControllerTests(unittest.TestCase):
         )
         return controller, state
 
+    def _build_v030(
+        self,
+        root: Path,
+        *,
+        backend: FakeBackend,
+        payload: dict[str, object],
+        activation_block: int = 100,
+        dry_run: bool = True,
+    ) -> tuple[Controller, StateStore]:
+        config = ControllerConfig.from_env(
+            v030_env(root, dry_run=True, activation_block=activation_block)
+        )
+        config = replace(config, dry_run=dry_run)
+        state = StateStore(config.state_dir)
+        controller = Controller(
+            config,
+            backend,
+            state,
+            clock=lambda: 1_000.0,
+            round_fetcher=lambda url, timeout: dict(payload),
+        )
+        return controller, state
+
+    @staticmethod
+    def _rehash_v030(payload: dict[str, object]) -> None:
+        config = payload["config"]
+        if not isinstance(config, dict):
+            raise TypeError("test config must be a dictionary")
+        raw = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        payload["config_hash"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+
+    def test_v030_waits_below_activation_without_resolving_or_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend()
+            controller, state = self._build_v030(
+                Path(temporary),
+                backend=backend,
+                payload=v030_coordinator_payload(),
+                activation_block=151,
+            )
+            self.assertEqual(controller.run(once=True), 2)
+            self.assertEqual(state.read_status()["phase"], "waiting")
+            self.assertNotIn("chain_round", backend.operations)
+            self.assertNotIn("package", backend.operations)
+            self.assertNotIn("upload", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+
+    def test_v030_untrusted_rounds_wait_without_external_writes(self) -> None:
+        scheduled = v030_coordinator_payload(phase="scheduled")
+        unanchored = v030_coordinator_payload(anchored=False)
+
+        no_arena = v030_coordinator_payload()
+        config = no_arena["config"]
+        if not isinstance(config, dict):
+            raise TypeError("test config must be a dictionary")
+        config["arenas"] = {}
+        self._rehash_v030(no_arena)
+
+        no_emission = v030_coordinator_payload()
+        config = no_emission["config"]
+        if not isinstance(config, dict):
+            raise TypeError("test config must be a dictionary")
+        tracks = config["tracks"]
+        if not isinstance(tracks, dict):
+            raise TypeError("test tracks must be a dictionary")
+        code = tracks["code"]
+        if not isinstance(code, dict):
+            raise TypeError("test code rules must be a dictionary")
+        code["emission_share"] = 0.0
+        self._rehash_v030(no_emission)
+
+        for label, payload in (
+            ("scheduled", scheduled),
+            ("unanchored", unanchored),
+            ("missing arena", no_arena),
+            ("emission mismatch", no_emission),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                backend = FakeBackend()
+                controller, state = self._build_v030(
+                    Path(temporary), backend=backend, payload=payload
+                )
+                self.assertEqual(controller.run(once=True), 2)
+                self.assertEqual(state.read_status()["phase"], "waiting")
+                self.assertNotIn("package", backend.operations)
+                self.assertNotIn("upload", backend.operations)
+                self.assertNotIn("publish", backend.operations)
+
+    def test_v030_persists_complete_submission_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend()
+            controller, state = self._build_v030(
+                Path(temporary), backend=backend, payload=v030_coordinator_payload()
+            )
+            self.assertEqual(controller.run(once=True), 0)
+            observed = state.read_status()["last_coordinator_window"]
+            self.assertEqual(
+                set(observed),
+                {
+                    "round",
+                    "start_block",
+                    "seed_block",
+                    "close_block",
+                    "end_block",
+                    "phase",
+                    "block_hash",
+                    "config_hash",
+                    "mechanism_version",
+                    "corpus_version",
+                    "corpus_digest",
+                },
+            )
+            self.assertEqual(observed["phase"], "submissions")
+            self.assertEqual(observed["block_hash"], "")
+
+    def test_v030_final_round_recheck_clears_marker_and_never_broadcasts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend()
+            original = v030_coordinator_payload()
+            changed = v030_coordinator_payload()
+            changed["corpus_digest"] = "sha256:" + "d" * 64
+            calls = 0
+
+            def fetch(url: str, timeout: int) -> dict[str, object]:
+                nonlocal calls
+                del url, timeout
+                calls += 1
+                return dict(changed if calls >= 4 else original)
+
+            controller, state = self._build_v030(
+                Path(temporary),
+                backend=backend,
+                payload=original,
+                dry_run=False,
+            )
+            controller.round_fetcher = fetch
+            self.assertEqual(controller.run(once=True), 2)
+            self.assertGreaterEqual(calls, 4)
+            self.assertNotIn("publish", backend.operations)
+            self.assertEqual(state.read_submission_pending(), {})
+            self.assertEqual(state.read_status()["phase"], "waiting")
+
+    def test_v030_independent_anchor_failure_waits_without_external_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(anchor_error=VerificationError("anchor hash mismatch"))
+            controller, state = self._build_v030(
+                Path(temporary), backend=backend, payload=v030_coordinator_payload()
+            )
+            self.assertEqual(controller.run(once=True), 2)
+            self.assertEqual(state.read_status()["phase"], "waiting")
+            self.assertIn("anchor", backend.operations)
+            self.assertNotIn("package", backend.operations)
+            self.assertNotIn("upload", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+
     def test_dry_run_does_not_mutate_or_publish(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             backend = FakeBackend()
@@ -158,6 +319,11 @@ class ControllerTests(unittest.TestCase):
                 backend.operations.index("provenance"), backend.operations.index("publish")
             )
             self.assertGreater(backend.operations.count("on_chain"), 1)
+            publish_index = backend.operations.index("publish")
+            self.assertEqual(
+                backend.operations[publish_index - 5 : publish_index],
+                ["block", "chain_round", "anchor", "arena", "registered"],
+            )
 
     def test_source_failure_never_publishes_or_claims_success(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

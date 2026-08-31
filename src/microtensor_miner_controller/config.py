@@ -3,23 +3,36 @@ from __future__ import annotations
 import os
 import re
 import string
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 from .errors import ConfigError
 
 UPSTREAM_COMMIT = "d0e002f887d038bf3ea4af65b499137a755620d7"
 UPSTREAM_RELEASE = "0.1.14"
+SIGNED_V030_RELEASE = "0.3.0"
+SIGNED_V030_MECHANISM_VERSION = "0.3.0"
+SIGNED_V030_WHEEL_SHA256 = "742a25240a4a95f272c2894f5176a4f084b4b4eb5fb2af24dc8f7b464c2d0133"
+SIGNED_V030_RELEASE_SIGNING_KEY = (
+    "0x3d8ea239db66637d762ffedf71ad6c0c487c7bc73d5a50d9dd86a0fbc22bdb16"
+)
+SIGNED_V030_CONFIG_VERSION = 1
+SIGNED_V030_CORPUS_VERSION = "2026.1"
+SIGNED_V030_TRACK = "code"
+SIGNED_V030_HARDWARE_CLASS = "mt-3g"
+SIGNED_V030_METRIC = "execution_pass_rate"
+SIGNED_V030_EMISSION_SHARE = 1.0
+SIGNED_V030_SUBMISSION_BLOCKS = 7_200
+SIGNED_V030_EVALUATION_BLOCKS = 7_200
+SIGNED_V030_COORDINATOR_URL = "https://coordinator.microtensor.cloud"
 BITTENSOR_VERSION = "10.5.0"
 BITTENSOR_WALLET_VERSION = "4.1.1"
 SUBSTRATE_INTERFACE_VERSION = "2.2.1"
 FINNEY_GENESIS_HASH = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03"
 FINNEY_RUNTIME_SPEC_VERSION = 452
 FINNEY_TRANSACTION_VERSION = 1
-FINNEY_RUNTIME_CODE_HASH = (
-    "0x40a8c3c99a47d6739b086236308535fab26d5fd4cc5c88eb83f6a3c8b928f7cc"
-)
+FINNEY_RUNTIME_CODE_HASH = "0x40a8c3c99a47d6739b086236308535fab26d5fd4cc5c88eb83f6a3c8b928f7cc"
 TRANSACTION_AUTHORIZATION = "netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1"
 AUTHORIZED_GITHUB_REPOSITORY = "vandungtech/mt92"
 AUTHORIZED_HOTKEY_SS58 = "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
@@ -47,6 +60,21 @@ def _text(env: Mapping[str, str], key: str, default: str = "", *, required: bool
 
 def _integer(env: Mapping[str, str], key: str, default: int, *, minimum: int | None = None) -> int:
     raw = env.get(key, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{key} must be an integer, not {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{key} must be at least {minimum}")
+    return value
+
+
+def _optional_integer(
+    env: Mapping[str, str], key: str, *, minimum: int | None = None
+) -> int | None:
+    raw = env.get(key, "").strip()
+    if not raw:
+        return None
     try:
         value = int(raw)
     except ValueError as exc:
@@ -107,6 +135,7 @@ class ControllerConfig:
     artifact_dir: Path
     selfcheck_path: Path
     selfcheck_binding_path: Path
+    v030_activation_block: int | None
     track: str
     hardware_class: str
     source_template: str
@@ -135,8 +164,10 @@ class ControllerConfig:
     genesis_block: int
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "ControllerConfig":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> ControllerConfig:
         source = dict(os.environ if env is None else env)
+        v030_activation_block = _optional_integer(source, "MMC_V030_ACTIVATION_BLOCK", minimum=0)
+        signed_v030 = v030_activation_block is not None
         upstream_home = _path(source, "MT_HOME", "/var/lib/microtensor-miner/upstream")
         state_dir = _path(source, "MMC_STATE_DIR", "/var/lib/microtensor-miner/controller")
         artifact_dir = _path(source, "MMC_ARTIFACT_DIR", "", required=True)
@@ -157,50 +188,59 @@ class ControllerConfig:
             state_dir=state_dir,
             artifact_dir=artifact_dir,
             selfcheck_path=_path(source, "MMC_SELFCHECK_PATH", selfcheck_default),
-            selfcheck_binding_path=_path(
-                source, "MMC_SELFCHECK_BINDING_PATH", binding_default
+            selfcheck_binding_path=_path(source, "MMC_SELFCHECK_BINDING_PATH", binding_default),
+            v030_activation_block=v030_activation_block,
+            track=_text(
+                source, "MMC_TRACK", SIGNED_V030_TRACK if signed_v030 else "extract", required=True
             ),
-            track=_text(source, "MMC_TRACK", "extract", required=True),
-            hardware_class=_text(source, "MMC_HARDWARE_CLASS", "mt-3g", required=True),
+            hardware_class=_text(
+                source,
+                "MMC_HARDWARE_CLASS",
+                SIGNED_V030_HARDWARE_CLASS if signed_v030 else "mt-3g",
+                required=True,
+            ),
             source_template=source_template,
             github_token_file=_optional_path(source, "MMC_GITHUB_TOKEN_FILE"),
-            entrypoint=_text(source, "MMC_ENTRYPOINT", EXPECTED_ENTRYPOINT, required=True),
-            artifact_format=_text(source, "MMC_ARTIFACT_FORMAT", EXPECTED_FORMAT, required=True),
-            quantization=_text(source, "MMC_QUANTIZATION", EXPECTED_QUANTIZATION),
-            max_input_tokens=_integer(
-                source, "MMC_MAX_INPUT_TOKENS", EXPECTED_MAX_INPUT_TOKENS, minimum=1
+            entrypoint=_text(source, "MMC_ENTRYPOINT", "" if signed_v030 else EXPECTED_ENTRYPOINT),
+            artifact_format=_text(
+                source, "MMC_ARTIFACT_FORMAT", "" if signed_v030 else EXPECTED_FORMAT
             ),
-            tokenizer=_text(source, "MMC_TOKENIZER", EXPECTED_TOKENIZER, required=True),
+            quantization=_text(
+                source, "MMC_QUANTIZATION", "" if signed_v030 else EXPECTED_QUANTIZATION
+            ),
+            max_input_tokens=_integer(
+                source,
+                "MMC_MAX_INPUT_TOKENS",
+                0 if signed_v030 else EXPECTED_MAX_INPUT_TOKENS,
+                minimum=0 if signed_v030 else 1,
+            ),
+            tokenizer=_text(source, "MMC_TOKENIZER", "" if signed_v030 else EXPECTED_TOKENIZER),
             base_model=_text(
                 source,
                 "MMC_BASE_MODEL",
-                EXPECTED_BASE_MODEL,
-                required=True,
+                "" if signed_v030 else EXPECTED_BASE_MODEL,
             ),
             coordinator_url=_text(
-                source, "MMC_COORDINATOR_URL", "https://coordinator.microtensor.cloud", required=True
+                source,
+                "MMC_COORDINATOR_URL",
+                "https://coordinator.microtensor.cloud",
+                required=True,
             ).rstrip("/"),
             allow_chain_schedule_fallback=_boolean(
                 source, "MMC_ALLOW_CHAIN_SCHEDULE_FALLBACK", False
             ),
-            require_anchored_coordinator=_boolean(
-                source, "MMC_REQUIRE_ANCHORED_COORDINATOR", True
-            ),
+            require_anchored_coordinator=_boolean(source, "MMC_REQUIRE_ANCHORED_COORDINATOR", True),
             dry_run=_boolean(source, "MMC_DRY_RUN", True),
             transaction_authorization=_text(source, "MMC_TRANSACTION_AUTHORIZATION"),
             allow_unverified_upstream=_boolean(source, "MMC_ALLOW_UNVERIFIED_UPSTREAM", False),
             poll_seconds=_integer(source, "MMC_POLL_SECONDS", 30, minimum=1),
             retry_seconds=_integer(source, "MMC_RETRY_SECONDS", 30, minimum=1),
-            deadline_margin_blocks=_integer(
-                source, "MMC_DEADLINE_MARGIN_BLOCKS", 40, minimum=1
-            ),
+            deadline_margin_blocks=_integer(source, "MMC_DEADLINE_MARGIN_BLOCKS", 40, minimum=1),
             verify_attempts=_integer(source, "MMC_VERIFY_ATTEMPTS", 5, minimum=1),
             verify_interval_seconds=_integer(
                 source, "MMC_VERIFY_INTERVAL_SECONDS", 900, minimum=30
             ),
-            health_max_age_seconds=_integer(
-                source, "MMC_HEALTH_MAX_AGE_SECONDS", 180, minimum=10
-            ),
+            health_max_age_seconds=_integer(source, "MMC_HEALTH_MAX_AGE_SECONDS", 180, minimum=10),
             coordinator_timeout_seconds=_integer(
                 source, "MMC_COORDINATOR_TIMEOUT_SECONDS", 10, minimum=1
             ),
@@ -226,16 +266,6 @@ class ControllerConfig:
             raise ConfigError("MT_WALLET_HOTKEY must be you-hot1 for this deployment")
         if self.expected_uid != 32:
             raise ConfigError("MMC_EXPECTED_UID must remain 32 for this registered miner")
-        if (self.track, self.hardware_class) != ("extract", "mt-3g"):
-            raise ConfigError("the pinned upstream currently opens only extract/mt-3g")
-        expected_load = (
-            EXPECTED_ENTRYPOINT,
-            EXPECTED_FORMAT,
-            EXPECTED_QUANTIZATION,
-            EXPECTED_MAX_INPUT_TOKENS,
-            EXPECTED_TOKENIZER,
-            EXPECTED_BASE_MODEL,
-        )
         observed_load = (
             self.entrypoint,
             self.artifact_format,
@@ -244,18 +274,63 @@ class ControllerConfig:
             self.tokenizer,
             self.base_model,
         )
-        if observed_load != expected_load:
-            raise ConfigError(
-                "this deployment accepts only model.gguf / gguf / Q4_K_M / 512 tokens / "
-                "tokenizer.json / the pinned Qwen3-0.6B revision"
+        if self.uses_signed_v030:
+            if (self.track, self.hardware_class) != (
+                SIGNED_V030_TRACK,
+                SIGNED_V030_HARDWARE_CLASS,
+            ):
+                raise ConfigError(
+                    "MMC_V030_ACTIVATION_BLOCK enables only the signed code/mt-3g profile"
+                )
+            if (
+                not all(
+                    (
+                        self.entrypoint,
+                        self.artifact_format,
+                        self.quantization,
+                        self.tokenizer,
+                        self.base_model,
+                    )
+                )
+                or self.max_input_tokens < 1
+            ):
+                raise ConfigError(
+                    "signed v0.3 activation requires an explicit final model/load spec; "
+                    "no candidate is selected by default"
+                )
+            if self.artifact_format != "gguf" or not self.entrypoint.endswith(".gguf"):
+                raise ConfigError("signed v0.3 activation currently supports only a GGUF load spec")
+            if self.allow_unverified_upstream:
+                raise ConfigError("signed v0.3 activation never permits an unverified upstream")
+            if self.allow_chain_schedule_fallback:
+                raise ConfigError("signed v0.3 activation never permits chain-schedule fallback")
+            if not self.dry_run and self.coordinator_url != SIGNED_V030_COORDINATOR_URL:
+                raise ConfigError(
+                    "live signed v0.3 activation requires the official coordinator URL "
+                    f"{SIGNED_V030_COORDINATOR_URL}"
+                )
+        else:
+            if (self.track, self.hardware_class) != ("extract", "mt-3g"):
+                raise ConfigError("code/mt-3g requires an explicit MMC_V030_ACTIVATION_BLOCK")
+            expected_load = (
+                EXPECTED_ENTRYPOINT,
+                EXPECTED_FORMAT,
+                EXPECTED_QUANTIZATION,
+                EXPECTED_MAX_INPUT_TOKENS,
+                EXPECTED_TOKENIZER,
+                EXPECTED_BASE_MODEL,
             )
+            if observed_load != expected_load:
+                raise ConfigError(
+                    "this deployment accepts only model.gguf / gguf / Q4_K_M / 512 tokens / "
+                    "tokenizer.json / the pinned Qwen3-0.6B revision"
+                )
         if not self.coordinator_url.startswith("https://"):
             raise ConfigError("MMC_COORDINATOR_URL must use HTTPS")
         scheme = self.source_template.partition(":")[0]
         if scheme not in {"s3", "r2", "https"}:
             raise ConfigError(
-                "supervised uploads support s3/r2 diagnostics or an immutable GitHub "
-                "https release"
+                "supervised uploads support s3/r2 diagnostics or an immutable GitHub https release"
             )
         self.source_for(0, "5ConfigProbe")
         if self.transaction_authorization not in {"", TRANSACTION_AUTHORIZATION}:
@@ -281,6 +356,14 @@ class ControllerConfig:
             raise ConfigError("MMC_REQUIRE_ANCHORED_COORDINATOR must remain true")
         if self.allow_chain_schedule_fallback and not self.dry_run:
             raise ConfigError("chain-schedule fallback is diagnostic-only and requires dry-run")
+
+    @property
+    def uses_signed_v030(self) -> bool:
+        return self.v030_activation_block is not None
+
+    @property
+    def upstream_release(self) -> str:
+        return SIGNED_V030_RELEASE if self.uses_signed_v030 else UPSTREAM_RELEASE
 
     @staticmethod
     def github_release_coordinates(source: str) -> tuple[str, str, str] | None:

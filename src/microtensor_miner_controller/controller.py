@@ -97,8 +97,12 @@ class Controller:
                         self._authorization_failure(exc)
                         return 3
                     except RoundRefused as exc:
-                        self._failure("round_refused", exc)
-                        outcome = "refused"
+                        if self.config.uses_signed_v030:
+                            self._waiting_for_trusted_round(exc)
+                            outcome = "waiting"
+                        else:
+                            self._failure("round_refused", exc)
+                            outcome = "refused"
                     except ControllerError as exc:
                         self._failure("error", exc)
                         outcome = "error"
@@ -163,6 +167,23 @@ class Controller:
         # the read-only monitor honest instead of relying only on startup preflight.
         self.backend.assert_registered()
         head = self.backend.block()
+        activation = self.config.v030_activation_block
+        if activation is not None and head < activation:
+            self.state.write(
+                "waiting",
+                ok=False,
+                message=(
+                    f"signed v0.3 activation is blocked until chain height {activation}; "
+                    f"current head is {head}"
+                ),
+                details={
+                    **self._static_details(),
+                    "preflight": snapshot.to_dict(),
+                    "chain_head": head,
+                    "proofs": VerificationProofs(False, False, False, False).to_dict(),
+                },
+            )
+            return "waiting"
         window = self._resolve_round(head)
         source = self.config.source_for(window.index, snapshot.hotkey)
         common = self._round_details(snapshot, window, head, source)
@@ -214,7 +235,8 @@ class Controller:
 
         if not window.accepts_at(head, self.config.deadline_margin_blocks):
             if matching:
-                assert local is not None
+                if local is None:
+                    raise VerificationError("matching local artifact unexpectedly disappeared")
                 if not proofs_valid or self._verification_due(previous):
                     return self._reverify(snapshot, window, head, source, local)
             message = f"round {window.index} is outside the safe submission window; " + (
@@ -229,7 +251,8 @@ class Controller:
             return "waiting"
 
         if matching:
-            assert local is not None
+            if local is None:
+                raise VerificationError("matching local artifact unexpectedly disappeared")
             if proofs_valid and previous.get("ok") is True and not self._verification_due(previous):
                 self.state.heartbeat(now=self.clock())
                 return "verified"
@@ -366,7 +389,8 @@ class Controller:
         reusable = self._local_matches(local, window.index, source, snapshot.hotkey)
 
         if reusable:
-            assert local is not None
+            if local is None:
+                raise VerificationError("reusable local artifact unexpectedly disappeared")
             packaged = local
             self.state.write(
                 "recovering",
@@ -468,6 +492,19 @@ class Controller:
                     "commitment was not submitted because its durable pending marker "
                     "could not be recorded"
                 ) from exc
+
+            try:
+                broadcast_head, broadcast_window = self._refresh_same_round(window)
+                self._assert_deadline(broadcast_window, broadcast_head, "publish")
+                self.backend.assert_registered()
+            except Exception:
+                try:
+                    self.state.clear_submission_pending(commitment_fingerprint)
+                except Exception as clear_exc:
+                    raise AuthorizationRefused(
+                        "commitment was not submitted, but its pending marker could not be cleared"
+                    ) from clear_exc
+                raise
 
             try:
                 receipt = self.backend.publish(packaged)
@@ -587,19 +624,20 @@ class Controller:
             previous_status=previous,
             fetcher=self.round_fetcher,
             base_model=self.config.base_model,
+            strict_v030=self.config.uses_signed_v030,
         )
-        self.backend.verify_round_anchor(window)
-        self.backend.validate_round(window)
+        try:
+            self.backend.verify_round_anchor(window)
+            self.backend.validate_round(window)
+        except VerificationError as exc:
+            if not self.config.uses_signed_v030:
+                raise
+            raise RoundRefused(f"trusted signed-v0.3 round is unavailable: {exc}") from exc
         if window.source == "coordinator":
             # Persist the first accepted shape. validate_served_round refuses rollback or
             # mutation of this tuple on every subsequent fetch.
             previous["last_coordinator_round"] = window.index
-            previous["last_coordinator_window"] = {
-                "start_block": window.start_block,
-                "close_block": window.close_block,
-                "end_block": window.end_block,
-                "config_hash": window.config_hash,
-            }
+            previous["last_coordinator_window"] = self._coordinator_window_details(window)
             self.state.write(
                 str(previous.get("phase", "round_resolved")),
                 ok=bool(previous.get("ok", False)),
@@ -611,19 +649,27 @@ class Controller:
 
     def _refresh_same_round(self, expected: RoundWindow) -> tuple[int, RoundWindow]:
         head = self.backend.block()
+        activation = self.config.v030_activation_block
+        if activation is not None and head < activation:
+            raise RoundRefused(
+                f"signed v0.3 activation height {activation} is above chain head {head}"
+            )
         observed = self._resolve_round(head)
-        if (
-            observed.index,
-            observed.start_block,
-            observed.close_block,
-            observed.end_block,
-            observed.config_hash,
-        ) != (
-            expected.index,
-            expected.start_block,
-            expected.close_block,
-            expected.end_block,
-            expected.config_hash,
+        identity = (
+            "index",
+            "start_block",
+            "seed_block",
+            "close_block",
+            "end_block",
+            "phase",
+            "block_hash",
+            "config_hash",
+            "mechanism_version",
+            "corpus_version",
+            "corpus_digest",
+        )
+        if tuple(getattr(observed, key) for key in identity) != tuple(
+            getattr(expected, key) for key in identity
         ):
             raise RoundRefused("trusted round changed while preparing the submission")
         return head, observed
@@ -703,13 +749,32 @@ class Controller:
         }
         if window.source == "coordinator":
             details["last_coordinator_round"] = window.index
-            details["last_coordinator_window"] = {
-                "start_block": window.start_block,
-                "close_block": window.close_block,
-                "end_block": window.end_block,
-                "config_hash": window.config_hash,
-            }
+            details["last_coordinator_window"] = self._coordinator_window_details(window)
         return details
+
+    @staticmethod
+    def _coordinator_window_details(window: RoundWindow) -> dict[str, Any]:
+        legacy = {
+            "start_block": window.start_block,
+            "close_block": window.close_block,
+            "end_block": window.end_block,
+            "config_hash": window.config_hash,
+        }
+        if not window.mechanism_version:
+            return legacy
+        return {
+            "round": window.index,
+            "start_block": window.start_block,
+            "seed_block": window.seed_block,
+            "close_block": window.close_block,
+            "end_block": window.end_block,
+            "phase": window.phase,
+            "block_hash": window.block_hash,
+            "config_hash": window.config_hash,
+            "mechanism_version": window.mechanism_version,
+            "corpus_version": window.corpus_version,
+            "corpus_digest": window.corpus_digest,
+        }
 
     def _static_details(self) -> dict[str, Any]:
         return {
@@ -720,6 +785,10 @@ class Controller:
             "wallet_name": self.config.wallet_name,
             "wallet_hotkey": self.config.wallet_hotkey,
             "competition": f"{self.config.track}/{self.config.hardware_class}",
+            "protocol_profile": (
+                "signed-v0.3" if self.config.uses_signed_v030 else "legacy-v0.1.14"
+            ),
+            "v030_activation_block": self.config.v030_activation_block,
             "source": None,
             "source_template": self.config.source_template,
             "transaction_authorization": {
@@ -770,6 +839,20 @@ class Controller:
                 return reason
             return "legacy authorization latch requires operator review"
         return None
+
+    def _waiting_for_trusted_round(self, exc: BaseException) -> None:
+        raw_message = str(exc) or exc.__class__.__name__
+        message = redact_text(raw_message, self.state.secrets)
+        self.state.write(
+            "waiting",
+            ok=False,
+            message=message,
+            details={
+                **self._static_details(),
+                "proofs": VerificationProofs(False, False, False, False).to_dict(),
+            },
+        )
+        log.warning("waiting for a trusted signed-v0.3 round: %s", message)
 
     def _failure(self, phase: str, exc: BaseException) -> None:
         previous = self.state.read_status()

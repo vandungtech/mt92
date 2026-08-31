@@ -1,16 +1,15 @@
 # Microtensor miner controller
 
 This repository supervises one registered Microtensor hotkey safely across round
-boundaries. It is pinned to upstream commit
-`d0e002f887d038bf3ea4af65b499137a755620d7`, which reports version `0.1.14`,
-netuid 92 on Finney, wallet `you-cold/you-hot1`, expected UID 32, and the
-controller target `extract/mt-3g`. As of 2026-08-31, the live coordinator instead
-advertises only `code/mt-3g` under mechanism `0.2.0`, so submission remains
-fail-closed until a compatible, signed upstream release and matching anchored round exist.
-That pinned commit is unreleased and is not the application-signed v0.1.14 release
-commit; the signed release does not yet
-contain the live extraction rules. Version equality is therefore not treated as
-release-signature proof, and any live cycle requires a fresh exact-round audit.
+boundaries. It targets netuid 92 on Finney, wallet `you-cold/you-hot1`, expected UID
+32, and `code/mt-3g` under the signed Microtensor v0.3.0 mechanism. The install pin is
+the official v0.3.0 release wheel; preflight independently requires its exact SHA-256
+`742a25240a4a95f272c2894f5176a4f084b4b4eb5fb2af24dc8f7b464c2d0133`, signed
+runtime constants, and activation block `8966795` before accepting a round.
+
+The controller remains fail-closed unless the coordinator publishes a coherent,
+chain-anchored v0.3 round. A release version string by itself is never treated as
+identity proof.
 
 It does **not** train a model or turn an empty wallet into a miner. A valid artifact,
 self-check, public training provenance, and upload destination must exist first. The
@@ -23,7 +22,7 @@ repackage a manifest when the round changes. A manifest is signed for one specif
 round, so simply recommitting it cannot keep a miner eligible. This controller performs
 the complete transition for each newly opened round:
 
-1. validate the exact installed upstream commit;
+1. validate the exact signed upstream wheel and runtime identity;
 2. unlock the configured hotkey and prove it currently maps to UID 32;
 3. accept only a coherent, anchored coordinator round;
 4. sign a fresh, explicitly unsealed manifest for that round;
@@ -58,7 +57,7 @@ Only step 9 followed by all earlier proofs writes `"ok": true` to health state.
 
 ## Artifact prerequisites
 
-This checked-in deployment is already paired with the locally built artifact. A fresh
+The controller is not paired with a candidate until all validation gates pass. A
 deployment must prepare these runtime inputs, which remain Git-ignored:
 
 - `runtime/artifact/model.gguf` (the tokenizer is embedded in this GGUF);
@@ -78,7 +77,8 @@ dummy model or invented provenance would only create an invalid on-chain submiss
 ## Installation
 
 Python 3.10 or newer and Git are required. The dependency declaration installs the
-upstream project directly at the reviewed commit.
+official signed v0.3.0 wheel. Runtime preflight verifies its PEP 610 archive identity
+and the exact digest above.
 
 ```bash
 cd /opt/microtensor-miner
@@ -90,9 +90,10 @@ python3 -m venv .venv
 For local ONNX/GGUF self-check tooling, install `.[selfcheck]`. Training dependencies
 belong to the separate training pipeline, not this always-on signer.
 
-The runtime verifies PEP 610 `direct_url.json` metadata and refuses live operation if
-the installed upstream commit cannot be proven. The escape hatch
-`MMC_ALLOW_UNVERIFIED_UPSTREAM=true` is accepted only in dry-run.
+The runtime verifies PEP 610 `direct_url.json` metadata and refuses the signed v0.3
+profile if the installed wheel cannot be proven. The legacy escape hatch
+`MMC_ALLOW_UNVERIFIED_UPSTREAM=true` is accepted only in dry-run and is categorically
+rejected when `MMC_V030_ACTIVATION_BLOCK` is set.
 
 ## Configuration
 
@@ -118,6 +119,15 @@ Use the exact Microtensor HTTPS locator form below; it intentionally has no `//`
 MMC_SOURCE_TEMPLATE=https:github.com/vandungtech/mt92/releases/download/r{round}
 MMC_GITHUB_TOKEN_FILE=/etc/microtensor-miner/github.token
 MMC_TRANSACTION_AUTHORIZATION=netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1
+MMC_V030_ACTIVATION_BLOCK=8966795
+MMC_TRACK=code
+MMC_HARDWARE_CLASS=mt-3g
+MMC_ENTRYPOINT=model.gguf
+MMC_ARTIFACT_FORMAT=gguf
+MMC_QUANTIZATION=Q4_K_M
+MMC_MAX_INPUT_TOKENS=512
+MMC_TOKENIZER=tokenizer.json
+MMC_BASE_MODEL=Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
 ```
 
 The repository must already be public and initialized with at least one commit. Keep the
@@ -266,9 +276,9 @@ only its SHA-256 fingerprint is retained.
 ## Rank-one observer
 
 Continuous `run` mode starts a daemon observer for the official public
-`extract/mt-3g` leaderboard:
+`code/mt-3g` leaderboard:
 
-`https://api.microtensor.cloud/v1/arenas/extract/mt-3g/leaderboard`
+`https://api.microtensor.cloud/v1/arenas/code/mt-3g/leaderboard`
 
 It matches the exact SS58 hotkey returned by wallet preflight and atomically replaces
 `$MMC_STATE_DIR/rank.json` with mode 0600. The document records the server-supplied
@@ -311,10 +321,10 @@ before publishing.
 
 ## Tests
 
-Core tests use only the standard library and fake backends:
+Core tests use fake backends and local fixtures:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=tests .venv/bin/python -m pytest -q
 ```
 
 They do not import Bittensor, contact the coordinator, read wallets, install packages,
