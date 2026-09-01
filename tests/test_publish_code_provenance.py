@@ -15,6 +15,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from training import historical_code_candidate as historical_candidate
+from training import normalized_historical_code_candidate as normalized_candidate
 from training import publish_code_provenance as provenance
 
 
@@ -265,8 +267,50 @@ class PublishCodeProvenanceTests(unittest.TestCase):
             json.dumps(row, sort_keys=True).encode() + b"\n" for row in self.metrics
         )
         (self.run / "metrics.jsonl").write_bytes(metrics_raw)
+        self.base_identity = {
+            "base_model": provenance.BASE_MODEL,
+            "required_bytes": 1,
+            "files": {
+                "config.json": {
+                    "bytes": 1,
+                    "sha256": "f" * 64,
+                }
+            },
+        }
+        self.manifest = {
+            "schema": historical_candidate.DATASET_SCHEMA,
+            "track": provenance.TRACK,
+            "hardware_class": provenance.HARDWARE_CLASS,
+            "corpus_version": historical_candidate.CORPUS_VERSION,
+            "source_file_digest": historical_candidate.PUBLIC_CORPUS_RAW_DIGEST,
+            "seed": 92,
+            "train_examples": historical_candidate.EXPECTED_COUNTS["train"],
+            "holdout_examples": 0,
+            "train_file_digest": "sha256:" + "1" * 64,
+            "holdout_file_digest": "sha256:" + "2" * 64,
+            "target_construction": historical_candidate.TARGET_CONSTRUCTION,
+            "quality_claim": historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        }
+        self.manifest_identity = {
+            "bytes": 1,
+            "digest": "sha256:" + "3" * 64,
+        }
         self.metadata = {
             "schema": provenance.TRAINING_SCHEMA,
+            "status": "complete",
+            "run_kind": "final_all_public",
+            "hotkey": provenance.HOTKEY,
+            "track": provenance.TRACK,
+            "hardware_class": provenance.HARDWARE_CLASS,
+            "base_model": provenance.BASE_MODEL,
+            "base_snapshot": self.base_identity,
+            "corpus_version": historical_candidate.CORPUS_VERSION,
+            "dataset": {
+                "manifest": self.manifest,
+                "manifest_digest": self.manifest_identity["digest"],
+                "source_corpus": historical_candidate.source_corpus_identity(),
+            },
+            "quality_claim": historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
             "updates": 2,
             "selection": self.selection,
             "metrics_digest": digest(metrics_raw),
@@ -303,15 +347,45 @@ class PublishCodeProvenanceTests(unittest.TestCase):
         self.load_path = self.root / "load.json"
         write_json(self.load_path, self.load)
         self.training_lineage = {
+            "status": "provided_and_validated",
+            "schema": provenance.TRAINING_SCHEMA,
             "receipt": {**metadata_identity},
+            "source_corpus": {
+                "file": {
+                    "bytes": historical_candidate.PUBLIC_CORPUS_RESPONSE_BYTES,
+                    "digest": historical_candidate.PUBLIC_CORPUS_RAW_DIGEST,
+                },
+                **historical_candidate.source_corpus_identity(),
+            },
+            "prepared_dataset": {
+                "manifest": self.manifest_identity,
+                "train": {"bytes": 1, "digest": self.manifest["train_file_digest"]},
+                "holdout": {
+                    "bytes": 0,
+                    "digest": self.manifest["holdout_file_digest"],
+                },
+                "manifest_payload": self.manifest,
+            },
+            "base_snapshot": self.base_identity,
             "run": {
+                "kind": "merged",
                 "training_metadata": {**metadata_identity},
                 "metrics": {
                     "bytes": len(metrics_raw),
                     "digest": digest(metrics_raw),
                 },
-                "merged": {"digest": "sha256:" + "c" * 64, "files": []},
+                "adapter": {
+                    "digest": "sha256:" + "4" * 64,
+                    "files": [{"path": "adapter.safetensors", "bytes": 1}],
+                    "total_bytes": 1,
+                },
+                "merged": {
+                    "digest": "sha256:" + "c" * 64,
+                    "files": [{"path": "model.safetensors", "bytes": 1}],
+                    "total_bytes": 1,
+                },
             },
+            "conversion_binding_claim": "fixture validated conversion binding",
         }
         self.conversion = {
             "schema": provenance.CONVERSION_SCHEMA,
@@ -365,7 +439,7 @@ class PublishCodeProvenanceTests(unittest.TestCase):
         return (
             mock.patch.object(
                 provenance.gguf,
-                "load_v5_training_lineage",
+                "load_training_lineage",
                 return_value=(self.training_lineage, ()),
             ),
             mock.patch.object(
@@ -374,6 +448,84 @@ class PublishCodeProvenanceTests(unittest.TestCase):
                 return_value=self.artifact_identity,
             ),
         )
+
+    def rewrite_training_metadata(self) -> None:
+        write_json(self.run / "training_metadata.json", self.metadata)
+        raw = (self.run / "training_metadata.json").read_bytes()
+        identity = {"bytes": len(raw), "digest": digest(raw)}
+        self.training_lineage["receipt"] = copy.deepcopy(identity)
+        self.training_lineage["run"]["training_metadata"] = copy.deepcopy(identity)
+
+    def configure_normalized_v6(self) -> None:
+        self.manifest = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "track": provenance.TRACK,
+            "hardware_class": provenance.HARDWARE_CLASS,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+            "corpus_version": normalized_candidate.CORPUS_VERSION,
+            "source_file_digest": normalized_candidate.PUBLIC_CORPUS_RAW_DIGEST,
+            "seed": normalized_candidate.EXPECTED_SEED,
+            "source_examples": normalized_candidate.EXPECTED_SOURCE_EXAMPLES,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "train_file_bytes": normalized_candidate.EXPECTED_TRAIN_FILE_BYTES,
+            "train_file_digest": normalized_candidate.EXPECTED_TRAIN_FILE_DIGEST,
+            "holdout_file_bytes": normalized_candidate.EXPECTED_HOLDOUT_FILE_BYTES,
+            "holdout_file_digest": normalized_candidate.EXPECTED_HOLDOUT_FILE_DIGEST,
+            "excluded_refs_file": normalized_candidate.EXCLUDED_REFS_FILE,
+            "excluded_refs_canonical_bytes": (
+                normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+            ),
+            "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+            "target_construction": normalized_candidate.TARGET_CONSTRUCTION,
+            "normalization": normalized_candidate.NORMALIZATION_CONTRACT,
+            "quality_claim": normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        }
+        self.training_lineage.update(
+            {
+                "schema": provenance.NORMALIZED_TRAINING_SCHEMA,
+                "source_corpus": {
+                    "file": {
+                        "bytes": normalized_candidate.PUBLIC_CORPUS_RESPONSE_BYTES,
+                        "digest": normalized_candidate.PUBLIC_CORPUS_RAW_DIGEST,
+                    },
+                    **normalized_candidate.source_corpus_identity(),
+                },
+                "prepared_dataset": {
+                    "manifest": self.manifest_identity,
+                    "train": {
+                        "bytes": normalized_candidate.EXPECTED_TRAIN_FILE_BYTES,
+                        "digest": normalized_candidate.EXPECTED_TRAIN_FILE_DIGEST,
+                    },
+                    "holdout": {
+                        "bytes": normalized_candidate.EXPECTED_HOLDOUT_FILE_BYTES,
+                        "digest": normalized_candidate.EXPECTED_HOLDOUT_FILE_DIGEST,
+                    },
+                    "excluded_refs": {
+                        "bytes": (normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES),
+                        "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+                    },
+                    "manifest_payload": self.manifest,
+                },
+            }
+        )
+        self.metadata.update(
+            {
+                "schema": provenance.NORMALIZED_TRAINING_SCHEMA,
+                "corpus_version": normalized_candidate.CORPUS_VERSION,
+                "dataset": {
+                    "manifest": self.manifest,
+                    "manifest_digest": self.manifest_identity["digest"],
+                    "source_corpus": normalized_candidate.source_corpus_identity(),
+                },
+                "quality_claim": normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+            }
+        )
+        self.rewrite_training_metadata()
+        self.conversion["schema"] = provenance.NORMALIZED_CONVERSION_SCHEMA
+        self.conversion["source"] = provenance._expected_conversion_source(self.training_lineage)
+        write_json(self.conversion_path, self.conversion)
 
     def validate(self) -> provenance.Publication:
         first, second = self.patches()
@@ -1935,6 +2087,28 @@ class PublishCodeProvenanceTests(unittest.TestCase):
         )
         return self.v3_request
 
+    def prepare_calibrated_v5(self) -> provenance.PublicationRequest:
+        self.configure_normalized_v6()
+        request = self.prepare_calibrated_v3()
+        self.v3_selection["historical_pool_rows"] = normalized_candidate.EXPECTED_TRAIN_EXAMPLES
+        self.v3_source["historical"] = {
+            "corpus": normalized_candidate.source_corpus_identity(),
+            "prepared_dataset": {
+                "tree_digest": "sha256:" + "7" * 64,
+                "manifest": copy.deepcopy(self.manifest),
+                "excluded_refs_file": {
+                    "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+                    "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+                },
+            },
+        }
+        self.v3_calibration["source"] = copy.deepcopy(self.v3_source)
+        self.v3_calibration["selection"] = copy.deepcopy(self.v3_selection)
+        self.v3_conversion["schema"] = provenance.NORMALIZED_CALIBRATED_CONVERSION_SCHEMA
+        self.v3_conversion["source"] = provenance._expected_conversion_source(self.training_lineage)
+        self.rewrite_v3_receipts()
+        return request
+
     def rewrite_v3_receipts(self) -> None:
         write_json(self.v3_calibration_path, self.v3_calibration)
         self.v3_conversion["calibration_receipt_digest"] = digest(
@@ -1990,6 +2164,40 @@ class PublishCodeProvenanceTests(unittest.TestCase):
             publication.conversion["conversion"]["runtime_libraries"],
             self.v3_toolchain["runtime_libraries"],
         )
+
+    def test_normalized_calibrated_v5_binds_profile_exclusions_and_pool(self) -> None:
+        self.prepare_calibrated_v5()
+        publication = self.validate_v3()
+        self.assertEqual(
+            publication.conversion["schema"],
+            provenance.NORMALIZED_CALIBRATED_CONVERSION_SCHEMA,
+        )
+        self.assertEqual(
+            publication.conversion["source"],
+            provenance._expected_conversion_source(self.training_lineage),
+        )
+        self.assertEqual(
+            publication.calibration["receipt"]["selection"]["historical_pool_rows"],
+            normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+        )
+        self.assertEqual(
+            provenance._wandb_config(publication)["mt_quality_claim"],
+            normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        )
+
+    def test_normalized_calibrated_v5_rejects_legacy_v3_schema_swap(self) -> None:
+        self.prepare_calibrated_v5()
+        self.v3_conversion["schema"] = provenance.CALIBRATED_CONVERSION_SCHEMA
+        self.v3_conversion["source"] = {
+            "training_metadata_digest": self.training_lineage["receipt"]["digest"],
+            "merged_tree_digest": self.training_lineage["run"]["merged"]["digest"],
+        }
+        self.rewrite_v3_receipts()
+        with self.assertRaisesRegex(
+            provenance.CodeProvenanceError,
+            "schema crosses training lineages",
+        ):
+            self.validate_v3()
 
     def test_obsolete_calibrated_v2_is_ineligible(self) -> None:
         self.prepare_calibrated_v3()
@@ -2216,6 +2424,131 @@ class PublishCodeProvenanceTests(unittest.TestCase):
         write_json(self.conversion_path, self.conversion)
         publication = self.validate()
         self.assertEqual(publication.load_manifest["quantization"], "Q5_K_M")
+
+    def test_normalized_v6_generic_v4_is_exactly_bound_and_dynamic(self) -> None:
+        self.configure_normalized_v6()
+        publication = self.validate()
+        self.assertEqual(
+            publication.training_lineage["schema"],
+            provenance.NORMALIZED_TRAINING_SCHEMA,
+        )
+        self.assertEqual(publication.conversion["schema"], provenance.NORMALIZED_CONVERSION_SCHEMA)
+        self.assertEqual(
+            publication.conversion["source"],
+            {
+                "training_schema": provenance.NORMALIZED_TRAINING_SCHEMA,
+                "dataset_schema": normalized_candidate.DATASET_SCHEMA,
+                "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+                "training_metadata_digest": publication.training_lineage["receipt"]["digest"],
+                "merged_tree_digest": publication.training_lineage["run"]["merged"]["digest"],
+                "excluded_refs": {
+                    "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+                    "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+                },
+            },
+        )
+        config = provenance._wandb_config(publication)
+        summary = provenance._wandb_summary(publication)
+        self.assertEqual(config["mt_training_schema"], provenance.NORMALIZED_TRAINING_SCHEMA)
+        self.assertEqual(
+            config["mt_quality_claim"],
+            normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        )
+        self.assertEqual(config["mt_corpus_version"], normalized_candidate.CORPUS_VERSION)
+        self.assertEqual(summary["mt_training_schema"], provenance.NORMALIZED_TRAINING_SCHEMA)
+
+    def test_normalized_v6_rejects_schema_source_manifest_and_lineage_tampering(self) -> None:
+        self.configure_normalized_v6()
+        baseline_lineage = copy.deepcopy(self.training_lineage)
+        baseline_metadata = copy.deepcopy(self.metadata)
+        baseline_conversion = copy.deepcopy(self.conversion)
+
+        def legacy_schema() -> None:
+            self.conversion["schema"] = provenance.CONVERSION_SCHEMA
+            self.conversion["source"] = {
+                "training_metadata_digest": self.training_lineage["receipt"]["digest"],
+                "merged_tree_digest": self.training_lineage["run"]["merged"]["digest"],
+            }
+
+        def training_schema() -> None:
+            self.conversion["source"]["training_schema"] = provenance.TRAINING_SCHEMA
+
+        def dataset_schema() -> None:
+            self.conversion["source"]["dataset_schema"] = historical_candidate.DATASET_SCHEMA
+
+        def corpus_profile() -> None:
+            self.conversion["source"]["corpus_profile"] = historical_candidate.CORPUS_PROFILE
+
+        def conversion_exclusion() -> None:
+            self.conversion["source"]["excluded_refs"]["bytes"] += 1
+
+        def conversion_exclusion_type() -> None:
+            self.conversion["source"]["excluded_refs"]["bytes"] = float(
+                normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+            )
+
+        def training_metadata_digest() -> None:
+            self.conversion["source"]["training_metadata_digest"] = "sha256:" + "0" * 64
+
+        def merged_tree_digest() -> None:
+            self.conversion["source"]["merged_tree_digest"] = "sha256:" + "0" * 64
+
+        def source_corpus() -> None:
+            self.training_lineage["source_corpus"]["raw_digest"] = "sha256:" + "0" * 64
+
+        def manifest_exclusion() -> None:
+            self.training_lineage["prepared_dataset"]["manifest_payload"][
+                "excluded_refs_digest"
+            ] = "sha256:" + "0" * 64
+
+        def prepared_exclusion() -> None:
+            self.training_lineage["prepared_dataset"]["excluded_refs"]["digest"] = (
+                "sha256:" + "0" * 64
+            )
+
+        def non_qwen_base() -> None:
+            self.training_lineage["base_snapshot"]["base_model"] = "other/model"
+
+        def incomplete_run() -> None:
+            del self.training_lineage["run"]["adapter"]
+
+        cases = (
+            ("legacy schema swap", legacy_schema),
+            ("training schema", training_schema),
+            ("dataset schema", dataset_schema),
+            ("corpus profile", corpus_profile),
+            ("conversion exclusion", conversion_exclusion),
+            ("conversion exclusion numeric type", conversion_exclusion_type),
+            ("training metadata digest", training_metadata_digest),
+            ("merged tree digest", merged_tree_digest),
+            ("source corpus", source_corpus),
+            ("manifest exclusion", manifest_exclusion),
+            ("prepared exclusion", prepared_exclusion),
+            ("non-Qwen3 base", non_qwen_base),
+            ("incomplete run", incomplete_run),
+        )
+        for label, mutate in cases:
+            with self.subTest(label=label):
+                self.training_lineage = copy.deepcopy(baseline_lineage)
+                self.metadata = copy.deepcopy(baseline_metadata)
+                self.conversion = copy.deepcopy(baseline_conversion)
+                mutate()
+                write_json(self.conversion_path, self.conversion)
+                with self.assertRaises(provenance.CodeProvenanceError):
+                    self.validate()
+
+    def test_normalized_generic_v4_rejects_q4_without_calibrated_v5(self) -> None:
+        self.configure_normalized_v6()
+        self.load["quantization"] = "Q4_K_M"
+        self.conversion["artifact"]["quantization"] = "Q4_K_M"
+        self.conversion["load_manifest"] = copy.deepcopy(self.load)
+        write_json(self.load_path, self.load)
+        write_json(self.conversion_path, self.conversion)
+        with self.assertRaisesRegex(
+            provenance.CodeProvenanceError,
+            "Q4_K_M publication requires calibrated conversion-v5",
+        ):
+            self.validate()
 
     def test_symlinked_receipt_is_rejected(self) -> None:
         target = self.conversion_path.with_name("actual-conversion.json")

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Convert one validated historical code run into an atomically published GGUF bundle.
 
-Only the exact completed v5 historical training lineage and a clean, pinned
-llama.cpp checkout are accepted.  Conversion happens in a unique directory on
-``/dev/shm``.  The final bundle is published with Linux ``RENAME_NOREPLACE``
-only after every source, tool, and output identity has been replayed.
+Only an exact completed source-bound v5 historical or v6 normalized historical
+training lineage and a clean, pinned llama.cpp checkout are accepted.
+Conversion happens in a unique directory on ``/dev/shm``.  The final bundle is
+published with Linux ``RENAME_NOREPLACE`` only after every source, tool, and
+output identity has been replayed.
 
 This module never executes corpus or generated code.  Calibrated conversion
 does run offline model forward passes through the exact reviewed
@@ -41,6 +42,7 @@ try:
     from training import code_candidate as candidate
     from training import evaluate_code_gguf as gguf
     from training import historical_code_candidate as historical_candidate
+    from training import normalized_historical_code_candidate as normalized_candidate
     from training import publish_code_provenance as provenance
 except ModuleNotFoundError as exc:
     if exc.name != "training":
@@ -48,12 +50,29 @@ except ModuleNotFoundError as exc:
     import code_candidate as candidate  # type: ignore[no-redef]
     import evaluate_code_gguf as gguf  # type: ignore[no-redef]
     import historical_code_candidate as historical_candidate  # type: ignore[no-redef]
+    import normalized_historical_code_candidate as normalized_candidate  # type: ignore[no-redef]
     import publish_code_provenance as provenance  # type: ignore[no-redef]
 
 
 SCHEMA: Final[str] = provenance.CONVERSION_SCHEMA
 CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v3"
+NORMALIZED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v4"
+NORMALIZED_CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v5"
 CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v2"
+LEGACY_CONVERSION_SOURCE_KEYS: Final[frozenset[str]] = frozenset(
+    {"training_metadata_digest", "merged_tree_digest"}
+)
+NORMALIZED_CONVERSION_SOURCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "training_schema",
+        "dataset_schema",
+        "corpus_profile",
+        "training_metadata_digest",
+        "merged_tree_digest",
+        "excluded_refs",
+    }
+)
+NORMALIZED_EXCLUDED_REFS_KEYS: Final[frozenset[str]] = frozenset({"bytes", "digest"})
 CALIBRATION_PROFILE: Final[str] = "code-public-imatrix128-v1"
 LLAMA_CPP_REVISION: Final[str] = "c589f0ed10c643678c4707dd160c21ac7633ebc0"
 LLAMA_CPP_ROOT: Final[Path] = Path("/tmp/llama.cpp")  # noqa: S108 - pinned RUNPATH root
@@ -1171,28 +1190,166 @@ def _toolchain_identity(request: ConversionRequest) -> dict[str, Any]:
     return result
 
 
+def _legacy_conversion_source(lineage: Mapping[str, Any]) -> dict[str, Any]:
+    receipt = _mapping(lineage.get("receipt"), "training receipt identity")
+    run = _mapping(lineage.get("run"), "training run identity")
+    merged = _mapping(run.get("merged"), "merged HF tree identity")
+    return {
+        "training_metadata_digest": receipt.get("digest"),
+        "merged_tree_digest": merged.get("digest"),
+    }
+
+
+def _normalized_conversion_source(lineage: Mapping[str, Any]) -> dict[str, Any]:
+    prepared = _mapping(lineage.get("prepared_dataset"), "normalized prepared dataset identity")
+    manifest = _mapping(
+        prepared.get("manifest_payload"),
+        "normalized prepared manifest payload",
+    )
+    excluded = _mapping(
+        prepared.get("excluded_refs"),
+        "normalized excluded refs identity",
+    )
+    required_manifest = {
+        "schema": normalized_candidate.DATASET_SCHEMA,
+        "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+        "source_examples": normalized_candidate.EXPECTED_SOURCE_EXAMPLES,
+        "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+        "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+        "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+        "excluded_refs_file": normalized_candidate.EXCLUDED_REFS_FILE,
+        "excluded_refs_canonical_bytes": (
+            normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+        ),
+        "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+    }
+    for field, expected in required_manifest.items():
+        if manifest.get(field) != expected:
+            raise ConversionRefused(f"normalized training manifest field {field!r} changed")
+    excluded_content = {
+        "bytes": excluded.get("bytes"),
+        "digest": excluded.get("digest"),
+    }
+    expected_excluded_content = {
+        "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+        "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+    }
+    if excluded_content != expected_excluded_content:
+        raise ConversionRefused("normalized excluded refs identity changed")
+    return {
+        "training_schema": gguf.TRAINING_SCHEMA_V6,
+        "dataset_schema": normalized_candidate.DATASET_SCHEMA,
+        "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+        **_legacy_conversion_source(lineage),
+        "excluded_refs": excluded_content,
+    }
+
+
+def _conversion_source(lineage: Mapping[str, Any]) -> dict[str, Any]:
+    schema = lineage.get("schema")
+    if schema == gguf.TRAINING_SCHEMA_V5:
+        return _legacy_conversion_source(lineage)
+    if schema == gguf.TRAINING_SCHEMA_V6:
+        return _normalized_conversion_source(lineage)
+    raise ConversionRefused("training lineage schema is not explicit v5 or v6")
+
+
+def _conversion_schema(lineage: Mapping[str, Any], *, calibrated: bool) -> str:
+    schema = lineage.get("schema")
+    if schema == gguf.TRAINING_SCHEMA_V5:
+        return CALIBRATED_CONVERSION_SCHEMA if calibrated else SCHEMA
+    if schema == gguf.TRAINING_SCHEMA_V6:
+        return (
+            NORMALIZED_CALIBRATED_CONVERSION_SCHEMA if calibrated else NORMALIZED_CONVERSION_SCHEMA
+        )
+    raise ConversionRefused("training lineage schema is not explicit v5 or v6")
+
+
+def _validate_loaded_lineage(lineage: Mapping[str, Any]) -> None:
+    _exact_keys(
+        lineage,
+        frozenset(
+            {
+                "status",
+                "schema",
+                "receipt",
+                "source_corpus",
+                "prepared_dataset",
+                "base_snapshot",
+                "run",
+                "conversion_binding_claim",
+            }
+        ),
+        "training lineage",
+    )
+    if lineage.get("status") != "provided_and_validated":
+        raise ConversionRefused("training lineage is not completed and validated")
+    schema = lineage.get("schema")
+    if schema not in {gguf.TRAINING_SCHEMA_V5, gguf.TRAINING_SCHEMA_V6}:
+        raise ConversionRefused("training lineage schema is not explicit v5 or v6")
+    receipt = _mapping(lineage.get("receipt"), "training receipt identity")
+    run = _mapping(lineage.get("run"), "training run identity")
+    if run.get("kind") != "merged":
+        raise ConversionRefused("training lineage does not identify a completed merged run")
+    merged = _mapping(run.get("merged"), "merged HF tree identity")
+    for value, label in (
+        (receipt.get("digest"), "training metadata digest"),
+        (merged.get("digest"), "merged HF tree digest"),
+    ):
+        if not _valid_digest(value):
+            raise ConversionRefused(f"{label} is malformed")
+    base = _mapping(lineage.get("base_snapshot"), "training base snapshot identity")
+    if base.get("base_model") != candidate.QWEN3_BASE_MODEL:
+        raise ConversionRefused("training lineage is not bound to the pinned Qwen3 base")
+    source = _mapping(lineage.get("source_corpus"), "training source-corpus identity")
+    source_file = _mapping(source.get("file"), "training source-corpus file identity")
+    prepared = _mapping(lineage.get("prepared_dataset"), "training prepared dataset identity")
+    manifest = _mapping(prepared.get("manifest_payload"), "training prepared manifest payload")
+    if not _valid_digest(source_file.get("digest")):
+        raise ConversionRefused("training source-corpus digest is malformed")
+    if not (
+        source_file.get("digest") == source.get("raw_digest") == manifest.get("source_file_digest")
+    ):
+        raise ConversionRefused("training lineage is not bound to one source corpus")
+
+    if schema == gguf.TRAINING_SCHEMA_V5:
+        _exact_keys(
+            prepared,
+            frozenset({"manifest", "train", "holdout", "manifest_payload"}),
+            "v5 prepared dataset identity",
+        )
+        required = {
+            "schema": historical_candidate.DATASET_SCHEMA,
+            "seed": gguf.DIAGNOSTIC_SEED,
+            "train_examples": historical_candidate.EXPECTED_COUNTS["train"],
+            "holdout_examples": 0,
+            "target_construction": historical_candidate.TARGET_CONSTRUCTION,
+        }
+        for field, expected in required.items():
+            if manifest.get(field) != expected:
+                raise ConversionRefused(f"v5 training manifest field {field!r} changed")
+    else:
+        _exact_keys(
+            prepared,
+            frozenset({"manifest", "train", "holdout", "excluded_refs", "manifest_payload"}),
+            "v6 prepared dataset identity",
+        )
+        _normalized_conversion_source(lineage)
+
+
 def _load_lineage(request: ConversionRequest) -> dict[str, Any]:
     try:
-        lineage, _modules = gguf.load_v5_training_lineage(
+        lineage, _modules = gguf.load_training_lineage(
             request.training_run,
             request.training_dataset,
             request.source_corpus,
             request.base,
         )
     except Exception as exc:
-        raise ConversionRefused(f"v5 historical training lineage was refused: {exc}") from exc
-    if lineage.get("schema") != gguf.TRAINING_SCHEMA_V5:
-        raise ConversionRefused("training lineage is not the exact v5 schema")
-    receipt = _mapping(lineage.get("receipt"), "training receipt identity")
-    run = _mapping(lineage.get("run"), "training run identity")
-    merged = _mapping(run.get("merged"), "merged HF tree identity")
-    for value, label in (
-        (receipt.get("digest"), "training metadata digest"),
-        (merged.get("digest"), "merged HF tree digest"),
-    ):
-        if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
-            raise ConversionRefused(f"{label} is malformed")
-    return lineage
+        raise ConversionRefused(f"source-bound training lineage was refused: {exc}") from exc
+    validated = _mapping(lineage, "training lineage")
+    _validate_loaded_lineage(validated)
+    return dict(validated)
 
 
 def _conversion_command(
@@ -1373,19 +1530,40 @@ def _content_identity(path: Path, label: str) -> dict[str, Any]:
 
 
 def _dataset_identity(root: Path, manifest: Mapping[str, Any], label: str) -> dict[str, Any]:
-    expected_files = frozenset({"manifest.json", "train.jsonl", "holdout.jsonl"})
+    schema = manifest.get("schema")
+    expected_files = {"manifest.json", "train.jsonl", "holdout.jsonl"}
+    if schema == normalized_candidate.DATASET_SCHEMA:
+        expected_files.add(normalized_candidate.EXCLUDED_REFS_FILE)
+    elif schema not in {candidate.DATASET_SCHEMA, historical_candidate.DATASET_SCHEMA}:
+        raise ConversionRefused(f"{label} schema is unsupported")
     if _bundle_file_set(root) != expected_files:
         raise ConversionRefused(f"{label} contains unexpected files")
     strict_manifest = _strict_json_file(root / "manifest.json", f"{label} manifest")
     if strict_manifest != dict(manifest):
         raise ConversionRefused(f"{label} manifest changed under strict replay")
-    return {
+    result = {
         "tree_digest": _official_tree_digest(root),
         "manifest": strict_manifest,
         "manifest_file": _content_identity(root / "manifest.json", f"{label} manifest"),
         "train_file": _content_identity(root / "train.jsonl", f"{label} train rows"),
         "holdout_file": _content_identity(root / "holdout.jsonl", f"{label} holdout rows"),
     }
+    if schema == normalized_candidate.DATASET_SCHEMA:
+        excluded = _content_identity(
+            root / normalized_candidate.EXCLUDED_REFS_FILE,
+            f"{label} excluded refs",
+        )
+        expected_excluded = {
+            "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+            "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        }
+        if excluded != expected_excluded or excluded != {
+            "bytes": manifest.get("excluded_refs_canonical_bytes"),
+            "digest": manifest.get("excluded_refs_digest"),
+        }:
+            raise ConversionRefused(f"{label} excluded refs identity changed")
+        result["excluded_refs_file"] = excluded
+    return result
 
 
 def _strict_current_jsonl_matches(
@@ -1459,10 +1637,35 @@ def _load_calibration_material(
             current_holdout,
             "current holdout JSONL",
         )
-        historical_rows, historical_manifest = historical_candidate.load_prepared_dataset(
-            historical_root,
-            historical_source,
+        historical_header = _strict_json_file(
+            historical_root / "manifest.json",
+            "training calibration manifest",
         )
+        historical_schema = historical_header.get("schema")
+        if historical_schema == historical_candidate.DATASET_SCHEMA:
+            historical_rows, historical_manifest = historical_candidate.load_prepared_dataset(
+                historical_root,
+                historical_source,
+            )
+            expected_historical_split = (
+                CALIBRATION_SEED,
+                historical_candidate.EXPECTED_COUNTS["train"],
+                0,
+            )
+            historical_source_identity = historical_candidate.source_corpus_identity()
+        elif historical_schema == normalized_candidate.DATASET_SCHEMA:
+            historical_rows, historical_manifest = normalized_candidate.load_prepared_dataset(
+                historical_root,
+                historical_source,
+            )
+            expected_historical_split = (
+                normalized_candidate.EXPECTED_SEED,
+                normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+                normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            )
+            historical_source_identity = normalized_candidate.source_corpus_identity()
+        else:
+            raise ConversionRefused("training calibration manifest schema is unsupported")
     except ConversionRefused:
         raise
     except (OSError, UnicodeError, KeyError, TypeError, ValueError) as exc:
@@ -1478,8 +1681,8 @@ def _load_calibration_material(
         historical_manifest.get("seed"),
         historical_manifest.get("train_examples"),
         historical_manifest.get("holdout_examples"),
-    ) != (CALIBRATION_SEED, historical_candidate.EXPECTED_COUNTS["train"], 0):
-        raise ConversionRefused("historical calibration pool is not the final 8000-row split")
+    ) != expected_historical_split:
+        raise ConversionRefused("training calibration pool is not its exact final split")
     if (
         current_manifest.get("source_file_digest")
         != _content_identity(
@@ -1502,7 +1705,7 @@ def _load_calibration_material(
         raise ConversionRefused("current diagnostic refs are duplicated")
     if set(current_refs) & set(holdout_refs):
         raise ConversionRefused("current diagnostic rows leaked into calibration training rows")
-    if len(historical_rows) != historical_candidate.EXPECTED_COUNTS["train"]:
+    if len(historical_rows) != expected_historical_split[1]:
         raise ConversionRefused("historical calibration pool row count changed")
     if len(set(historical_refs)) != len(historical_refs):
         raise ConversionRefused("historical calibration refs are duplicated")
@@ -1549,7 +1752,7 @@ def _load_calibration_material(
                 ),
             },
             "historical": {
-                "corpus": historical_candidate.source_corpus_identity(),
+                "corpus": historical_source_identity,
                 "prepared_dataset": _dataset_identity(
                     historical_root,
                     historical_manifest,
@@ -2125,23 +2328,17 @@ def _receipt(
     artifact: Mapping[str, Any],
     load_manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
-    receipt_identity = _mapping(lineage["receipt"], "training receipt identity")
-    run = _mapping(lineage["run"], "training run identity")
-    merged = _mapping(run["merged"], "merged tree identity")
     converter = _mapping(toolchain["converter"], "converter identity")
     quantizer = _mapping(toolchain["quantizer"], "quantizer identity")
     entrypoint = _mapping(artifact["entrypoint"], "artifact entrypoint")
     return {
-        "schema": SCHEMA,
+        "schema": _conversion_schema(lineage, calibrated=False),
         "status": "complete",
         "track": provenance.TRACK,
         "hardware_class": provenance.HARDWARE_CLASS,
         "base_model": provenance.BASE_MODEL,
         "llama_cpp_revision": LLAMA_CPP_REVISION,
-        "source": {
-            "training_metadata_digest": receipt_identity["digest"],
-            "merged_tree_digest": merged["digest"],
-        },
+        "source": _conversion_source(lineage),
         "conversion": {
             "converter_digest": converter["digest"],
             "quantizer_digest": quantizer["digest"],
@@ -2228,25 +2425,19 @@ def _calibrated_conversion_receipt(
     calibration_digest: str,
     determinism_replay: Mapping[str, Any],
 ) -> dict[str, Any]:
-    receipt_identity = _mapping(lineage["receipt"], "training receipt identity")
-    run = _mapping(lineage["run"], "training run identity")
-    merged = _mapping(run["merged"], "merged tree identity")
     converter_identity = _mapping(toolchain["converter"], "converter identity")
     imatrix_identity = _mapping(toolchain["imatrix"], "imatrix tool identity")
     quantizer_identity = _mapping(toolchain["quantizer"], "quantizer identity")
     runtime_libraries = _mapping(toolchain["runtime_libraries"], "runtime library closure identity")
     entrypoint = _mapping(artifact["entrypoint"], "artifact entrypoint")
     return {
-        "schema": CALIBRATED_CONVERSION_SCHEMA,
+        "schema": _conversion_schema(lineage, calibrated=True),
         "status": "complete",
         "track": provenance.TRACK,
         "hardware_class": provenance.HARDWARE_CLASS,
         "base_model": provenance.BASE_MODEL,
         "llama_cpp_revision": LLAMA_CPP_REVISION,
-        "source": {
-            "training_metadata_digest": receipt_identity["digest"],
-            "merged_tree_digest": merged["digest"],
-        },
+        "source": _conversion_source(lineage),
         "conversion": {
             "converter_digest": converter_identity["digest"],
             "imatrix_digest": imatrix_identity["digest"],
@@ -2272,6 +2463,68 @@ def _valid_digest(value: Any) -> bool:
         and value.startswith("sha256:")
         and len(value) == 71
         and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def _validate_conversion_source_shape(
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    schema = receipt.get("schema")
+    source = _mapping(receipt.get("source"), "conversion source")
+    if schema in {SCHEMA, CALIBRATED_CONVERSION_SCHEMA}:
+        _exact_keys(source, LEGACY_CONVERSION_SOURCE_KEYS, "legacy conversion source")
+    elif schema in {
+        NORMALIZED_CONVERSION_SCHEMA,
+        NORMALIZED_CALIBRATED_CONVERSION_SCHEMA,
+    }:
+        _exact_keys(source, NORMALIZED_CONVERSION_SOURCE_KEYS, "normalized conversion source")
+        required = {
+            "training_schema": gguf.TRAINING_SCHEMA_V6,
+            "dataset_schema": normalized_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+        }
+        for field, expected in required.items():
+            if source.get(field) != expected:
+                raise ConversionRefused(f"normalized conversion source field {field!r} changed")
+        excluded = _mapping(source.get("excluded_refs"), "normalized conversion excluded refs")
+        _exact_keys(
+            excluded,
+            NORMALIZED_EXCLUDED_REFS_KEYS,
+            "normalized conversion excluded refs",
+        )
+        if dict(excluded) != {
+            "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+            "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        }:
+            raise ConversionRefused("normalized conversion excluded refs identity changed")
+    else:
+        raise ConversionRefused("conversion receipt schema is unsupported")
+    for field in ("training_metadata_digest", "merged_tree_digest"):
+        if not _valid_digest(source.get(field)):
+            raise ConversionRefused(f"conversion source field {field!r} is malformed")
+    return dict(source)
+
+
+def _validate_generic_conversion_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    training_lineage: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+    load_manifest: Mapping[str, Any],
+) -> None:
+    expected_schema = _conversion_schema(training_lineage, calibrated=False)
+    if receipt.get("schema") != expected_schema:
+        raise ConversionRefused("conversion receipt schema crosses training lineages")
+    source = _validate_conversion_source_shape(receipt)
+    expected_source = _conversion_source(training_lineage)
+    if source != expected_source:
+        raise ConversionRefused("conversion receipt crosses training lineages")
+    provenance._validate_generic_conversion(
+        receipt,
+        training_lineage=training_lineage,
+        artifact=artifact,
+        load_manifest=load_manifest,
+        calibration_digest=None,
     )
 
 
@@ -2520,14 +2773,40 @@ def _validate_calibrated_receipts(
     command_argv: Sequence[tuple[str, Sequence[str]]],
     replay_command_argv: Sequence[tuple[str, Sequence[str]]],
 ) -> None:
+    _exact_keys(
+        conversion_receipt,
+        frozenset(
+            {
+                "schema",
+                "status",
+                "track",
+                "hardware_class",
+                "base_model",
+                "llama_cpp_revision",
+                "source",
+                "conversion",
+                "artifact",
+                "load_manifest",
+                "calibration_receipt_digest",
+            }
+        ),
+        "calibrated conversion receipt",
+    )
     if dict(calibration_receipt) != dict(expected_calibration):
         raise ConversionRefused("calibration-v2 receipt fields changed")
     if dict(conversion_receipt) != dict(expected_conversion):
         raise ConversionRefused("conversion-v3 receipt fields changed")
     if calibration_receipt.get("schema") != CALIBRATION_SCHEMA:
         raise ConversionRefused("calibration receipt schema changed")
-    if conversion_receipt.get("schema") != CALIBRATED_CONVERSION_SCHEMA:
+    expected_conversion_schema = expected_conversion.get("schema")
+    if expected_conversion_schema not in {
+        CALIBRATED_CONVERSION_SCHEMA,
+        NORMALIZED_CALIBRATED_CONVERSION_SCHEMA,
+    }:
+        raise ConversionRefused("expected calibrated conversion schema is unsupported")
+    if conversion_receipt.get("schema") != expected_conversion_schema:
         raise ConversionRefused("calibrated conversion receipt schema changed")
+    _validate_conversion_source_shape(conversion_receipt)
     if conversion_receipt.get("calibration_receipt_digest") != calibration_digest:
         raise ConversionRefused("conversion receipt does not bind the calibration receipt")
     calibration_commands = calibration_receipt.get("commands")
@@ -3267,12 +3546,11 @@ def convert(request: ConversionRequest) -> dict[str, Any]:
             artifact=artifact,
             load_manifest=load_manifest,
         )
-        provenance._validate_generic_conversion(
+        _validate_generic_conversion_receipt(
             receipt,
             training_lineage=initial_lineage,
             artifact=artifact,
             load_manifest=load_manifest,
-            calibration_digest=None,
         )
         load_raw = _atomic_json_in_staging(staging / LOAD_SPEC_NAME, load_manifest)
         receipt_raw = _atomic_json_in_staging(staging / RECEIPT_NAME, receipt)

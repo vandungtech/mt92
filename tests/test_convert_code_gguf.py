@@ -17,11 +17,85 @@ from unittest import mock
 
 from training import convert_code_gguf as converter
 from training import evaluate_code_gguf as evaluator
+from training import historical_code_candidate as historical_candidate
+from training import normalized_historical_code_candidate as normalized_candidate
 from training import publish_code_provenance as provenance
 
 
 def _digest(character: str) -> str:
     return "sha256:" + character * 64
+
+
+def _training_lineage(schema: str) -> dict[str, object]:
+    source_digest = _digest("1")
+    if schema == evaluator.TRAINING_SCHEMA_V5:
+        manifest = {
+            "schema": historical_candidate.DATASET_SCHEMA,
+            "seed": evaluator.DIAGNOSTIC_SEED,
+            "train_examples": historical_candidate.EXPECTED_COUNTS["train"],
+            "holdout_examples": 0,
+            "source_file_digest": source_digest,
+            "target_construction": historical_candidate.TARGET_CONSTRUCTION,
+        }
+        prepared = {
+            "manifest": {"digest": _digest("2")},
+            "train": {"digest": _digest("3")},
+            "holdout": {"digest": _digest("4")},
+            "manifest_payload": manifest,
+        }
+    elif schema == evaluator.TRAINING_SCHEMA_V6:
+        manifest = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+            "seed": normalized_candidate.EXPECTED_SEED,
+            "source_examples": normalized_candidate.EXPECTED_SOURCE_EXAMPLES,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "excluded_refs_file": normalized_candidate.EXCLUDED_REFS_FILE,
+            "excluded_refs_canonical_bytes": (
+                normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+            ),
+            "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+            "source_file_digest": source_digest,
+        }
+        prepared = {
+            "manifest": {"digest": _digest("2")},
+            "train": {"digest": _digest("3")},
+            "holdout": {"digest": _digest("4")},
+            "excluded_refs": {
+                "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+                "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+            },
+            "manifest_payload": manifest,
+        }
+    else:
+        raise AssertionError(f"unsupported fixture schema: {schema}")
+    return {
+        "status": "provided_and_validated",
+        "schema": schema,
+        "receipt": {"digest": _digest("a")},
+        "source_corpus": {
+            "file": {"digest": source_digest},
+            "raw_digest": source_digest,
+        },
+        "prepared_dataset": prepared,
+        "base_snapshot": {"base_model": converter.candidate.QWEN3_BASE_MODEL},
+        "run": {
+            "kind": "merged",
+            "merged": {
+                "digest": _digest("b"),
+                "files": [
+                    {
+                        "path": "config.json",
+                        "bytes": 3,
+                        "digest": _digest("c"),
+                    }
+                ],
+            },
+        },
+        "conversion_binding_claim": "fixture",
+    }
 
 
 def _runtime_closure(
@@ -322,6 +396,76 @@ class ConversionFixture(unittest.TestCase):
             return converter.convert(self.request)
 
 
+class LineageDispatchTests(ConversionFixture):
+    def test_generic_dispatch_accepts_exact_completed_v5_and_v6(self) -> None:
+        for schema in (evaluator.TRAINING_SCHEMA_V5, evaluator.TRAINING_SCHEMA_V6):
+            with self.subTest(schema=schema):
+                lineage = _training_lineage(schema)
+                with mock.patch.object(
+                    converter.gguf,
+                    "load_training_lineage",
+                    return_value=(lineage, ()),
+                ) as load:
+                    self.assertEqual(converter._load_lineage(self.request), lineage)
+                load.assert_called_once_with(
+                    self.request.training_run,
+                    self.request.training_dataset,
+                    self.request.source_corpus,
+                    self.request.base,
+                )
+
+    def test_v6_excluded_refs_tamper_is_refused(self) -> None:
+        lineage = _training_lineage(evaluator.TRAINING_SCHEMA_V6)
+        lineage["prepared_dataset"]["excluded_refs"]["digest"] = _digest("9")
+        with (
+            mock.patch.object(
+                converter.gguf,
+                "load_training_lineage",
+                return_value=(lineage, ()),
+            ),
+            self.assertRaisesRegex(converter.ConversionRefused, "excluded refs identity"),
+        ):
+            converter._load_lineage(self.request)
+
+    def test_training_and_dataset_schemas_cannot_be_cross_swapped(self) -> None:
+        for schema, dataset_schema in (
+            (evaluator.TRAINING_SCHEMA_V5, normalized_candidate.DATASET_SCHEMA),
+            (evaluator.TRAINING_SCHEMA_V6, historical_candidate.DATASET_SCHEMA),
+        ):
+            with self.subTest(schema=schema, dataset_schema=dataset_schema):
+                lineage = _training_lineage(schema)
+                lineage["prepared_dataset"]["manifest_payload"]["schema"] = dataset_schema
+                with (
+                    mock.patch.object(
+                        converter.gguf,
+                        "load_training_lineage",
+                        return_value=(lineage, ()),
+                    ),
+                    self.assertRaisesRegex(converter.ConversionRefused, "manifest field 'schema'"),
+                ):
+                    converter._load_lineage(self.request)
+
+    def test_incomplete_or_non_qwen3_lineage_is_refused(self) -> None:
+        incomplete = _training_lineage(evaluator.TRAINING_SCHEMA_V6)
+        incomplete["status"] = "running"
+        wrong_base = _training_lineage(evaluator.TRAINING_SCHEMA_V6)
+        wrong_base["base_snapshot"]["base_model"] = "wrong/model"
+        for lineage, message in (
+            (incomplete, "not completed"),
+            (wrong_base, "Qwen3"),
+        ):
+            with (
+                self.subTest(message=message),
+                mock.patch.object(
+                    converter.gguf,
+                    "load_training_lineage",
+                    return_value=(lineage, ()),
+                ),
+                self.assertRaisesRegex(converter.ConversionRefused, message),
+            ):
+                converter._load_lineage(self.request)
+
+
 class SuccessfulConversionTests(ConversionFixture):
     def test_atomic_bundle_matches_publication_schema_and_exact_commands(self) -> None:
         with mock.patch.dict(
@@ -405,6 +549,59 @@ class SuccessfulConversionTests(ConversionFixture):
             load_manifest=load,
             calibration_digest=None,
         )
+
+    def test_v6_receipt_binds_normalized_schema_profile_and_exclusions(self) -> None:
+        self.lineage = _training_lineage(evaluator.TRAINING_SCHEMA_V6)
+        self.run_conversion()
+        load = json.loads((self.output / converter.LOAD_SPEC_NAME).read_bytes())
+        receipt = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
+        self.assertEqual(receipt["schema"], converter.NORMALIZED_CONVERSION_SCHEMA)
+        self.assertEqual(
+            receipt["source"],
+            {
+                "training_schema": evaluator.TRAINING_SCHEMA_V6,
+                "dataset_schema": normalized_candidate.DATASET_SCHEMA,
+                "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+                "training_metadata_digest": _digest("a"),
+                "merged_tree_digest": _digest("b"),
+                "excluded_refs": {
+                    "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+                    "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+                },
+            },
+        )
+        artifact = evaluator.artifact_identity(
+            self.output / converter.ARTIFACT_NAME,
+            entrypoint=converter.ENTRYPOINT,
+            expected_digest=receipt["artifact"]["tree_digest"],
+            quantization="Q8_0",
+        )
+        converter._validate_generic_conversion_receipt(
+            receipt,
+            training_lineage=self.lineage,
+            artifact=artifact,
+            load_manifest=load,
+        )
+
+        changed = copy.deepcopy(receipt)
+        changed["source"]["corpus_profile"] = historical_candidate.CORPUS_PROFILE
+        with self.assertRaisesRegex(converter.ConversionRefused, "corpus_profile"):
+            converter._validate_generic_conversion_receipt(
+                changed,
+                training_lineage=self.lineage,
+                artifact=artifact,
+                load_manifest=load,
+            )
+
+        crossed = copy.deepcopy(receipt)
+        crossed["schema"] = converter.SCHEMA
+        with self.assertRaisesRegex(converter.ConversionRefused, "schema crosses"):
+            converter._validate_generic_conversion_receipt(
+                crossed,
+                training_lineage=self.lineage,
+                artifact=artifact,
+                load_manifest=load,
+            )
 
     def test_generic_runtime_closure_mutation_at_prepublish_refuses_bundle(self) -> None:
         changed_tools = copy.deepcopy(self.tools)
@@ -807,6 +1004,34 @@ class CalibratedConversionTests(ConversionFixture):
         self.assertNotIn("COMPLETION-SENTINEL", serialized)
         self.assertEqual(list(self.root.glob(f"{converter._STAGING_MARKER}*")), [])
 
+    def test_v6_calibrated_receipt_uses_distinct_bound_schema(self) -> None:
+        self.lineage = _training_lineage(evaluator.TRAINING_SCHEMA_V6)
+        self.run_calibrated()
+        conversion = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
+        self.assertEqual(
+            conversion["schema"],
+            converter.NORMALIZED_CALIBRATED_CONVERSION_SCHEMA,
+        )
+        self.assertEqual(
+            conversion["source"]["training_schema"],
+            evaluator.TRAINING_SCHEMA_V6,
+        )
+        self.assertEqual(
+            conversion["source"]["dataset_schema"],
+            normalized_candidate.DATASET_SCHEMA,
+        )
+        self.assertEqual(
+            conversion["source"]["corpus_profile"],
+            normalized_candidate.CORPUS_PROFILE,
+        )
+        self.assertEqual(
+            conversion["source"]["excluded_refs"],
+            {
+                "bytes": normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES,
+                "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+            },
+        )
+
     def test_malformed_imatrix_cleans_only_owned_staging(self) -> None:
         unrelated = self.root / "keep-me"
         unrelated.write_text("caller-owned\n", encoding="utf-8")
@@ -930,10 +1155,16 @@ class CalibrationSelectionTests(ConversionFixture):
             "source_file_digest": _digest("3"),
         }
         self.historical_manifest = {
+            "schema": historical_candidate.DATASET_SCHEMA,
             "seed": 92,
             "train_examples": 8000,
             "holdout_examples": 0,
         }
+        (self.dataset / "manifest.json").write_bytes(
+            converter.candidate.canonical_json_bytes(
+                {"schema": historical_candidate.DATASET_SCHEMA}
+            )
+        )
         self.request = converter.replace(
             self.request,
             quantization="Q4_K_M",
@@ -978,6 +1209,11 @@ class CalibrationSelectionTests(ConversionFixture):
             ),
             mock.patch.object(
                 converter.historical_candidate,
+                "load_prepared_dataset",
+                return_value=(self.historical_rows, self.historical_manifest),
+            ),
+            mock.patch.object(
+                converter.normalized_candidate,
                 "load_prepared_dataset",
                 return_value=(self.historical_rows, self.historical_manifest),
             ),
@@ -1043,6 +1279,42 @@ class CalibrationSelectionTests(ConversionFixture):
         self.current_rows[0]["completion"] += "<|im_end|>"
         with self.assertRaisesRegex(converter.ConversionRefused, "reserved Qwen control token"):
             self.load_material()
+
+    def test_normalized_v6_calibration_pool_dispatches_by_manifest_schema(self) -> None:
+        self.historical_rows = self.historical_rows[: normalized_candidate.EXPECTED_TRAIN_EXAMPLES]
+        self.historical_manifest = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+            "seed": normalized_candidate.EXPECTED_SEED,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "excluded_refs_canonical_bytes": (
+                normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+            ),
+            "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        }
+        (self.dataset / "manifest.json").write_bytes(
+            converter.candidate.canonical_json_bytes(
+                {"schema": normalized_candidate.DATASET_SCHEMA}
+            )
+        )
+        rows, snapshot = self.load_material()
+        self.assertEqual(len(rows), converter.CALIBRATION_TOTAL_ROWS)
+        self.assertEqual(
+            snapshot["selection"]["historical_pool_rows"],
+            normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+        )
+        self.assertEqual(
+            snapshot["source"]["historical"]["corpus"]["profile"],
+            normalized_candidate.CORPUS_PROFILE,
+        )
+        self.assertEqual(
+            snapshot["source"]["historical"]["prepared_dataset"]["manifest"][
+                "excluded_refs_digest"
+            ],
+            normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        )
 
 
 class CalibratedMetadataTests(unittest.TestCase):
