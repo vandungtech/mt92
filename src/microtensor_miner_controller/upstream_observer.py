@@ -21,7 +21,7 @@ from .state import StateStore, utc_timestamp
 log = logging.getLogger(__name__)
 
 SCHEMA: Final[str] = "microtensor.upstream-observation.v1"
-AUDITED_UPSTREAM_HEAD: Final[str] = "3cc29eb7a3e432b3697eb63e89ccb33e4dc27119"
+AUDITED_UPSTREAM_HEAD: Final[str] = "d77adc945de763f8b3b2d71fef8193090ede7001"
 AUDITED_RELEASE_VERSION: Final[str] = "0.3.2"
 AUDITED_MECHANISM_VERSION: Final[str] = "0.3.0"
 EXPECTED_ORIGIN: Final[str] = "https://github.com/microtensor-io/microtensor-subnet"

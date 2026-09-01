@@ -10,7 +10,7 @@ from typing import Any
 
 OBSERVER_SCHEMA = "microtensor.upstream-observation.v1"
 OBSERVER_SCHEMA_VERSION = 1
-AUDITED_ORIGIN_HEAD = "3cc29eb7a3e432b3697eb63e89ccb33e4dc27119"
+AUDITED_ORIGIN_HEAD = "d77adc945de763f8b3b2d71fef8193090ede7001"
 AUDITED_RELEASE_VERSION = "0.3.2"
 AUDITED_MECHANISM_VERSION = "0.3.0"
 EXPECTED_ORIGIN = "https://github.com/microtensor-io/microtensor-subnet"

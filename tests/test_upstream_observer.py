@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +17,57 @@ from microtensor_miner_controller.upstream_observer import (
     _miner_impact,
     _static_constant,
 )
+
+LEGACY_V032_HEAD = "3cc29eb7a3e432b3697eb63e89ccb33e4dc27119"
+D77_MANIFEST_BLOB = "816671b4005fe81c657c3b5b77f88ba87c4d0ede"
+
+
+def _fixture_canonical_hash(body: dict[str, object]) -> str:
+    """Inert reimplementation of canonical_hash for this ASCII-only fixture."""
+
+    encoded = json.dumps(
+        body,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _fixture_digest_matches(committed: str, computed: str) -> bool:
+    digest = computed.removeprefix("sha256:")
+    return digest[: len(committed)] == committed.strip().lower()
+
+
+def _d77_accepts_digest_branch(
+    manifest_body: dict[str, object],
+    *,
+    commitment_digest: str,
+    commitment_source: str,
+) -> bool:
+    """Inert model of d77's new-digest/legacy-digest match branches."""
+
+    content_body = dict(manifest_body)
+    manifest_source = str(content_body.pop("source"))
+    if _fixture_digest_matches(commitment_digest, _fixture_canonical_hash(content_body)):
+        return True
+    if _fixture_digest_matches(commitment_digest, _fixture_canonical_hash(manifest_body)):
+        return commitment_source == manifest_source
+    return False
+
+
+def _v032_accepts_digest_branch(
+    manifest_body: dict[str, object],
+    *,
+    commitment_digest: str,
+    commitment_source: str,
+) -> bool:
+    """Inert model of the signed v0.3.2 digest/source match branches."""
+
+    return commitment_source == manifest_body["source"] and _fixture_digest_matches(
+        commitment_digest,
+        _fixture_canonical_hash(manifest_body),
+    )
 
 
 def _constants(release: str = "0.3.2", provenance: str = "False") -> str:
@@ -112,6 +165,71 @@ class FakeGit:
 
 
 class UpstreamObserverTests(unittest.TestCase):
+    def test_audited_head_is_exact_compatibility_reviewed_commit(self) -> None:
+        self.assertEqual(
+            AUDITED_UPSTREAM_HEAD,
+            "d77adc945de763f8b3b2d71fef8193090ede7001",
+        )
+        self.assertNotEqual(AUDITED_UPSTREAM_HEAD, LEGACY_V032_HEAD)
+
+    def test_d77_statically_accepts_legacy_digest_only_with_equal_source(self) -> None:
+        # This is an inert fixture/reimplementation of the two digest branches in
+        # d77's manifest blob. It deliberately does not import, compile, or execute
+        # any code from the unsigned upstream commit.
+        self.assertEqual(D77_MANIFEST_BLOB, "816671b4005fe81c657c3b5b77f88ba87c4d0ede")
+        body: dict[str, object] = {
+            "version": "0.3.0",
+            "hotkey": "5Hotkey",
+            "round_index": 1239,
+            "track": "code",
+            "hardware_class": "mt-3g",
+            "source": "https:github.com/example/artifacts/r1239",
+            "artifact_digest": "sha256:" + ("a" * 64),
+            "files": [
+                {
+                    "path": "model.gguf",
+                    "digest": "sha256:" + ("b" * 64),
+                    "size_bytes": 1024,
+                }
+            ],
+            "load": {"format": "gguf", "entrypoint": "model.gguf"},
+            "declared": {
+                "size_bytes": 1024,
+                "peak_rss_bytes": 2048,
+                "p95_latency_ms": 100,
+            },
+            "system": None,
+            "sealed": None,
+        }
+        legacy_digest = _fixture_canonical_hash(body).removeprefix("sha256:")[:32]
+        content_body = dict(body)
+        content_body.pop("source")
+        content_digest = _fixture_canonical_hash(content_body).removeprefix("sha256:")[:32]
+        source = str(body["source"])
+
+        self.assertNotEqual(legacy_digest, content_digest)
+        self.assertTrue(
+            _d77_accepts_digest_branch(
+                body,
+                commitment_digest=legacy_digest,
+                commitment_source=source,
+            )
+        )
+        self.assertFalse(
+            _d77_accepts_digest_branch(
+                body,
+                commitment_digest=legacy_digest,
+                commitment_source="https:github.com/example/artifacts/moved",
+            )
+        )
+        self.assertFalse(
+            _v032_accepts_digest_branch(
+                body,
+                commitment_digest=content_digest,
+                commitment_source=source,
+            )
+        )
+
     def test_current_audited_head_is_healthy_and_does_not_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

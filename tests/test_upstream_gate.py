@@ -11,7 +11,6 @@ from unittest import mock
 
 from helpers import base_env, v030_env
 
-from microtensor_miner_controller.backend import MicrotensorBackend
 from microtensor_miner_controller.config import (
     AUTHORIZED_HOTKEY_SS58,
     SIGNED_V030_COORDINATOR_URL,
@@ -66,6 +65,12 @@ def _write_status(path: Path, payload: object) -> None:
 
 
 class UpstreamGateTests(unittest.TestCase):
+    def test_gate_is_pinned_to_exact_compatibility_reviewed_head(self) -> None:
+        self.assertEqual(
+            AUDITED_ORIGIN_HEAD,
+            "d77adc945de763f8b3b2d71fef8193090ede7001",
+        )
+
     def test_accepts_exact_current_fresh_audited_status(self) -> None:
         now = time.time()
         with tempfile.TemporaryDirectory() as temporary:
@@ -273,6 +278,8 @@ class UpstreamGateTests(unittest.TestCase):
                 )
 
     def test_backend_rechecks_gate_at_preflight_registration_and_live_policy(self) -> None:
+        from microtensor_miner_controller.backend import MicrotensorBackend
+
         with tempfile.TemporaryDirectory() as temporary:
             backend = MicrotensorBackend(ControllerConfig.from_env(v030_env(Path(temporary))))
             with (
@@ -358,6 +365,8 @@ class UpstreamGateTests(unittest.TestCase):
             upload.assert_not_called()
 
     def test_registration_converts_gate_failure_to_verification_error(self) -> None:
+        from microtensor_miner_controller.backend import MicrotensorBackend
+
         with tempfile.TemporaryDirectory() as temporary:
             backend = MicrotensorBackend(ControllerConfig.from_env(v030_env(Path(temporary))))
             with (
@@ -371,6 +380,8 @@ class UpstreamGateTests(unittest.TestCase):
                 backend.assert_registered()
 
     def test_legacy_preflight_does_not_require_observer_status(self) -> None:
+        from microtensor_miner_controller.backend import MicrotensorBackend
+
         with tempfile.TemporaryDirectory() as temporary:
             backend = MicrotensorBackend(ControllerConfig.from_env(base_env(Path(temporary))))
             with (
