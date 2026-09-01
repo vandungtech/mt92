@@ -52,10 +52,11 @@ except ModuleNotFoundError as exc:
 
 
 SCHEMA: Final[str] = provenance.CONVERSION_SCHEMA
-CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v2"
-CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v1"
+CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v3"
+CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v2"
 CALIBRATION_PROFILE: Final[str] = "code-public-imatrix128-v1"
 LLAMA_CPP_REVISION: Final[str] = "c589f0ed10c643678c4707dd160c21ac7633ebc0"
+LLAMA_CPP_ROOT: Final[Path] = Path("/tmp/llama.cpp")  # noqa: S108 - pinned RUNPATH root
 ENTRYPOINT: Final[str] = "model.gguf"
 LOAD_SPEC_NAME: Final[str] = "load-spec.json"
 RECEIPT_NAME: Final[str] = "conversion-receipt.json"
@@ -87,7 +88,78 @@ _GGUF_MAX_STRING_BYTES: Final[int] = 16 * 1024 * 1024
 _AT_FDCWD: Final[int] = -100
 _RENAME_NOREPLACE: Final[int] = 1
 _STAGING_MARKER: Final[str] = ".microtensor-code-gguf-"
+_CHILD_PYCACHE_PREFIX: Final[str] = ".microtensor-empty-pycache"
 _MAX_ERROR_TEXT_BYTES: Final[int] = 4096
+RUNTIME_LIBRARY_SCHEMA: Final[str] = "microtensor.code.llama-cpp-runtime-libraries.v1"
+# (loader-relative path, final-target-relative path, bytes, SHA-256 digest).
+# These ignored build outputs are part of the executable closure even though
+# the pinned Git revision cannot attest to them.
+# This is intentionally the in-checkout closure only. The ELF loader, libc,
+# libstdc++, OpenSSL, libgomp, and other host libraries remain external runtime
+# dependencies and must be disclosed separately by the experiment declaration.
+LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT: Final[tuple[tuple[str, str, int, str], ...]] = (
+    (
+        "build/bin/libggml-base.so.0",
+        "build/bin/libggml-base.so.0.22.0",
+        939_528,
+        "sha256:73106e6e34d4f6dcd9f4ffca57f132070c48e93c9dd409df2333eea1b7c4806f",
+    ),
+    (
+        "build/bin/libggml-cpu.so.0",
+        "build/bin/libggml-cpu.so.0.22.0",
+        1_143_800,
+        "sha256:196c9f2c112e51f17b79375e80b102c72bc872b3e4fc17295ab1564533812807",
+    ),
+    (
+        "build/bin/libggml.so.0",
+        "build/bin/libggml.so.0.22.0",
+        56_376,
+        "sha256:eaea0b8964d5acee7ce26bb4895137df772ad24387f45fbb51158495f596fa29",
+    ),
+    (
+        "build/bin/libllama-common.so.0",
+        "build/bin/libllama-common.so.0.3.0",
+        5_909_928,
+        "sha256:ce12dd60805687b1dfbd574033d5163089979a1b2b556cb8a6c65b85af7048f5",
+    ),
+    (
+        "build/bin/libllama-quantize-impl.so",
+        "build/bin/libllama-quantize-impl.so",
+        89_792,
+        "sha256:d79664774038f0f42eccee8b1d5772b2bbe0f7840181401c73e30f2986113cbb",
+    ),
+    (
+        "build/bin/libllama.so.0",
+        "build/bin/libllama.so.0.3.0",
+        4_692_320,
+        "sha256:8c809635a537f48c79bb058034ae9eb3c437693bc8b4fc13e0035c0be7bad8ed",
+    ),
+)
+
+LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT: Final[tuple[tuple[str, int, str], ...]] = (
+    (
+        "build/bin/llama-imatrix",
+        343_128,
+        "sha256:3661d870d8645bb1c770328dcf2e4bf7f4bf076e70a6c8beabc1b60085499a35",
+    ),
+    (
+        "build/bin/llama-quantize",
+        17_928,
+        "sha256:e7d4504b4db541f9a17ae920a8b505bc07159055400319ee056f4309bd800580",
+    ),
+)
+LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT: Final[tuple[tuple[str, str], ...]] = (
+    ("build/bin/libggml-base.so", "libggml-base.so.0"),
+    ("build/bin/libggml-base.so.0", "libggml-base.so.0.22.0"),
+    ("build/bin/libggml-cpu.so", "libggml-cpu.so.0"),
+    ("build/bin/libggml-cpu.so.0", "libggml-cpu.so.0.22.0"),
+    ("build/bin/libggml.so", "libggml.so.0"),
+    ("build/bin/libggml.so.0", "libggml.so.0.22.0"),
+    ("build/bin/libllama-common.so", "libllama-common.so.0"),
+    ("build/bin/libllama-common.so.0", "libllama-common.so.0.3.0"),
+    ("build/bin/libllama.so", "libllama.so.0"),
+    ("build/bin/libllama.so.0", "libllama.so.0.3.0"),
+)
 
 if provenance.LLAMA_CPP_REVISION != LLAMA_CPP_REVISION:
     raise RuntimeError("code provenance and conversion llama.cpp revisions diverged")
@@ -229,6 +301,605 @@ def _regular_executable(path: Path, label: str) -> tuple[Path, dict[str, Any]]:
     return resolved, identity
 
 
+def _runtime_relative_name(value: str, label: str) -> str:
+    path = Path(value)
+    if path.is_absolute() or path.parts[:2] != ("build", "bin") or len(path.parts) != 3:
+        raise ConversionRefused(f"{label} must be one filename below build/bin")
+    name = path.parts[2]
+    if name in {"", ".", ".."}:
+        raise ConversionRefused(f"{label} has an invalid filename")
+    return name
+
+
+def _runtime_symlink_target_name(value: str, label: str) -> str:
+    path = Path(value)
+    if path.is_absolute() or len(path.parts) != 1:
+        raise ConversionRefused(f"{label} must be one relative filename")
+    name = path.parts[0]
+    if name in {"", ".", ".."}:
+        raise ConversionRefused(f"{label} has an invalid filename")
+    return name
+
+
+def _stable_stat_fields(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _assert_llama_python_import_surface(root: Path) -> None:
+    """Reject ignored native modules and legacy bytecode on converter import paths."""
+
+    root = Path(root)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        before = root.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+            raise ConversionRefused(
+                "llama.cpp Python import root must be a regular non-symlink directory"
+            )
+        descriptor = os.open(
+            root,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | nofollow,
+        )
+        opened = os.fstat(descriptor)
+        if _stable_stat_fields(opened) != _stable_stat_fields(before):
+            raise ConversionRefused("llama.cpp Python import root changed while opening")
+
+        def snapshot() -> tuple[tuple[str, tuple[int, ...]], ...]:
+            entries: list[tuple[str, tuple[int, ...]]] = []
+            for directory, directory_names, file_names, directory_descriptor in os.fwalk(
+                ".",
+                topdown=True,
+                follow_symlinks=False,
+                dir_fd=descriptor,
+            ):
+                relative_directory = Path(directory)
+                if relative_directory == Path("."):
+                    relative_directory = Path()
+                entries.append(
+                    (
+                        "." if not relative_directory.parts else relative_directory.as_posix(),
+                        _stable_stat_fields(os.fstat(directory_descriptor)),
+                    )
+                )
+                all_directory_names = sorted(directory_names)
+                if not relative_directory.parts:
+                    directory_names[:] = [
+                        name
+                        for name in all_directory_names
+                        if name != ".git" and name != "build" and not name.startswith("build-")
+                    ]
+                else:
+                    directory_names.sort()
+                for name in sorted((*all_directory_names, *file_names)):
+                    child = os.stat(
+                        name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
+                    relative = relative_directory / name
+                    relative_text = relative.as_posix()
+                    if name.endswith(".so"):
+                        raise ConversionRefused(
+                            "llama.cpp Python import surface contains an ignored "
+                            f"extension-module candidate: {relative_text}"
+                        )
+                    if name.endswith(".pyc") and "__pycache__" not in relative.parts:
+                        raise ConversionRefused(
+                            "llama.cpp Python import surface contains legacy sourceless "
+                            f"bytecode: {relative_text}"
+                        )
+                    if stat.S_ISLNK(child.st_mode):
+                        raise ConversionRefused(
+                            f"llama.cpp Python import surface contains a symlink: {relative_text}"
+                        )
+                    if not (stat.S_ISDIR(child.st_mode) or stat.S_ISREG(child.st_mode)):
+                        raise ConversionRefused(
+                            "llama.cpp Python import surface contains a special "
+                            f"filesystem entry: {relative_text}"
+                        )
+                    entries.append((relative_text, _stable_stat_fields(child)))
+            return tuple(entries)
+
+        if snapshot() != snapshot():
+            raise ConversionRefused("llama.cpp Python import surface changed during inspection")
+        after_open = os.fstat(descriptor)
+        after = root.lstat()
+        if _stable_stat_fields(after_open) != _stable_stat_fields(before) or _stable_stat_fields(
+            after
+        ) != _stable_stat_fields(before):
+            raise ConversionRefused("llama.cpp Python import root changed during inspection")
+    except ConversionRefused:
+        raise
+    except OSError as exc:
+        raise ConversionRefused(
+            f"could not inspect llama.cpp Python import surface: {exc}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _attest_runtime_regular_file(
+    bin_descriptor: int,
+    relative: str,
+    expected_bytes: int,
+    expected_digest: str,
+    *,
+    executable: bool,
+    label: str,
+    nofollow: int,
+) -> dict[str, Any]:
+    name = _runtime_relative_name(relative, f"{label} path")
+    if (
+        isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or expected_bytes < 1
+        or not isinstance(expected_digest, str)
+        or not expected_digest.startswith("sha256:")
+        or len(expected_digest) != 71
+        or any(character not in "0123456789abcdef" for character in expected_digest[7:])
+    ):
+        raise ConversionRefused(f"{label} contract identity is malformed")
+    try:
+        before = os.stat(name, dir_fd=bin_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        raise ConversionRefused(f"{label} is unavailable: {relative}: {exc}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise ConversionRefused(f"{label} must be a regular non-symlink file: {relative}")
+    mode = stat.S_IMODE(before.st_mode)
+    if mode & 0o022:
+        raise ConversionRefused(f"{label} must not be group/world writable: {relative}")
+    if executable and before.st_mode & 0o111 == 0:
+        raise ConversionRefused(f"{label} must have an executable mode bit: {relative}")
+    if before.st_size != expected_bytes:
+        raise ConversionRefused(f"{label} size changed: {relative}")
+
+    descriptor = -1
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow,
+            dir_fd=bin_descriptor,
+        )
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or _stable_stat_fields(opened) != _stable_stat_fields(
+            before
+        ):
+            raise ConversionRefused(f"{label} changed while opening: {relative}")
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > expected_bytes:
+                raise ConversionRefused(f"{label} grew while reading: {relative}")
+            digest.update(chunk)
+        after_open = os.fstat(descriptor)
+    except OSError as exc:
+        raise ConversionRefused(f"{label} could not be read: {relative}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    if (
+        total != expected_bytes
+        or "sha256:" + digest.hexdigest() != expected_digest
+        or _stable_stat_fields(after_open) != _stable_stat_fields(before)
+    ):
+        raise ConversionRefused(f"{label} bytes changed: {relative}")
+    try:
+        after = os.stat(name, dir_fd=bin_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        raise ConversionRefused(f"{label} path changed: {relative}: {exc}") from exc
+    if _stable_stat_fields(after) != _stable_stat_fields(before):
+        raise ConversionRefused(f"{label} path changed during inspection: {relative}")
+    return {
+        "path": relative,
+        "bytes": expected_bytes,
+        "digest": expected_digest,
+        "mode": f"{mode:04o}",
+    }
+
+
+def _runtime_library_closure(root: Path) -> dict[str, Any]:
+    """Attest ignored llama.cpp shared libraries without following unsafe paths."""
+
+    contract = LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT
+    executable_contract = LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT
+    symlink_contract = LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT
+    loader_paths = [entry[0] for entry in contract]
+    executable_paths = [entry[0] for entry in executable_contract]
+    symlink_paths = [entry[0] for entry in symlink_contract]
+    if (
+        not contract
+        or loader_paths != sorted(loader_paths)
+        or len(set(loader_paths)) != len(loader_paths)
+    ):
+        raise ConversionRefused("runtime library contract is empty, duplicated, or unsorted")
+    if (
+        not executable_contract
+        or executable_paths != sorted(executable_paths)
+        or len(set(executable_paths)) != len(executable_paths)
+    ):
+        raise ConversionRefused("runtime executable contract is empty, duplicated, or unsorted")
+    if (
+        not symlink_contract
+        or symlink_paths != sorted(symlink_paths)
+        or len(set(symlink_paths)) != len(symlink_paths)
+    ):
+        raise ConversionRefused("runtime symlink contract is empty, duplicated, or unsorted")
+
+    namespace_names: set[str] = set()
+    for relative, _expected_bytes, _expected_digest in executable_contract:
+        namespace_names.add(_runtime_relative_name(relative, "runtime executable path"))
+    for loader_relative, target_relative, _expected_bytes, _expected_digest in contract:
+        namespace_names.add(_runtime_relative_name(loader_relative, "runtime library loader path"))
+        namespace_names.add(_runtime_relative_name(target_relative, "runtime library target path"))
+    for relative, target in symlink_contract:
+        namespace_names.add(_runtime_relative_name(relative, "runtime symlink path"))
+        namespace_names.add(_runtime_symlink_target_name(target, "runtime symlink target"))
+    expected_namespace = tuple(sorted(namespace_names))
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    required_dir_fd = {os.open, os.readlink, os.stat}
+    if (
+        nofollow is None
+        or not required_dir_fd.issubset(getattr(os, "supports_dir_fd", set()))
+        or os.stat not in getattr(os, "supports_follow_symlinks", set())
+    ):
+        raise ConversionRefused("safe dirfd runtime-library inspection is unavailable")
+
+    descriptors: list[int] = []
+    try:
+        root_descriptor = os.open(root, directory_flags)
+        descriptors.append(root_descriptor)
+        build_descriptor = os.open("build", directory_flags, dir_fd=root_descriptor)
+        descriptors.append(build_descriptor)
+        bin_descriptor = os.open("bin", directory_flags, dir_fd=build_descriptor)
+        descriptors.append(bin_descriptor)
+        for descriptor, label in (
+            (root_descriptor, "llama.cpp root"),
+            (build_descriptor, "llama.cpp build"),
+            (bin_descriptor, "llama.cpp build/bin"),
+        ):
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise ConversionRefused(f"{label} changed from a directory")
+        directory_descriptors = (
+            (".", root_descriptor, "llama.cpp root"),
+            ("build", build_descriptor, "llama.cpp build"),
+            ("build/bin", bin_descriptor, "llama.cpp build/bin"),
+        )
+        directories: list[dict[str, Any]] = []
+        directory_stats: list[os.stat_result] = []
+        for relative, descriptor, label in directory_descriptors:
+            before = os.fstat(descriptor)
+            mode = stat.S_IMODE(before.st_mode)
+            if mode & 0o022:
+                raise ConversionRefused(
+                    f"{label} must not be group/world writable for runtime closure"
+                )
+            directory_stats.append(before)
+            directories.append({"path": relative, "mode": f"{mode:04o}"})
+        actual_namespace = tuple(sorted(os.listdir(bin_descriptor)))
+        if actual_namespace != expected_namespace:
+            extras = sorted(set(actual_namespace) - set(expected_namespace))
+            missing = sorted(set(expected_namespace) - set(actual_namespace))
+            raise ConversionRefused(
+                f"llama.cpp build/bin namespace changed: unexpected={extras}, missing={missing}"
+            )
+        build_bin_namespace = [f"build/bin/{name}" for name in expected_namespace]
+    except ConversionRefused:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+    except OSError as exc:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise ConversionRefused(f"runtime library directory closure is unavailable: {exc}") from exc
+
+    symlinks: list[dict[str, str]] = []
+    symlink_states: list[tuple[str, os.stat_result, str, str]] = []
+    executables: list[dict[str, Any]] = []
+    libraries: list[dict[str, Any]] = []
+    try:
+        for relative, expected_target in symlink_contract:
+            link_name = _runtime_relative_name(relative, "runtime symlink path")
+            target_name = _runtime_symlink_target_name(
+                expected_target,
+                "runtime symlink target",
+            )
+            try:
+                before = os.stat(
+                    link_name,
+                    dir_fd=bin_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise ConversionRefused(
+                    f"runtime symlink is unavailable: {relative}: {exc}"
+                ) from exc
+            if not stat.S_ISLNK(before.st_mode):
+                raise ConversionRefused(f"runtime symlink changed type: {relative}")
+            try:
+                actual_target = os.readlink(link_name, dir_fd=bin_descriptor)
+            except OSError as exc:
+                raise ConversionRefused(
+                    f"runtime symlink is unreadable: {relative}: {exc}"
+                ) from exc
+            if actual_target != target_name:
+                raise ConversionRefused(f"runtime symlink escaped or was repointed: {relative}")
+            symlink_states.append((link_name, before, actual_target, relative))
+            symlinks.append({"path": relative, "target": actual_target})
+
+        for relative, expected_bytes, expected_digest in executable_contract:
+            executables.append(
+                _attest_runtime_regular_file(
+                    bin_descriptor,
+                    relative,
+                    expected_bytes,
+                    expected_digest,
+                    executable=True,
+                    label="runtime executable",
+                    nofollow=nofollow,
+                )
+            )
+
+        for loader_relative, target_relative, expected_bytes, expected_digest in contract:
+            loader_name = _runtime_relative_name(loader_relative, "runtime library loader path")
+            target_name = _runtime_relative_name(target_relative, "runtime library target path")
+            if (
+                isinstance(expected_bytes, bool)
+                or not isinstance(expected_bytes, int)
+                or expected_bytes < 1
+                or not isinstance(expected_digest, str)
+                or not expected_digest.startswith("sha256:")
+                or len(expected_digest) != 71
+                or any(character not in "0123456789abcdef" for character in expected_digest[7:])
+            ):
+                raise ConversionRefused("runtime library contract identity is malformed")
+            try:
+                loader_before = os.stat(
+                    loader_name,
+                    dir_fd=bin_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise ConversionRefused(
+                    f"runtime library loader is unavailable: {loader_relative}: {exc}"
+                ) from exc
+
+            loader_target: str | None = None
+            if loader_relative == target_relative:
+                if not stat.S_ISREG(loader_before.st_mode):
+                    raise ConversionRefused(
+                        f"runtime library loader must be a regular file: {loader_relative}"
+                    )
+                target_before = loader_before
+            else:
+                if not stat.S_ISLNK(loader_before.st_mode):
+                    raise ConversionRefused(
+                        f"runtime library loader must be the pinned symlink: {loader_relative}"
+                    )
+                try:
+                    loader_target = os.readlink(loader_name, dir_fd=bin_descriptor)
+                except OSError as exc:
+                    raise ConversionRefused(
+                        f"runtime library symlink is unreadable: {loader_relative}: {exc}"
+                    ) from exc
+                if loader_target != target_name:
+                    raise ConversionRefused(
+                        f"runtime library symlink escaped or was repointed: {loader_relative}"
+                    )
+                try:
+                    target_before = os.stat(
+                        target_name,
+                        dir_fd=bin_descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    raise ConversionRefused(
+                        f"runtime library target is unavailable: {target_relative}: {exc}"
+                    ) from exc
+                if not stat.S_ISREG(target_before.st_mode):
+                    raise ConversionRefused(
+                        f"runtime library final target must be regular: {target_relative}"
+                    )
+
+            mode = stat.S_IMODE(target_before.st_mode)
+            if mode & 0o022:
+                raise ConversionRefused(
+                    f"runtime library target must not be group/world writable: {target_relative}"
+                )
+            if target_before.st_size != expected_bytes:
+                raise ConversionRefused(f"runtime library target size changed: {target_relative}")
+
+            target_descriptor = -1
+            digest = hashlib.sha256()
+            total = 0
+            try:
+                target_descriptor = os.open(
+                    target_name,
+                    os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow,
+                    dir_fd=bin_descriptor,
+                )
+                opened = os.fstat(target_descriptor)
+                if not stat.S_ISREG(opened.st_mode) or _stable_stat_fields(
+                    opened
+                ) != _stable_stat_fields(target_before):
+                    raise ConversionRefused(
+                        f"runtime library target changed while opening: {target_relative}"
+                    )
+                while True:
+                    chunk = os.read(target_descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > expected_bytes:
+                        raise ConversionRefused(
+                            f"runtime library target grew while reading: {target_relative}"
+                        )
+                    digest.update(chunk)
+                after_open = os.fstat(target_descriptor)
+            except OSError as exc:
+                raise ConversionRefused(
+                    f"runtime library target could not be read: {target_relative}: {exc}"
+                ) from exc
+            finally:
+                if target_descriptor >= 0:
+                    os.close(target_descriptor)
+
+            if (
+                total != expected_bytes
+                or "sha256:" + digest.hexdigest() != expected_digest
+                or _stable_stat_fields(after_open) != _stable_stat_fields(target_before)
+            ):
+                raise ConversionRefused(f"runtime library target bytes changed: {target_relative}")
+            try:
+                target_after = os.stat(
+                    target_name,
+                    dir_fd=bin_descriptor,
+                    follow_symlinks=False,
+                )
+                loader_after = os.stat(
+                    loader_name,
+                    dir_fd=bin_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise ConversionRefused(
+                    f"runtime library path changed after reading: {loader_relative}: {exc}"
+                ) from exc
+            if _stable_stat_fields(target_after) != _stable_stat_fields(
+                target_before
+            ) or _stable_stat_fields(loader_after) != _stable_stat_fields(loader_before):
+                raise ConversionRefused(
+                    f"runtime library path changed during inspection: {loader_relative}"
+                )
+            if loader_target is not None:
+                try:
+                    final_target = os.readlink(loader_name, dir_fd=bin_descriptor)
+                except OSError as exc:
+                    raise ConversionRefused(
+                        f"runtime library symlink changed after reading: {loader_relative}: {exc}"
+                    ) from exc
+                if final_target != loader_target:
+                    raise ConversionRefused(
+                        f"runtime library symlink changed during inspection: {loader_relative}"
+                    )
+
+            libraries.append(
+                {
+                    "loader_path": loader_relative,
+                    "target_path": target_relative,
+                    "bytes": expected_bytes,
+                    "digest": expected_digest,
+                    "mode": f"{mode:04o}",
+                }
+            )
+        final_namespace = tuple(sorted(os.listdir(bin_descriptor)))
+        if final_namespace != actual_namespace:
+            raise ConversionRefused(
+                "llama.cpp build/bin namespace changed during runtime closure inspection"
+            )
+        final_executables = [
+            _attest_runtime_regular_file(
+                bin_descriptor,
+                relative,
+                expected_bytes,
+                expected_digest,
+                executable=True,
+                label="runtime executable final recheck",
+                nofollow=nofollow,
+            )
+            for relative, expected_bytes, expected_digest in executable_contract
+        ]
+        if final_executables != executables:
+            raise ConversionRefused("runtime executable identities changed during inspection")
+        for library, (
+            _loader_relative,
+            target_relative,
+            expected_bytes,
+            expected_digest,
+        ) in zip(libraries, contract, strict=True):
+            final_target_identity = _attest_runtime_regular_file(
+                bin_descriptor,
+                target_relative,
+                expected_bytes,
+                expected_digest,
+                executable=False,
+                label="runtime library target final recheck",
+                nofollow=nofollow,
+            )
+            if final_target_identity != {
+                "path": library["target_path"],
+                "bytes": library["bytes"],
+                "digest": library["digest"],
+                "mode": library["mode"],
+            }:
+                raise ConversionRefused(
+                    f"runtime library target identity changed during inspection: {target_relative}"
+                )
+        for link_name, before, target, relative in symlink_states:
+            try:
+                after = os.stat(
+                    link_name,
+                    dir_fd=bin_descriptor,
+                    follow_symlinks=False,
+                )
+                final_target = os.readlink(link_name, dir_fd=bin_descriptor)
+            except OSError as exc:
+                raise ConversionRefused(
+                    f"runtime symlink changed after inspection: {relative}: {exc}"
+                ) from exc
+            if _stable_stat_fields(after) != _stable_stat_fields(before) or final_target != target:
+                raise ConversionRefused(f"runtime symlink changed during inspection: {relative}")
+        if tuple(sorted(os.listdir(bin_descriptor))) != actual_namespace:
+            raise ConversionRefused(
+                "llama.cpp build/bin namespace changed after final runtime recheck"
+            )
+        for (_relative, descriptor, label), before in zip(
+            directory_descriptors,
+            directory_stats,
+            strict=True,
+        ):
+            after = os.fstat(descriptor)
+            if _stable_stat_fields(after) != _stable_stat_fields(before):
+                raise ConversionRefused(f"{label} changed during runtime closure inspection")
+            if stat.S_IMODE(after.st_mode) & 0o022:
+                raise ConversionRefused(
+                    f"{label} became group/world writable during runtime closure inspection"
+                )
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+    return {
+        "schema": RUNTIME_LIBRARY_SCHEMA,
+        "root": str(root),
+        "directories": directories,
+        "build_bin_namespace": build_bin_namespace,
+        "symlinks": symlinks,
+        "executables": executables,
+        "libraries": libraries,
+    }
+
+
 def _small_child_environment(*, single_thread: bool = False) -> dict[str, str]:
     """Return an offline child environment with no inherited secret values."""
 
@@ -239,8 +910,10 @@ def _small_child_environment(*, single_thread: bool = False) -> dict[str, str]:
         "PATH": path,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
+        "PYTHONHASHSEED": "0",
         "PYTHONNOUSERSITE": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": _CHILD_PYCACHE_PREFIX,
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
         "WANDB_MODE": "offline",
@@ -257,6 +930,91 @@ def _small_child_environment(*, single_thread: bool = False) -> dict[str, str]:
             }
         )
     return environment
+
+
+def _assert_child_pycache_absent(cwd: Path, label: str) -> None:
+    """Refuse stale or newly written bytecode under the private command cwd."""
+
+    cwd = Path(cwd)
+    if not cwd.is_absolute():
+        raise ConversionRefused(f"{label} cwd must be absolute")
+    try:
+        cwd_stat = cwd.lstat()
+    except OSError as exc:
+        raise ConversionRefused(f"could not inspect {label} cwd: {exc}") from exc
+    if stat.S_ISLNK(cwd_stat.st_mode) or not stat.S_ISDIR(cwd_stat.st_mode):
+        raise ConversionRefused(f"{label} cwd must be a regular non-symlink directory")
+    prefix = cwd / _CHILD_PYCACHE_PREFIX
+    try:
+        prefix_stat = prefix.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ConversionRefused(f"could not inspect {label} child pycache prefix: {exc}") from exc
+    kind = "symlink" if stat.S_ISLNK(prefix_stat.st_mode) else "filesystem entry"
+    raise ConversionRefused(f"{label} child pycache prefix must be absent; found {kind}")
+
+
+def _assert_private_command_tree(cwd: Path, label: str) -> None:
+    """Reject libraries, symlinks, and special files below a private command cwd."""
+
+    cwd = Path(cwd)
+    if not cwd.is_absolute():
+        raise ConversionRefused(f"{label} cwd must be absolute")
+    try:
+        before = cwd.lstat()
+    except OSError as exc:
+        raise ConversionRefused(f"could not inspect {label} cwd: {exc}") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise ConversionRefused(f"{label} cwd must be a regular non-symlink directory")
+    if stat.S_IMODE(before.st_mode) != 0o700:
+        raise ConversionRefused(f"{label} cwd mode must remain 0700")
+
+    def snapshot() -> tuple[tuple[str, tuple[int, ...]], ...]:
+        entries: list[tuple[str, tuple[int, ...]]] = []
+        for directory, directory_names, file_names, descriptor in os.fwalk(
+            cwd,
+            topdown=True,
+            follow_symlinks=False,
+        ):
+            directory_names.sort()
+            relative_directory = Path(directory).relative_to(cwd)
+            for name in sorted((*directory_names, *file_names)):
+                child = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                relative = (relative_directory / name).as_posix()
+                if stat.S_ISLNK(child.st_mode):
+                    raise ConversionRefused(f"{label} contains a symlink: {relative}")
+                if not (stat.S_ISDIR(child.st_mode) or stat.S_ISREG(child.st_mode)):
+                    raise ConversionRefused(
+                        f"{label} contains a special filesystem entry: {relative}"
+                    )
+                if name.startswith("lib") and ".so" in name:
+                    raise ConversionRefused(
+                        f"{label} contains a loadable shared-library candidate: {relative}"
+                    )
+                entries.append((relative, _stable_stat_fields(child)))
+        return tuple(entries)
+
+    try:
+        first = snapshot()
+        second = snapshot()
+    except ConversionRefused:
+        raise
+    except OSError as exc:
+        raise ConversionRefused(f"could not inspect {label} command tree: {exc}") from exc
+    if first != second:
+        raise ConversionRefused(f"{label} command tree changed during inspection")
+
+    try:
+        after = cwd.lstat()
+    except OSError as exc:
+        raise ConversionRefused(f"{label} cwd changed during inspection: {exc}") from exc
+    if _stable_stat_fields(after) != _stable_stat_fields(before):
+        raise ConversionRefused(f"{label} cwd changed during inspection")
 
 
 def _calibration_requested(request: ConversionRequest) -> bool:
@@ -287,8 +1045,58 @@ def _read_only_command(argv: Sequence[str], *, cwd: Path) -> bytes:
     return bytes(completed.stdout)
 
 
+def _bind_runtime_executable_identity(
+    identity: Mapping[str, Any],
+    closure: Mapping[str, Any],
+    relative: str,
+    label: str,
+) -> None:
+    entries = closure.get("executables")
+    if not isinstance(entries, list):
+        raise ConversionRefused("runtime executable closure is malformed")
+    matches = [
+        _mapping(entry, f"{label} runtime executable")
+        for entry in entries
+        if isinstance(entry, Mapping) and entry.get("path") == relative
+    ]
+    if len(matches) != 1:
+        raise ConversionRefused(f"{label} is absent or duplicated in runtime closure")
+    expected = matches[0]
+    expected_bytes = expected.get("bytes")
+    identity_bytes = identity.get("bytes")
+    if (
+        isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or isinstance(identity_bytes, bool)
+        or not isinstance(identity_bytes, int)
+    ):
+        raise ConversionRefused(f"{label} byte identity is malformed")
+    identity_mode = identity.get("mode")
+    if not isinstance(identity_mode, str):
+        raise ConversionRefused(f"{label} mode identity is malformed")
+    try:
+        normalized_mode = f"{int(identity_mode, 8):04o}"
+    except ValueError as exc:
+        raise ConversionRefused(f"{label} mode identity is malformed") from exc
+    if {
+        "path": identity.get("path"),
+        "bytes": identity_bytes,
+        "digest": identity.get("digest"),
+        "mode": normalized_mode,
+    } != {
+        "path": str(LLAMA_CPP_ROOT / relative),
+        "bytes": expected_bytes,
+        "digest": expected.get("digest"),
+        "mode": expected.get("mode"),
+    }:
+        raise ConversionRefused(f"{label} identity differs from runtime closure")
+
+
 def _toolchain_identity(request: ConversionRequest) -> dict[str, Any]:
     root = _regular_directory(request.llama_cpp, "llama.cpp checkout")
+    if root != LLAMA_CPP_ROOT:
+        raise ConversionRefused(f"llama.cpp checkout must resolve exactly to {LLAMA_CPP_ROOT}")
+    _assert_llama_python_import_surface(root)
     converter, converter_identity = _regular_executable(request.converter, "GGUF converter")
     quantizer, quantizer_identity = _regular_executable(request.quantizer, "GGUF quantizer")
     imatrix_identity: dict[str, Any] | None = None
@@ -305,6 +1113,20 @@ def _toolchain_identity(request: ConversionRequest) -> dict[str, Any]:
         expected_imatrix = (root / "build" / "bin" / "llama-imatrix").resolve(strict=True)
         if imatrix != expected_imatrix:
             raise ConversionRefused("imatrix tool is not the pinned checkout's exact binary path")
+    runtime_libraries = _runtime_library_closure(root)
+    _bind_runtime_executable_identity(
+        quantizer_identity,
+        runtime_libraries,
+        "build/bin/llama-quantize",
+        "GGUF quantizer",
+    )
+    if imatrix_identity is not None:
+        _bind_runtime_executable_identity(
+            imatrix_identity,
+            runtime_libraries,
+            "build/bin/llama-imatrix",
+            "llama-imatrix",
+        )
     git = shutil.which("git", path=os.environ.get("PATH"))
     if git is None:
         raise ConversionRefused("git is required to validate the pinned llama.cpp checkout")
@@ -342,6 +1164,7 @@ def _toolchain_identity(request: ConversionRequest) -> dict[str, Any]:
         "revision": revision,
         "converter": converter_identity,
         "quantizer": quantizer_identity,
+        "runtime_libraries": runtime_libraries,
     }
     if imatrix_identity is not None:
         result["imatrix"] = imatrix_identity
@@ -381,6 +1204,8 @@ def _conversion_command(
     exact_argv = [str(item) for item in argv]
     if not exact_argv or any(not item for item in exact_argv):
         raise ConversionRefused(f"{name} argv is malformed")
+    _assert_child_pycache_absent(cwd, f"{name} before launch")
+    _assert_private_command_tree(cwd, f"{name} before launch")
     started = time.time_ns()
     try:
         completed = subprocess.run(
@@ -394,6 +1219,9 @@ def _conversion_command(
         )
     except OSError as exc:
         raise ConversionRefused(f"{name} could not start: {exc}") from exc
+    finally:
+        _assert_child_pycache_absent(cwd, f"{name} after exit")
+        _assert_private_command_tree(cwd, f"{name} after exit")
     finished = time.time_ns()
     record = {
         "name": name,
@@ -434,6 +1262,8 @@ def _bounded_conversion_command(
         raise ConversionRefused("calibrated command name is malformed")
     if cwd_role not in {"private_staging", "determinism_replay"}:
         raise ConversionRefused("calibrated command cwd role is malformed")
+    _assert_child_pycache_absent(cwd, f"{name} before launch")
+    _assert_private_command_tree(cwd, f"{name} before launch")
     environment = _small_child_environment(single_thread=True)
     descriptors: dict[str, int] = {}
     paths: dict[str, Path] = {}
@@ -506,6 +1336,9 @@ def _bounded_conversion_command(
             process.wait()
         for descriptor in descriptors.values():
             os.close(descriptor)
+        if process is not None:
+            _assert_child_pycache_absent(cwd, f"{name} after exit")
+            _assert_private_command_tree(cwd, f"{name} after exit")
 
     record: dict[str, Any] = {
         "name": name,
@@ -1328,6 +2161,7 @@ def _calibration_receipt(
     converter_identity = _mapping(toolchain["converter"], "converter identity")
     imatrix_tool_identity = _mapping(toolchain["imatrix"], "imatrix tool identity")
     quantizer_identity = _mapping(toolchain["quantizer"], "quantizer identity")
+    runtime_libraries = _mapping(toolchain["runtime_libraries"], "runtime library closure identity")
     entrypoint = _mapping(artifact["entrypoint"], "artifact entrypoint")
     return {
         "schema": CALIBRATION_SCHEMA,
@@ -1352,6 +2186,7 @@ def _calibration_receipt(
             "converter_digest": converter_identity["digest"],
             "imatrix_digest": imatrix_tool_identity["digest"],
             "quantizer_digest": quantizer_identity["digest"],
+            "runtime_libraries": dict(runtime_libraries),
         },
         "commands": [dict(command) for command in commands],
         "determinism_replay": dict(determinism_replay),
@@ -1386,6 +2221,7 @@ def _calibrated_conversion_receipt(
     converter_identity = _mapping(toolchain["converter"], "converter identity")
     imatrix_identity = _mapping(toolchain["imatrix"], "imatrix tool identity")
     quantizer_identity = _mapping(toolchain["quantizer"], "quantizer identity")
+    runtime_libraries = _mapping(toolchain["runtime_libraries"], "runtime library closure identity")
     entrypoint = _mapping(artifact["entrypoint"], "artifact entrypoint")
     return {
         "schema": CALIBRATED_CONVERSION_SCHEMA,
@@ -1402,6 +2238,7 @@ def _calibrated_conversion_receipt(
             "converter_digest": converter_identity["digest"],
             "imatrix_digest": imatrix_identity["digest"],
             "quantizer_digest": quantizer_identity["digest"],
+            "runtime_libraries": dict(runtime_libraries),
             "commands": [dict(command) for command in commands],
             "determinism_replay": dict(determinism_replay),
         },
@@ -1423,6 +2260,151 @@ def _valid_digest(value: Any) -> bool:
         and len(value) == 71
         and all(character in "0123456789abcdef" for character in value[7:])
     )
+
+
+def _safe_runtime_mode(value: Any, label: str) -> int:
+    if (
+        not isinstance(value, str)
+        or len(value) != 4
+        or any(character not in "01234567" for character in value)
+    ):
+        raise ConversionRefused(f"{label} mode must be four octal digits")
+    mode = int(value, 8)
+    if mode & 0o022:
+        raise ConversionRefused(f"{label} mode must not be group/world writable")
+    return mode
+
+
+def _validate_runtime_library_receipt(value: Any, label: str) -> dict[str, Any]:
+    closure = _mapping(value, label)
+    _exact_keys(
+        closure,
+        frozenset(
+            {
+                "schema",
+                "root",
+                "directories",
+                "build_bin_namespace",
+                "symlinks",
+                "executables",
+                "libraries",
+            }
+        ),
+        label,
+    )
+    if closure.get("schema") != RUNTIME_LIBRARY_SCHEMA:
+        raise ConversionRefused(f"{label} schema changed")
+    if closure.get("root") != str(LLAMA_CPP_ROOT):
+        raise ConversionRefused(f"{label} root changed")
+
+    directories = closure.get("directories")
+    if not isinstance(directories, list) or len(directories) != 3:
+        raise ConversionRefused(f"{label} directory closure changed")
+    for entry, expected_path in zip(
+        directories,
+        (".", "build", "build/bin"),
+        strict=True,
+    ):
+        directory = _mapping(entry, f"{label} directory")
+        _exact_keys(directory, frozenset({"path", "mode"}), f"{label} directory")
+        if directory.get("path") != expected_path:
+            raise ConversionRefused(f"{label} directory path changed")
+        _safe_runtime_mode(directory.get("mode"), f"{label} directory {expected_path}")
+
+    namespace_names: set[str] = set()
+    for relative, _expected_bytes, _expected_digest in LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT:
+        namespace_names.add(_runtime_relative_name(relative, "runtime executable path"))
+    for loader, target, _expected_bytes, _expected_digest in LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT:
+        namespace_names.add(_runtime_relative_name(loader, "runtime library loader path"))
+        namespace_names.add(_runtime_relative_name(target, "runtime library target path"))
+    for relative, target in LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT:
+        namespace_names.add(_runtime_relative_name(relative, "runtime symlink path"))
+        namespace_names.add(_runtime_symlink_target_name(target, "runtime symlink target"))
+    expected_namespace = [f"build/bin/{name}" for name in sorted(namespace_names)]
+    namespace = closure.get("build_bin_namespace")
+    if (
+        not isinstance(namespace, list)
+        or any(not isinstance(entry, str) for entry in namespace)
+        or namespace != expected_namespace
+    ):
+        raise ConversionRefused(f"{label} build/bin namespace changed")
+
+    symlinks = closure.get("symlinks")
+    symlink_contract = LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT
+    if not isinstance(symlinks, list) or len(symlinks) != len(symlink_contract):
+        raise ConversionRefused(f"{label} symlink closure changed")
+    for entry, (expected_path, expected_target) in zip(
+        symlinks,
+        symlink_contract,
+        strict=True,
+    ):
+        link = _mapping(entry, f"{label} symlink")
+        _exact_keys(link, frozenset({"path", "target"}), f"{label} symlink")
+        if link.get("path") != expected_path or link.get("target") != expected_target:
+            raise ConversionRefused(f"{label} pinned symlink edge changed")
+
+    executables = closure.get("executables")
+    executable_contract = LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT
+    if not isinstance(executables, list) or len(executables) != len(executable_contract):
+        raise ConversionRefused(f"{label} executable closure changed")
+    for entry, (expected_path, expected_bytes, expected_digest) in zip(
+        executables,
+        executable_contract,
+        strict=True,
+    ):
+        executable = _mapping(entry, f"{label} executable")
+        _exact_keys(
+            executable,
+            frozenset({"path", "bytes", "digest", "mode"}),
+            f"{label} executable",
+        )
+        actual_bytes = executable.get("bytes")
+        if isinstance(actual_bytes, bool) or not isinstance(actual_bytes, int):
+            raise ConversionRefused(f"{label} executable bytes must be an integer")
+        if {
+            "path": executable.get("path"),
+            "bytes": actual_bytes,
+            "digest": executable.get("digest"),
+        } != {
+            "path": expected_path,
+            "bytes": expected_bytes,
+            "digest": expected_digest,
+        }:
+            raise ConversionRefused(f"{label} pinned executable identity changed")
+        _safe_runtime_mode(executable.get("mode"), f"{label} executable {expected_path}")
+
+    libraries = closure.get("libraries")
+    contract = LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT
+    if not isinstance(libraries, list) or len(libraries) != len(contract):
+        raise ConversionRefused(f"{label} library closure changed")
+    for entry, (loader, target, expected_bytes, expected_digest) in zip(
+        libraries,
+        contract,
+        strict=True,
+    ):
+        library = _mapping(entry, f"{label} library")
+        _exact_keys(
+            library,
+            frozenset({"loader_path", "target_path", "bytes", "digest", "mode"}),
+            f"{label} library",
+        )
+        actual_bytes = library.get("bytes")
+        if isinstance(actual_bytes, bool) or not isinstance(actual_bytes, int):
+            raise ConversionRefused(f"{label} library bytes must be an integer")
+        if {
+            "loader_path": library.get("loader_path"),
+            "target_path": library.get("target_path"),
+            "bytes": library.get("bytes"),
+            "digest": library.get("digest"),
+        } != {
+            "loader_path": loader,
+            "target_path": target,
+            "bytes": expected_bytes,
+            "digest": expected_digest,
+        }:
+            raise ConversionRefused(f"{label} pinned library identity changed")
+        _safe_runtime_mode(library.get("mode"), f"{label} library {target}")
+    return dict(closure)
 
 
 def _validate_calibrated_command(
@@ -1526,9 +2508,9 @@ def _validate_calibrated_receipts(
     replay_command_argv: Sequence[tuple[str, Sequence[str]]],
 ) -> None:
     if dict(calibration_receipt) != dict(expected_calibration):
-        raise ConversionRefused("calibration-v1 receipt fields changed")
+        raise ConversionRefused("calibration-v2 receipt fields changed")
     if dict(conversion_receipt) != dict(expected_conversion):
-        raise ConversionRefused("conversion-v2 receipt fields changed")
+        raise ConversionRefused("conversion-v3 receipt fields changed")
     if calibration_receipt.get("schema") != CALIBRATION_SCHEMA:
         raise ConversionRefused("calibration receipt schema changed")
     if conversion_receipt.get("schema") != CALIBRATED_CONVERSION_SCHEMA:
@@ -1537,6 +2519,20 @@ def _validate_calibrated_receipts(
         raise ConversionRefused("conversion receipt does not bind the calibration receipt")
     calibration_commands = calibration_receipt.get("commands")
     conversion = _mapping(conversion_receipt.get("conversion"), "calibrated conversion")
+    calibration_toolchain = _mapping(
+        calibration_receipt.get("toolchain"),
+        "calibration toolchain",
+    )
+    calibration_runtime = _validate_runtime_library_receipt(
+        calibration_toolchain.get("runtime_libraries"),
+        "calibration runtime library closure",
+    )
+    conversion_runtime = _validate_runtime_library_receipt(
+        conversion.get("runtime_libraries"),
+        "conversion runtime library closure",
+    )
+    if calibration_runtime != conversion_runtime:
+        raise ConversionRefused("calibrated receipts bind different runtime libraries")
     conversion_commands = conversion.get("commands")
     if not isinstance(calibration_commands, list) or calibration_commands != conversion_commands:
         raise ConversionRefused("calibrated receipts do not bind the same commands")
@@ -2074,6 +3070,10 @@ def _convert_calibrated(request: ConversionRequest) -> dict[str, Any]:
         )
         if _bundle_file_set(staging) != frozenset(transient_files):
             raise ConversionRefused("calibrated staging contains unexpected files")
+        _assert_child_pycache_absent(staging, "primary calibrated staging before cleanup")
+        _assert_private_command_tree(staging, "primary calibrated staging before cleanup")
+        _assert_child_pycache_absent(replay_root, "replay calibrated staging before cleanup")
+        _assert_private_command_tree(replay_root, "replay calibrated staging before cleanup")
         for private_path in (f16_path, corpus_path, imatrix_path):
             if private_path.is_symlink() or not private_path.is_file():
                 raise ConversionRefused("private calibrated intermediate changed before cleanup")
@@ -2102,6 +3102,8 @@ def _convert_calibrated(request: ConversionRequest) -> dict[str, Any]:
         _fsync_path(artifact_root, directory=True)
         _fsync_path(staging, directory=True)
 
+        _assert_child_pycache_absent(staging, "calibrated staging before publication")
+        _assert_private_command_tree(staging, "calibrated staging before publication")
         expected_files = frozenset(
             {
                 f"{ARTIFACT_NAME}/{ENTRYPOINT}",
@@ -2112,6 +3114,12 @@ def _convert_calibrated(request: ConversionRequest) -> dict[str, Any]:
         )
         if _bundle_file_set(staging) != expected_files:
             raise ConversionRefused("calibrated output bundle contains unexpected files")
+        prepublish_tools = _toolchain_identity(request)
+        _same_identity(
+            initial_tools,
+            prepublish_tools,
+            "llama.cpp toolchain immediately before publication",
+        )
         _publish_directory_noreplace(staging, output)
         published = True
         _fsync_path(output.parent, directory=True)
@@ -2208,7 +3216,6 @@ def convert(request: ConversionRequest) -> dict[str, Any]:
         model_path = artifact_root / ENTRYPOINT
         converter = Path(str(initial_tools["converter"]["path"]))
         quantizer = Path(str(initial_tools["quantizer"]["path"]))
-        checkout = Path(str(initial_tools["root"]))
         convert_argv = (
             str(converter),
             str(merged_root),
@@ -2217,7 +3224,7 @@ def convert(request: ConversionRequest) -> dict[str, Any]:
             "--outtype",
             "f16",
         )
-        commands = [_conversion_command("convert_f16", convert_argv, cwd=checkout)]
+        commands = [_conversion_command("convert_f16", convert_argv, cwd=staging)]
         f16_identity = gguf.file_identity(f16_path, "temporary F16 GGUF")
         if int(f16_identity["bytes"]) < 1:
             raise ConversionRefused("converter produced an empty F16 GGUF")
@@ -2227,7 +3234,7 @@ def convert(request: ConversionRequest) -> dict[str, Any]:
             str(model_path),
             request.quantization,
         )
-        commands.append(_conversion_command("quantize", quantize_argv, cwd=checkout))
+        commands.append(_conversion_command("quantize", quantize_argv, cwd=staging))
         gguf.file_identity(model_path, "quantized GGUF")
         _fsync_path(model_path)
 
@@ -2275,9 +3282,18 @@ def convert(request: ConversionRequest) -> dict[str, Any]:
             raise ConversionRefused("staged load specification changed")
         if (staging / RECEIPT_NAME).read_bytes() != receipt_raw:
             raise ConversionRefused("staged conversion receipt changed")
+        _assert_child_pycache_absent(staging, "generic staging before publication")
+        _assert_private_command_tree(staging, "generic staging before publication")
         expected_files = frozenset({f"{ARTIFACT_NAME}/{ENTRYPOINT}", LOAD_SPEC_NAME, RECEIPT_NAME})
         if _bundle_file_set(staging) != expected_files:
             raise ConversionRefused("staged output bundle contains unexpected files")
+
+        prepublish_tools = _toolchain_identity(request)
+        _same_identity(
+            initial_tools,
+            prepublish_tools,
+            "llama.cpp toolchain immediately before publication",
+        )
 
         _publish_directory_noreplace(staging, output)
         published = True

@@ -23,6 +23,50 @@ def _digest(character: str) -> str:
     return "sha256:" + character * 64
 
 
+def _runtime_closure(
+    mode: str = "0755",
+    *,
+    root: Path = converter.LLAMA_CPP_ROOT,
+) -> dict[str, object]:
+    namespace_names = {
+        Path(relative).name
+        for relative, _size, _digest_value in converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT
+    }
+    for loader, target, _size, _digest_value in converter.LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT:
+        namespace_names.update((Path(loader).name, Path(target).name))
+    for relative, target in converter.LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT:
+        namespace_names.update((Path(relative).name, target))
+    return {
+        "schema": converter.RUNTIME_LIBRARY_SCHEMA,
+        "root": str(root),
+        "directories": [{"path": path, "mode": mode} for path in (".", "build", "build/bin")],
+        "build_bin_namespace": [f"build/bin/{name}" for name in sorted(namespace_names)],
+        "symlinks": [
+            {"path": relative, "target": target}
+            for relative, target in converter.LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT
+        ],
+        "executables": [
+            {
+                "path": relative,
+                "bytes": size,
+                "digest": digest,
+                "mode": mode,
+            }
+            for relative, size, digest in converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT
+        ],
+        "libraries": [
+            {
+                "loader_path": loader,
+                "target_path": target,
+                "bytes": size,
+                "digest": digest,
+                "mode": mode,
+            }
+            for loader, target, size, digest in converter.LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT
+        ],
+    }
+
+
 def _gguf(file_type: int) -> bytes:
     def string(value: str) -> bytes:
         encoded = value.encode("utf-8")
@@ -221,6 +265,7 @@ class ConversionFixture(unittest.TestCase):
                 "path": str(self.quantizer.resolve()),
                 "digest": _digest("e"),
             },
+            "runtime_libraries": _runtime_closure(),
         }
         self.calls: list[tuple[list[str], dict[str, object]]] = []
 
@@ -287,6 +332,10 @@ class SuccessfulConversionTests(ConversionFixture):
             environment = options["env"]
             self.assertIsInstance(environment, dict)
             self.assertNotIn("WANDB_API_KEY", environment)
+            self.assertNotIn("PYTHONPATH", environment)
+            self.assertEqual(environment["PYTHONHASHSEED"], "0")
+            self.assertEqual(environment["PYTHONPYCACHEPREFIX"], ".microtensor-empty-pycache")
+            self.assertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
             self.assertNotIn("BT_WALLET_PATH", environment)
             self.assertEqual(environment["HF_HUB_OFFLINE"], "1")
 
@@ -328,6 +377,126 @@ class SuccessfulConversionTests(ConversionFixture):
             load_manifest=load,
             calibration_digest=None,
         )
+
+    def test_generic_runtime_closure_mutation_at_prepublish_refuses_bundle(self) -> None:
+        changed_tools = copy.deepcopy(self.tools)
+        changed_tools["runtime_libraries"]["libraries"][0]["digest"] = _digest("9")
+        with (
+            mock.patch.object(converter, "_load_lineage", return_value=self.lineage),
+            mock.patch.object(
+                converter,
+                "_toolchain_identity",
+                side_effect=(self.tools, self.tools, changed_tools),
+            ) as toolchain,
+            mock.patch.object(
+                converter.subprocess,
+                "run",
+                side_effect=self.completed_process,
+            ),
+            self.assertRaisesRegex(
+                converter.ConversionRefused,
+                "immediately before publication changed",
+            ),
+        ):
+            converter.convert(self.request)
+        self.assertEqual(toolchain.call_count, 3)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.root.glob(f"{converter._STAGING_MARKER}*")), [])
+
+
+class PythonImportSurfaceLifecycleTests(ConversionFixture):
+    def _inject_extension(self) -> Path:
+        package = self.checkout / "conversion"
+        package.mkdir(exist_ok=True)
+        extension = package / "injected.so"
+        extension.write_bytes(b"ignored extension fixture")
+        return extension
+
+    def _guarded_toolchain(self, _request: converter.ConversionRequest) -> dict[str, object]:
+        converter._assert_llama_python_import_surface(self.checkout)
+        return self.tools
+
+    def _assert_unpublished_cleanup(self) -> None:
+        self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.root.glob(f"{converter._STAGING_MARKER}*")), [])
+
+    def test_preflight_extension_is_refused_before_any_tool_pass(self) -> None:
+        self._inject_extension()
+        with (
+            mock.patch.object(converter, "_load_lineage", return_value=self.lineage),
+            mock.patch.object(
+                converter,
+                "_toolchain_identity",
+                side_effect=self._guarded_toolchain,
+            ) as toolchain,
+            mock.patch.object(converter.subprocess, "run") as process,
+            self.assertRaisesRegex(converter.ConversionRefused, "extension-module candidate"),
+        ):
+            converter.convert(self.request)
+        self.assertEqual(toolchain.call_count, 1)
+        process.assert_not_called()
+        self._assert_unpublished_cleanup()
+
+    def test_post_tool_pass_extension_is_refused_by_final_recheck(self) -> None:
+        def injecting_process(
+            argv: list[str],
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            completed = self.completed_process(argv, **kwargs)
+            if str(argv[0]) == str(self.quantizer.resolve()):
+                self._inject_extension()
+            return completed
+
+        with (
+            mock.patch.object(converter, "_load_lineage", return_value=self.lineage),
+            mock.patch.object(
+                converter,
+                "_toolchain_identity",
+                side_effect=self._guarded_toolchain,
+            ) as toolchain,
+            mock.patch.object(
+                converter.subprocess,
+                "run",
+                side_effect=injecting_process,
+            ) as process,
+            self.assertRaisesRegex(converter.ConversionRefused, "extension-module candidate"),
+        ):
+            converter.convert(self.request)
+        self.assertEqual(toolchain.call_count, 2)
+        self.assertEqual(process.call_count, 2)
+        self._assert_unpublished_cleanup()
+
+    def test_prepublish_extension_is_refused_by_third_recheck(self) -> None:
+        calls = 0
+
+        def inject_after_final(
+            request: converter.ConversionRequest,
+        ) -> dict[str, object]:
+            nonlocal calls
+            converter._assert_llama_python_import_surface(request.llama_cpp)
+            calls += 1
+            if calls == 2:
+                self._inject_extension()
+            return self.tools
+
+        with (
+            mock.patch.object(converter, "_load_lineage", return_value=self.lineage),
+            mock.patch.object(
+                converter,
+                "_toolchain_identity",
+                side_effect=inject_after_final,
+            ) as toolchain,
+            mock.patch.object(
+                converter.subprocess,
+                "run",
+                side_effect=self.completed_process,
+            ),
+            self.assertRaisesRegex(converter.ConversionRefused, "extension-module candidate"),
+        ):
+            converter.convert(self.request)
+        self.assertEqual(toolchain.call_count, 3)
+        self.assertEqual(calls, 2)
+        self._assert_unpublished_cleanup()
 
 
 class CalibratedConversionTests(ConversionFixture):
@@ -563,6 +732,27 @@ class CalibratedConversionTests(ConversionFixture):
         conversion = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
         self.assertEqual(calibration["schema"], converter.CALIBRATION_SCHEMA)
         self.assertEqual(conversion["schema"], converter.CALIBRATED_CONVERSION_SCHEMA)
+        receipt_commands = [
+            *calibration["commands"],
+            *calibration["determinism_replay"]["commands"],
+        ]
+        expected_environment = converter._small_child_environment(single_thread=True)
+        for command in receipt_commands:
+            self.assertEqual(command["environment"], expected_environment)
+            self.assertNotIn("PYTHONPATH", command["environment"])
+            self.assertEqual(command["environment"]["PYTHONHASHSEED"], "0")
+            self.assertEqual(
+                command["environment"]["PYTHONPYCACHEPREFIX"],
+                ".microtensor-empty-pycache",
+            )
+        self.assertEqual(
+            calibration["toolchain"]["runtime_libraries"],
+            _runtime_closure(),
+        )
+        self.assertEqual(
+            conversion["conversion"]["runtime_libraries"],
+            _runtime_closure(),
+        )
         self.assertEqual(
             conversion["calibration_receipt_digest"],
             "sha256:"
@@ -611,6 +801,62 @@ class CalibratedConversionTests(ConversionFixture):
         self.replay_model_bytes = self.model_bytes
         with self.assertRaisesRegex(converter.ConversionRefused, "entry count differs"):
             self.run_calibrated()
+        self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.root.glob(f"{converter._STAGING_MARKER}*")), [])
+
+    def test_calibrated_receipts_must_bind_identical_runtime_closure(self) -> None:
+        self.run_calibrated()
+        calibration = json.loads((self.output / converter.CALIBRATION_RECEIPT_NAME).read_bytes())
+        conversion = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
+        changed_conversion = copy.deepcopy(conversion)
+        changed_conversion["conversion"]["runtime_libraries"]["directories"][0]["mode"] = "0700"
+        command_argv = tuple(
+            (command["name"], command["argv"]) for command in conversion["conversion"]["commands"]
+        )
+        with self.assertRaisesRegex(
+            converter.ConversionRefused,
+            "bind different runtime libraries",
+        ):
+            converter._validate_calibrated_receipts(
+                calibration_receipt=calibration,
+                conversion_receipt=changed_conversion,
+                calibration_digest=conversion["calibration_receipt_digest"],
+                expected_calibration=calibration,
+                expected_conversion=changed_conversion,
+                command_argv=command_argv,
+                replay_command_argv=command_argv,
+            )
+
+    def test_runtime_closure_mutation_at_prepublish_refuses_bundle(self) -> None:
+        changed_tools = copy.deepcopy(self.calibrated_tools)
+        changed_tools["runtime_libraries"]["libraries"][0]["digest"] = _digest("9")
+        with (
+            mock.patch.object(converter, "_load_lineage", return_value=self.lineage),
+            mock.patch.object(
+                converter,
+                "_toolchain_identity",
+                side_effect=(
+                    self.calibrated_tools,
+                    self.calibrated_tools,
+                    changed_tools,
+                ),
+            ),
+            mock.patch.object(
+                converter,
+                "_load_calibration_material",
+                return_value=(self.rows, self.material),
+            ),
+            mock.patch.object(
+                converter,
+                "_bounded_conversion_command",
+                side_effect=self.bounded_command,
+            ),
+            self.assertRaisesRegex(
+                converter.ConversionRefused,
+                "immediately before publication changed",
+            ),
+        ):
+            converter.convert(self.request)
         self.assertFalse(self.output.exists())
         self.assertEqual(list(self.root.glob(f"{converter._STAGING_MARKER}*")), [])
 
@@ -933,6 +1179,510 @@ class CalibratedArgumentTests(ConversionFixture):
             lineage.assert_not_called()
 
 
+class PrivateCommandTreeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(dir="/dev/shm")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.cwd = self.root / "private"
+        self.cwd.mkdir(mode=0o700)
+        self.argv = ("/synthetic/no-execution",)
+
+    def test_preexisting_pycache_symlink_is_refused_before_launch(self) -> None:
+        target = self.root / "cache-target"
+        target.mkdir()
+        (self.cwd / converter._CHILD_PYCACHE_PREFIX).symlink_to(
+            target,
+            target_is_directory=True,
+        )
+        with (
+            mock.patch.object(converter.subprocess, "run") as process,
+            self.assertRaisesRegex(converter.ConversionRefused, "pycache prefix must be absent"),
+        ):
+            converter._conversion_command("fixture", self.argv, cwd=self.cwd)
+        process.assert_not_called()
+
+    def test_pycache_created_by_child_is_refused_after_exit(self) -> None:
+        def create_cache(
+            argv: list[str],
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            (self.cwd / converter._CHILD_PYCACHE_PREFIX).mkdir()
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        with (
+            mock.patch.object(converter.subprocess, "run", side_effect=create_cache),
+            self.assertRaisesRegex(converter.ConversionRefused, "after exit.*pycache"),
+        ):
+            converter._conversion_command("fixture", self.argv, cwd=self.cwd)
+
+    def test_top_level_backend_candidate_is_refused_before_launch(self) -> None:
+        (self.cwd / "libggml-cpu.so").write_bytes(b"injected")
+        with (
+            mock.patch.object(converter.subprocess, "run") as process,
+            self.assertRaisesRegex(converter.ConversionRefused, "shared-library candidate"),
+        ):
+            converter._conversion_command("fixture", self.argv, cwd=self.cwd)
+        process.assert_not_called()
+
+    def test_nested_hwcaps_candidate_is_refused_before_launch(self) -> None:
+        hwcaps = self.cwd / "glibc-hwcaps" / "x86-64-v3"
+        hwcaps.mkdir(parents=True)
+        (hwcaps / "libggml-cpu.so.0").write_bytes(b"injected")
+        with (
+            mock.patch.object(converter.subprocess, "run") as process,
+            self.assertRaisesRegex(converter.ConversionRefused, "shared-library candidate"),
+        ):
+            converter._conversion_command("fixture", self.argv, cwd=self.cwd)
+        process.assert_not_called()
+
+    def test_backend_created_by_child_is_refused_after_exit(self) -> None:
+        def inject_backend(
+            argv: list[str],
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            (self.cwd / "libggml-rpc.so").write_bytes(b"injected")
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        with (
+            mock.patch.object(converter.subprocess, "run", side_effect=inject_backend),
+            self.assertRaisesRegex(converter.ConversionRefused, "shared-library candidate"),
+        ):
+            converter._conversion_command("fixture", self.argv, cwd=self.cwd)
+
+
+class PythonImportSurfaceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(dir="/dev/shm")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "llama.cpp"
+        (self.root / "conversion" / "__pycache__").mkdir(parents=True)
+        (self.root / "gguf-py" / "gguf" / "__pycache__").mkdir(parents=True)
+        (self.root / "conversion" / "__init__.py").write_text("", encoding="utf-8")
+        (self.root / "gguf-py" / "gguf" / "__init__.py").write_text(
+            "",
+            encoding="utf-8",
+        )
+        (self.root / "conversion" / "__pycache__" / "base.cpython-311.pyc").write_bytes(
+            b"inert checkout bytecode"
+        )
+        (self.root / "gguf-py" / "gguf" / "__pycache__" / "lazy.cpython-311.pyc").write_bytes(
+            b"inert checkout bytecode"
+        )
+
+    def test_clean_source_tree_allows_inert_pycache_and_native_build_trees(self) -> None:
+        for path in (
+            self.root / "build" / "bin" / "libggml-cpu.so",
+            self.root / "build-cuda" / "bin" / "libggml-cuda.so",
+        ):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"separately attested native build fixture")
+        converter._assert_llama_python_import_surface(self.root)
+
+    def test_extension_candidates_across_import_paths_are_refused(self) -> None:
+        for relative in (
+            "shadow.so",
+            "shadow/__init__.so",
+            "conversion/shadow.abi3.so",
+            "gguf-py/gguf/shadow.cpython-311-x86_64-linux-gnu.so",
+        ):
+            candidate_path = self.root / relative
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_bytes(b"ignored extension fixture")
+            with (
+                self.subTest(relative=relative),
+                self.assertRaisesRegex(
+                    converter.ConversionRefused,
+                    "extension-module candidate",
+                ),
+            ):
+                converter._assert_llama_python_import_surface(self.root)
+            candidate_path.unlink()
+
+    def test_legacy_sourceless_bytecode_is_refused(self) -> None:
+        (self.root / "conversion" / "shadow.pyc").write_bytes(b"legacy bytecode")
+        with self.assertRaisesRegex(converter.ConversionRefused, "legacy sourceless bytecode"):
+            converter._assert_llama_python_import_surface(self.root)
+
+    def test_nested_symlink_is_refused_without_traversal(self) -> None:
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        (outside / "shadow.so").write_bytes(b"outside")
+        (self.root / "conversion" / "alias").symlink_to(
+            outside,
+            target_is_directory=True,
+        )
+        with self.assertRaisesRegex(converter.ConversionRefused, "contains a symlink"):
+            converter._assert_llama_python_import_surface(self.root)
+
+    def test_special_entry_is_refused(self) -> None:
+        fifo = self.root / "conversion" / "injected"
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(converter.ConversionRefused, "special filesystem entry"):
+            converter._assert_llama_python_import_surface(self.root)
+
+    def test_mutation_between_snapshots_is_refused(self) -> None:
+        original_fwalk = os.fwalk
+        calls = 0
+
+        def mutate_after_first(*args: object, **kwargs: object):
+            nonlocal calls
+            calls += 1
+            yield from original_fwalk(*args, **kwargs)
+            if calls == 1:
+                (self.root / "conversion" / "late.py").write_text(
+                    "changed between snapshots\n",
+                    encoding="utf-8",
+                )
+
+        with (
+            mock.patch.object(
+                converter.os,
+                "fwalk",
+                side_effect=mutate_after_first,
+            ),
+            self.assertRaisesRegex(converter.ConversionRefused, "changed during inspection"),
+        ):
+            converter._assert_llama_python_import_surface(self.root)
+        self.assertEqual(calls, 2)
+
+
+class RuntimeLibraryClosureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(dir="/dev/shm")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "llama.cpp"
+        self.bin = self.root / "build" / "bin"
+        self.bin.mkdir(parents=True)
+        for directory in (self.root, self.root / "build", self.bin):
+            directory.chmod(0o700)
+        self.raw = b"pinned shared library fixture\n"
+        self.executable_raw = b"pinned executable fixture\n"
+        self.target = self.bin / "libfixture.so.1.0"
+        self.loader = self.bin / "libfixture.so.1"
+        self.unversioned = self.bin / "libfixture.so"
+        self.executable = self.bin / "fixture-tool"
+        self.target.write_bytes(self.raw)
+        self.target.chmod(0o700)
+        self.loader.symlink_to(self.target.name)
+        self.unversioned.symlink_to(self.loader.name)
+        self.executable.write_bytes(self.executable_raw)
+        self.executable.chmod(0o700)
+        self.contract = (
+            (
+                "build/bin/libfixture.so.1",
+                "build/bin/libfixture.so.1.0",
+                len(self.raw),
+                "sha256:" + hashlib.sha256(self.raw).hexdigest(),
+            ),
+        )
+        self.symlink_contract = (
+            ("build/bin/libfixture.so", "libfixture.so.1"),
+            ("build/bin/libfixture.so.1", "libfixture.so.1.0"),
+        )
+        self.executable_contract = (
+            (
+                "build/bin/fixture-tool",
+                len(self.executable_raw),
+                "sha256:" + hashlib.sha256(self.executable_raw).hexdigest(),
+            ),
+        )
+
+    def closure(self) -> dict[str, object]:
+        with (
+            mock.patch.object(
+                converter,
+                "LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT",
+                self.contract,
+            ),
+            mock.patch.object(
+                converter,
+                "LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT",
+                self.symlink_contract,
+            ),
+            mock.patch.object(
+                converter,
+                "LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT",
+                self.executable_contract,
+            ),
+        ):
+            return converter._runtime_library_closure(self.root)
+
+    def test_exact_symlink_target_hash_and_modes_are_attested(self) -> None:
+        closure = self.closure()
+        self.assertEqual(closure["schema"], converter.RUNTIME_LIBRARY_SCHEMA)
+        self.assertEqual(closure["root"], str(self.root))
+        self.assertEqual(
+            closure["build_bin_namespace"],
+            [
+                "build/bin/fixture-tool",
+                "build/bin/libfixture.so",
+                "build/bin/libfixture.so.1",
+                "build/bin/libfixture.so.1.0",
+            ],
+        )
+        self.assertEqual(
+            closure["symlinks"],
+            [{"path": path, "target": target} for path, target in self.symlink_contract],
+        )
+        self.assertEqual(
+            closure["executables"],
+            [
+                {
+                    "path": self.executable_contract[0][0],
+                    "bytes": len(self.executable_raw),
+                    "digest": self.executable_contract[0][2],
+                    "mode": "0700",
+                }
+            ],
+        )
+        self.assertEqual(
+            closure["directories"],
+            [
+                {"path": ".", "mode": "0700"},
+                {"path": "build", "mode": "0700"},
+                {"path": "build/bin", "mode": "0700"},
+            ],
+        )
+        self.assertEqual(
+            closure["libraries"],
+            [
+                {
+                    "loader_path": self.contract[0][0],
+                    "target_path": self.contract[0][1],
+                    "bytes": len(self.raw),
+                    "digest": self.contract[0][3],
+                    "mode": "0700",
+                }
+            ],
+        )
+
+    def test_missing_target_is_refused(self) -> None:
+        self.target.unlink()
+        with self.assertRaisesRegex(converter.ConversionRefused, "build/bin namespace changed"):
+            self.closure()
+
+    def test_repointed_loader_is_refused(self) -> None:
+        self.loader.unlink()
+        self.loader.symlink_to("different.so")
+        with self.assertRaisesRegex(converter.ConversionRefused, "escaped or was repointed"):
+            self.closure()
+
+    def test_repointed_unversioned_loader_is_refused(self) -> None:
+        self.unversioned.unlink()
+        self.unversioned.symlink_to("../outside.so")
+        with self.assertRaisesRegex(converter.ConversionRefused, "escaped or was repointed"):
+            self.closure()
+
+    def test_extra_backend_changes_exact_namespace(self) -> None:
+        (self.bin / "libggml-cuda.so").write_bytes(b"injected")
+        with self.assertRaisesRegex(converter.ConversionRefused, "build/bin namespace changed"):
+            self.closure()
+
+    def test_nested_hwcaps_directory_changes_exact_namespace(self) -> None:
+        hwcaps = self.bin / "glibc-hwcaps" / "x86-64-v3"
+        hwcaps.mkdir(parents=True)
+        (hwcaps / "libggml-cpu.so.0").write_bytes(b"injected")
+        with self.assertRaisesRegex(converter.ConversionRefused, "build/bin namespace changed"):
+            self.closure()
+
+    def test_escaping_symlink_chain_is_refused(self) -> None:
+        outside = self.root.parent / "outside.so"
+        outside.write_bytes(self.raw)
+        outside.chmod(0o700)
+        self.target.unlink()
+        self.target.symlink_to(outside)
+        with self.assertRaisesRegex(converter.ConversionRefused, "final target must be regular"):
+            self.closure()
+
+    def test_hash_change_is_refused(self) -> None:
+        self.target.write_bytes(b"X" * len(self.raw))
+        self.target.chmod(0o700)
+        with self.assertRaisesRegex(converter.ConversionRefused, "target bytes changed"):
+            self.closure()
+
+    def test_executable_hash_change_is_refused(self) -> None:
+        self.executable.write_bytes(b"X" * len(self.executable_raw))
+        with self.assertRaisesRegex(
+            converter.ConversionRefused, "runtime executable bytes changed"
+        ):
+            self.closure()
+
+    def test_late_executable_mutation_is_caught_by_final_recheck(self) -> None:
+        original = converter._attest_runtime_regular_file
+        mutated = False
+
+        def mutate_after_first_attestation(
+            *args: object,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            nonlocal mutated
+            identity = original(*args, **kwargs)
+            if kwargs.get("executable") is True and not mutated:
+                mutated = True
+                self.executable.write_bytes(b"X" * len(self.executable_raw))
+            return identity
+
+        with (
+            mock.patch.object(
+                converter,
+                "_attest_runtime_regular_file",
+                side_effect=mutate_after_first_attestation,
+            ),
+            self.assertRaisesRegex(
+                converter.ConversionRefused,
+                "executable final recheck bytes changed",
+            ),
+        ):
+            self.closure()
+
+    def test_group_writable_target_is_refused(self) -> None:
+        self.target.chmod(0o770)
+        with self.assertRaisesRegex(converter.ConversionRefused, "target must not be"):
+            self.closure()
+
+    def test_group_writable_directory_is_refused(self) -> None:
+        self.bin.chmod(0o770)
+        with self.assertRaisesRegex(converter.ConversionRefused, "build/bin must not be"):
+            self.closure()
+
+
+class RuntimeLibraryReceiptTests(unittest.TestCase):
+    def test_production_contract_cardinality_and_names_are_exact(self) -> None:
+        self.assertEqual(
+            [entry[1] for entry in converter.LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT],
+            [
+                "build/bin/libggml-base.so.0.22.0",
+                "build/bin/libggml-cpu.so.0.22.0",
+                "build/bin/libggml.so.0.22.0",
+                "build/bin/libllama-common.so.0.3.0",
+                "build/bin/libllama-quantize-impl.so",
+                "build/bin/libllama.so.0.3.0",
+            ],
+        )
+        self.assertEqual(
+            converter.LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT,
+            (
+                ("build/bin/libggml-base.so", "libggml-base.so.0"),
+                ("build/bin/libggml-base.so.0", "libggml-base.so.0.22.0"),
+                ("build/bin/libggml-cpu.so", "libggml-cpu.so.0"),
+                ("build/bin/libggml-cpu.so.0", "libggml-cpu.so.0.22.0"),
+                ("build/bin/libggml.so", "libggml.so.0"),
+                ("build/bin/libggml.so.0", "libggml.so.0.22.0"),
+                ("build/bin/libllama-common.so", "libllama-common.so.0"),
+                ("build/bin/libllama-common.so.0", "libllama-common.so.0.3.0"),
+                ("build/bin/libllama.so", "libllama.so.0"),
+                ("build/bin/libllama.so.0", "libllama.so.0.3.0"),
+            ),
+        )
+        self.assertEqual(
+            [entry[0] for entry in converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT],
+            [
+                "build/bin/llama-imatrix",
+                "build/bin/llama-quantize",
+            ],
+        )
+        self.assertEqual(
+            _runtime_closure()["build_bin_namespace"],
+            [
+                "build/bin/libggml-base.so",
+                "build/bin/libggml-base.so.0",
+                "build/bin/libggml-base.so.0.22.0",
+                "build/bin/libggml-cpu.so",
+                "build/bin/libggml-cpu.so.0",
+                "build/bin/libggml-cpu.so.0.22.0",
+                "build/bin/libggml.so",
+                "build/bin/libggml.so.0",
+                "build/bin/libggml.so.0.22.0",
+                "build/bin/libllama-common.so",
+                "build/bin/libllama-common.so.0",
+                "build/bin/libllama-common.so.0.3.0",
+                "build/bin/libllama-quantize-impl.so",
+                "build/bin/libllama.so",
+                "build/bin/libllama.so.0",
+                "build/bin/libllama.so.0.3.0",
+                "build/bin/llama-imatrix",
+                "build/bin/llama-quantize",
+            ],
+        )
+        self.assertEqual(len(converter.LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT), 6)
+        self.assertEqual(len(converter.LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT), 10)
+        self.assertEqual(len(converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT), 2)
+
+    def test_exact_expanded_runtime_receipt_validates(self) -> None:
+        closure = _runtime_closure()
+        self.assertEqual(
+            converter._validate_runtime_library_receipt(closure, "fixture"),
+            closure,
+        )
+
+    def test_float_and_bool_byte_counts_are_refused(self) -> None:
+        for section, message in (
+            ("libraries", "library bytes must be an integer"),
+            ("executables", "executable bytes must be an integer"),
+        ):
+            baseline = _runtime_closure()
+            entries = baseline[section]
+            self.assertIsInstance(entries, list)
+            expected = entries[0]["bytes"]
+            for value in (float(expected), True):
+                changed = copy.deepcopy(baseline)
+                changed[section][0]["bytes"] = value
+                with (
+                    self.subTest(section=section, value=value),
+                    self.assertRaisesRegex(converter.ConversionRefused, message),
+                ):
+                    converter._validate_runtime_library_receipt(changed, "fixture")
+
+    def test_root_namespace_and_symlink_edges_are_exact(self) -> None:
+        for mutate, message in (
+            (
+                lambda value: value.update({"root": "/different/llama.cpp"}),
+                "root changed",
+            ),
+            (
+                lambda value: value["build_bin_namespace"].append("build/bin/libggml-cuda.so"),
+                "namespace changed",
+            ),
+            (
+                lambda value: value["symlinks"][0].update({"target": "other.so"}),
+                "symlink edge changed",
+            ),
+        ):
+            closure = copy.deepcopy(_runtime_closure())
+            mutate(closure)
+            with self.assertRaisesRegex(converter.ConversionRefused, message):
+                converter._validate_runtime_library_receipt(closure, "fixture")
+
+    def test_tool_identity_must_match_closure_executable(self) -> None:
+        closure = _runtime_closure()
+        for relative, size, digest in converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT:
+            identity = {
+                "path": str(converter.LLAMA_CPP_ROOT / relative),
+                "bytes": size,
+                "digest": digest,
+                "mode": "0o755",
+            }
+            converter._bind_runtime_executable_identity(
+                identity,
+                closure,
+                relative,
+                "fixture tool",
+            )
+            changed = dict(identity)
+            changed["digest"] = _digest("9")
+            with self.assertRaisesRegex(
+                converter.ConversionRefused,
+                "differs from runtime closure",
+            ):
+                converter._bind_runtime_executable_identity(
+                    changed,
+                    closure,
+                    relative,
+                    "fixture tool",
+                )
+
+
 class StaticSafetyTests(unittest.TestCase):
     def test_wrapper_contains_no_shell_true_or_dynamic_code_execution(self) -> None:
         source = Path(converter.__file__).read_text(encoding="utf-8")
@@ -951,6 +1701,29 @@ class StaticSafetyTests(unittest.TestCase):
                     if keyword.arg == "shell":
                         self.assertIsInstance(keyword.value, ast.Constant)
                         self.assertIs(keyword.value.value, False)
+
+    def test_alternate_llama_cpp_root_is_refused_before_tool_inspection(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
+            root = Path(temporary)
+            checkout = root / "llama.cpp"
+            checkout.mkdir()
+            request = converter.ConversionRequest(
+                training_run=root,
+                training_dataset=root,
+                source_corpus=root / "source",
+                base=root,
+                llama_cpp=checkout,
+                converter=checkout / "convert_hf_to_gguf.py",
+                quantizer=checkout / "build/bin/llama-quantize",
+                output_bundle=root / "out",
+                quantization="Q8_0",
+                max_input_tokens=1024,
+            )
+            with self.assertRaisesRegex(
+                converter.ConversionRefused,
+                "must resolve exactly",
+            ):
+                converter._toolchain_identity(request)
 
     def test_toolchain_requires_exact_paths_revision_and_clean_tree(self) -> None:
         with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
@@ -984,11 +1757,40 @@ class StaticSafetyTests(unittest.TestCase):
                     return f"{converter.LLAMA_CPP_REVISION}\n".encode()
                 return b""
 
+            runtime_identity = _runtime_closure(root=checkout.resolve())
+            quantizer_identity = evaluator.file_identity(quantizer_path, "fixture quantizer")
+            runtime_executables = runtime_identity["executables"]
+            self.assertIsInstance(runtime_executables, list)
+            quantizer_closure = next(
+                entry
+                for entry in runtime_executables
+                if entry["path"] == "build/bin/llama-quantize"
+            )
+            quantizer_closure.update(
+                {
+                    "bytes": quantizer_identity["bytes"],
+                    "digest": quantizer_identity["digest"],
+                    "mode": "0700",
+                }
+            )
             with (
+                mock.patch.object(converter, "LLAMA_CPP_ROOT", checkout.resolve()),
+                mock.patch.object(
+                    converter,
+                    "_assert_llama_python_import_surface",
+                ) as import_surface,
                 mock.patch.object(converter.shutil, "which", return_value=str(git)),
                 mock.patch.object(converter, "_read_only_command", side_effect=git_result),
+                mock.patch.object(
+                    converter,
+                    "_runtime_library_closure",
+                    return_value=runtime_identity,
+                ) as runtime_closure,
             ):
                 identity = converter._toolchain_identity(request)
             self.assertEqual(identity["revision"], converter.LLAMA_CPP_REVISION)
             self.assertEqual(identity["converter"]["path"], str(converter_path.resolve()))
             self.assertEqual(identity["quantizer"]["path"], str(quantizer_path.resolve()))
+            self.assertEqual(identity["runtime_libraries"], runtime_identity)
+            import_surface.assert_called_once_with(checkout.resolve())
+            runtime_closure.assert_called_once_with(checkout.resolve())
