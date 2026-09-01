@@ -1,0 +1,101 @@
+{
+  "schema": "microtensor.code.normalized-training-preflight.v1",
+  "created_at_utc": "2026-09-01T12:59:03Z",
+  "state": "complete_before_any_optimizer_step",
+  "experiment_id": "code-historical7730-normalized-r64-e2-b1ga16-seed92-v7",
+  "parent_declaration": {
+    "path": "training/experiment_specs/code-historical7730-normalized-v7-training.json",
+    "commit": "3438aec07c2c175f43bd4c31495e11610a96bcf2",
+    "bytes": 13628,
+    "sha256": "sha256:18d0a52f504849699ff8600aa38b44783636de06719761dbd79efe63ade06a2d",
+    "public_raw_readback_byte_equal": true
+  },
+  "training_code": {
+    "commit": "aba32e9739f72ed6d1968980b51826345a4536df",
+    "tree": "81bd17b691b549017d99bca6872c3bb9d0c89a87",
+    "worktree": "/tmp/mt92-normalized-code-aba32e9",
+    "worktree_status": "clean",
+    "normalized_preparer_sha256": "sha256:dcfc2e4d6ffd4a362b360392b5452e4dc8339e99a63053b7262f16aa28da75b1",
+    "trainer_sha256": "sha256:9d7d2837e0dccd1d8172652a4796d0ffa983cfcfa7a247f3c252fb59cc1ad37b",
+    "public_raw_readback_byte_equal": true
+  },
+  "dataset": {
+    "path": "/dev/shm/microtensor-code/dataset-historical7730-normalized-seed92-h0-v7",
+    "profile": "historical7730-normalized-v1",
+    "schema": "microtensor.code.prepared.historical-normalized.v1",
+    "source_examples": 8000,
+    "train_examples": 7730,
+    "holdout_examples": 0,
+    "excluded_examples": 270,
+    "files": {
+      "excluded-refs.json": {
+        "bytes": 3184,
+        "sha256": "sha256:03859ad7b36efe69a3a202ad203697490c50de810a2ff51e00d2abb32d96f35d"
+      },
+      "holdout.jsonl": {
+        "bytes": 0,
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "manifest.json": {
+        "bytes": 3209,
+        "sha256": "sha256:6496d2b3e8aa125f430227061255f430d92fd667f07f2fa62c1e1c83de51ed5f"
+      },
+      "train.jsonl": {
+        "bytes": 15681824,
+        "sha256": "sha256:10fd0cc986802fc78e5ac39384fab1f109401a95fcec1af5e2ce9c3f0efa4e03"
+      }
+    },
+    "exact_source_replay": {
+      "python_3_11_14": "passed",
+      "python_3_12_3": "passed",
+      "results_identical": true,
+      "corpus_or_generated_code_executed": false
+    }
+  },
+  "source_corpus": {
+    "path": "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+    "bytes": 19023989,
+    "sha256": "sha256:eb76adcaabdd11c9ce0005c22e50a8530397c32127515a4461b1340e77e2d4b5",
+    "canonical_sha256": "sha256:18fad3468cdd409b39a4786a982c098e1378445083e913e9a215669f0acbebdc"
+  },
+  "base_model": {
+    "path": "/dev/shm/microtensor-code/base-qwen3-06b",
+    "identity": "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca",
+    "required_bytes": 1519182365,
+    "model_safetensors_sha256": "sha256:f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
+    "tokenizer_json_sha256": "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+  },
+  "runtime": {
+    "python": "/tmp/mt-train-venv/bin/python",
+    "python_resolved": "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11",
+    "python_sha256": "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e",
+    "cuda": "13.0",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "gpu_uuid": "GPU-63d76726-6ced-309c-ca4c-42600bd352c1",
+    "gpu_capability": [12, 0],
+    "bf16_supported": true,
+    "tmpfs_free_bytes": 15087538176,
+    "trainer_minimum_tmpfs_free_bytes": 12884901888
+  },
+  "optimizer_plan": {
+    "batches_per_epoch": 7730,
+    "updates_per_epoch": 484,
+    "epochs": 2,
+    "total_updates": 968,
+    "warmup_updates": 48
+  },
+  "output": {
+    "path": "/dev/shm/microtensor-code/runs/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7",
+    "observed_absent": true,
+    "resume": false,
+    "retry": false
+  },
+  "authorization_boundary": {
+    "starts_training_only": true,
+    "submission": false,
+    "chain_transaction": false,
+    "wandb_upload": false,
+    "artifact_publication": false
+  },
+  "preflight_result": "approved_to_start_exact_declared_training_once"
+}
