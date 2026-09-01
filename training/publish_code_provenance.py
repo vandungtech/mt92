@@ -48,6 +48,7 @@ TRACK: Final[str] = "code"
 HARDWARE_CLASS: Final[str] = "mt-3g"
 BASE_MODEL: Final[str] = candidate.QWEN3_BASE_MODEL
 CORPUS_VERSION: Final[str] = historical.CORPUS_VERSION
+CURRENT_TRAINING_SCHEMA: Final[str] = "microtensor.code.training.v4"
 TRAINING_SCHEMA: Final[str] = "microtensor.code.training.v5"
 NORMALIZED_TRAINING_SCHEMA: Final[str] = "microtensor.code.training.v6"
 CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v1"
@@ -57,7 +58,11 @@ OBSOLETE_CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conve
 CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v3"
 NORMALIZED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v4"
 NORMALIZED_CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v5"
+CURRENT_CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v6"
 IMATRIX_CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v2"
+CURRENT_IMATRIX_CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v3"
+CURRENT_CORPUS_PROFILE: Final[str] = "bigcodebench94"
+QWEN25_ARCHITECTURE: Final[str] = "qwen2"
 RUNTIME_LIBRARY_SCHEMA: Final[str] = "microtensor.code.llama-cpp-runtime-libraries.v1"
 LLAMA_CPP_ROOT: Final[Path] = Path("/tmp/llama.cpp")  # noqa: S108 - protocol-pinned root
 LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT: Final[tuple[tuple[str, str, int, str], ...]] = (
@@ -238,6 +243,9 @@ class PublicationRequest:
     llama_cpp: Path | None = None
     calibration_current_dataset: Path | None = None
     calibration_current_source_corpus: Path | None = None
+    converter_python: Path | None = None
+    calibration_aux_dataset: Path | None = None
+    calibration_aux_source_corpus: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -414,8 +422,11 @@ def _parse_metrics(
             raise CodeProvenanceError("training metrics record limit exceeded")
 
     updates = _positive_int(metadata.get("updates"), "training update count")
+    lineage_label = "current v4" if metadata.get("schema") == CURRENT_TRAINING_SCHEMA else "v5"
     if len(records) != updates + 1:
-        raise CodeProvenanceError("v5 final metrics must contain every update and one export event")
+        raise CodeProvenanceError(
+            f"{lineage_label} final metrics must contain every update and one export event"
+        )
     update_fields = frozenset(
         {
             "step",
@@ -451,14 +462,21 @@ def _parse_metrics(
     export = records[-1]
     expected_export = {"event": "export_selection", **dict(metadata["selection"])}
     if export != expected_export:
-        raise CodeProvenanceError("terminal export metric does not match the v5 selection receipt")
+        raise CodeProvenanceError(
+            f"terminal export metric does not match the {lineage_label} selection receipt"
+        )
     identity = {"bytes": len(raw), "digest": _digest_bytes(raw)}
     if identity["digest"] != metadata.get("metrics_digest"):
         raise CodeProvenanceError("training metrics digest changed")
     return tuple(records), identity
 
 
-def _validate_load_manifest(payload: Any, artifact: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_load_manifest(
+    payload: Any,
+    artifact: Mapping[str, Any],
+    *,
+    base_model: str = BASE_MODEL,
+) -> dict[str, Any]:
     manifest = dict(_mapping(payload, "load manifest"))
     _exact_keys(
         manifest,
@@ -473,7 +491,7 @@ def _validate_load_manifest(payload: Any, artifact: Mapping[str, Any]) -> dict[s
         or quantization not in gguf.SUPPORTED_QUANTIZATIONS
         or manifest.get("entrypoint") != artifact["entrypoint"]["path"]
         or manifest.get("preprocessing") != {"tokenizer": "tokenizer.json"}
-        or manifest.get("base_model") != BASE_MODEL
+        or manifest.get("base_model") != base_model
     ):
         raise CodeProvenanceError("load manifest does not match the pinned code GGUF contract")
     maximum = _mapping(manifest.get("max_input"), "load manifest max_input")
@@ -669,7 +687,12 @@ def _calibrated_converter_module() -> Any:
         "CALIBRATED_CONVERSION_SCHEMA": CALIBRATED_CONVERSION_SCHEMA,
         "NORMALIZED_CONVERSION_SCHEMA": NORMALIZED_CONVERSION_SCHEMA,
         "NORMALIZED_CALIBRATED_CONVERSION_SCHEMA": NORMALIZED_CALIBRATED_CONVERSION_SCHEMA,
+        "CURRENT_CALIBRATED_CONVERSION_SCHEMA": CURRENT_CALIBRATED_CONVERSION_SCHEMA,
         "CALIBRATION_SCHEMA": IMATRIX_CALIBRATION_SCHEMA,
+        "CURRENT_CALIBRATION_SCHEMA": CURRENT_IMATRIX_CALIBRATION_SCHEMA,
+        "CURRENT_TRAINING_SCHEMA": CURRENT_TRAINING_SCHEMA,
+        "CURRENT_CORPUS_PROFILE": CURRENT_CORPUS_PROFILE,
+        "QWEN25_ARCHITECTURE": QWEN25_ARCHITECTURE,
         "LLAMA_CPP_REVISION": LLAMA_CPP_REVISION,
         "ENTRYPOINT": "model.gguf",
         "LOAD_SPEC_NAME": "load-spec.json",
@@ -761,6 +784,51 @@ def _content_identity(value: Any, label: str, *, allow_empty: bool = False) -> d
     return identity
 
 
+def _stable_file_identity(value: Any, label: str) -> dict[str, Any]:
+    identity = dict(_mapping(value, label))
+    _content_identity(identity, label)
+    return identity
+
+
+def _converter_python_receipt_identity(value: Any, label: str) -> dict[str, Any]:
+    identity = dict(_mapping(value, label))
+    local_fields = frozenset(
+        {"path", "bytes", "digest", "device", "inode", "mode", "mtime_ns", "ctime_ns"}
+    )
+    portable_fields = frozenset({"path", "bytes", "digest", "mode"})
+    worker_fields = frozenset({"device", "inode", "mtime_ns", "ctime_ns"})
+    if frozenset(identity) == local_fields:
+        _stable_file_identity(identity, label)
+        portable = {field: identity[field] for field in portable_fields}
+        worker = {field: identity[field] for field in worker_fields}
+    else:
+        _exact_keys(identity, frozenset({"portable", "worker_observation"}), label)
+        portable = dict(_mapping(identity.get("portable"), f"{label} portable identity"))
+        worker = dict(_mapping(identity.get("worker_observation"), f"{label} worker observation"))
+        _exact_keys(portable, portable_fields, f"{label} portable identity")
+        _exact_keys(worker, worker_fields, f"{label} worker observation")
+        _content_identity(
+            {"bytes": portable.get("bytes"), "digest": portable.get("digest")},
+            f"{label} portable content identity",
+        )
+        path = portable.get("path")
+        mode = portable.get("mode")
+        if not isinstance(path, str) or not path or not Path(path).is_absolute():
+            raise CodeProvenanceError(f"{label} portable path must be absolute")
+        if not isinstance(mode, str) or re.fullmatch(r"0o[0-7]{3,4}", mode) is None:
+            raise CodeProvenanceError(f"{label} portable mode is malformed")
+        for field in worker_fields:
+            minimum = 1 if field == "inode" else 0
+            _nonnegative_int(worker.get(field), f"{label} worker {field}")
+            if int(worker[field]) < minimum:
+                raise CodeProvenanceError(f"{label} worker {field} is malformed")
+    return {"portable": portable, "worker_observation": worker}
+
+
+def _converter_python_for_replay(explicit: Path | None) -> Path:
+    return explicit if explicit is not None else Path(sys.executable).resolve(strict=True)
+
+
 def _tree_identity(value: Any, label: str) -> dict[str, Any]:
     tree = dict(_mapping(value, label))
     _exact_keys(tree, frozenset({"digest", "files", "total_bytes"}), label)
@@ -792,8 +860,26 @@ def _profile_contract(schema: Any) -> tuple[Any, str, str, str, str]:
     raise CodeProvenanceError("training lineage schema is not supported")
 
 
+def _lineage_base_model(training_lineage: Mapping[str, Any]) -> str:
+    schema = training_lineage.get("schema")
+    base = _mapping(training_lineage.get("base_snapshot"), "training base snapshot")
+    model = base.get("base_model")
+    expected = (
+        candidate.QWEN25_CODER_1_5B_BASE_MODEL
+        if schema == CURRENT_TRAINING_SCHEMA
+        else BASE_MODEL
+    )
+    if model != expected:
+        family = "Qwen2.5-Coder-1.5B" if schema == CURRENT_TRAINING_SCHEMA else "Qwen3"
+        raise CodeProvenanceError(f"training lineage is not bound to the pinned {family} base")
+    return expected
+
+
 def _conversion_schemas(training_lineage: Mapping[str, Any]) -> tuple[str, str]:
     schema = training_lineage.get("schema")
+    if schema == CURRENT_TRAINING_SCHEMA:
+        # There is deliberately no uncalibrated current conversion schema.
+        return "", CURRENT_CALIBRATED_CONVERSION_SCHEMA
     if schema == TRAINING_SCHEMA:
         return CONVERSION_SCHEMA, CALIBRATED_CONVERSION_SCHEMA
     if schema == NORMALIZED_TRAINING_SCHEMA:
@@ -806,6 +892,47 @@ def _expected_conversion_source(training_lineage: Mapping[str, Any]) -> dict[str
     receipt = _mapping(training_lineage.get("receipt"), "training lineage receipt")
     run = _mapping(training_lineage.get("run"), "training lineage run")
     merged = _mapping(run.get("merged"), "training merged tree")
+    if schema == CURRENT_TRAINING_SCHEMA:
+        metrics = _mapping(run.get("metrics"), "current training metrics")
+        source = _mapping(training_lineage.get("source_corpus"), "current source corpus")
+        source_file = _mapping(source.get("file"), "current source-corpus file")
+        prepared = _mapping(
+            training_lineage.get("prepared_dataset"), "current prepared dataset"
+        )
+        manifest_identity = _mapping(prepared.get("manifest"), "current prepared manifest")
+        train_identity = _mapping(prepared.get("train"), "current prepared train")
+        holdout_identity = _mapping(prepared.get("holdout"), "current prepared holdout")
+        manifest = _mapping(prepared.get("manifest_payload"), "current prepared manifest payload")
+        return {
+            "training_schema": CURRENT_TRAINING_SCHEMA,
+            "dataset_schema": candidate.DATASET_SCHEMA,
+            "corpus_profile": CURRENT_CORPUS_PROFILE,
+            "training_metadata_digest": _require_digest(
+                receipt.get("digest"), "training metadata digest"
+            ),
+            "training_metrics_digest": _require_digest(
+                metrics.get("digest"), "training metrics digest"
+            ),
+            "merged_tree_digest": _require_digest(merged.get("digest"), "merged tree digest"),
+            "source_corpus": {
+                "bytes": source_file.get("bytes"),
+                "digest": source_file.get("digest"),
+                "canonical_bytes": source.get("canonical_bytes"),
+                "canonical_digest": source.get("canonical_digest"),
+                "task_count": source.get("task_count"),
+                "refs_digest": source.get("refs_digest"),
+            },
+            "prepared_dataset": {
+                "manifest_digest": manifest_identity.get("digest"),
+                "train_digest": train_identity.get("digest"),
+                "holdout_digest": holdout_identity.get("digest"),
+                "train_examples": manifest.get("train_examples"),
+                "holdout_examples": manifest.get("holdout_examples"),
+            },
+            "base_snapshot": dict(
+                _mapping(training_lineage.get("base_snapshot"), "current base snapshot")
+            ),
+        }
     source = {
         "training_metadata_digest": _require_digest(
             receipt.get("digest"), "training metadata digest"
@@ -843,10 +970,163 @@ def _expected_conversion_source(training_lineage: Mapping[str, Any]) -> dict[str
     }
 
 
+def _validate_current_training_lineage_contract(
+    training_lineage: Mapping[str, Any], metadata: Mapping[str, Any]
+) -> str:
+    """Independently bind the exact current94/Qwen2.5-Coder-1.5B lineage."""
+
+    _exact_keys(
+        training_lineage,
+        frozenset(
+            {
+                "status",
+                "schema",
+                "receipt",
+                "source_corpus",
+                "prepared_dataset",
+                "base_snapshot",
+                "run",
+                "conversion_binding_claim",
+            }
+        ),
+        "current training lineage",
+    )
+    if (
+        training_lineage.get("schema") != CURRENT_TRAINING_SCHEMA
+        or training_lineage.get("status") != "provided_and_validated"
+    ):
+        raise CodeProvenanceError("current training lineage is not completed and validated")
+    claim = training_lineage.get("conversion_binding_claim")
+    if not isinstance(claim, str) or not claim:
+        raise CodeProvenanceError("current training conversion-binding claim is incomplete")
+
+    receipt = _content_identity(training_lineage.get("receipt"), "current training receipt")
+    source = dict(_mapping(training_lineage.get("source_corpus"), "current source corpus"))
+    _exact_keys(
+        source,
+        frozenset(
+            {
+                "file",
+                "corpus_version",
+                "canonical_bytes",
+                "canonical_digest",
+                "task_count",
+                "refs_digest",
+            }
+        ),
+        "current source corpus",
+    )
+    source_file = _content_identity(source.get("file"), "current source-corpus file")
+    if source_file != {
+        "bytes": gguf.CURRENT94_PUBLIC_CORPUS_BYTES,
+        "digest": gguf.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+    }:
+        raise CodeProvenanceError("current source is not the exact current94 raw response")
+    if (
+        source.get("corpus_version") != candidate.CORPUS_VERSION
+        or source.get("canonical_digest") != candidate.PUBLIC_CORPUS_CANONICAL_DIGEST
+        or source.get("task_count") != candidate.EXPECTED_COUNTS["train"]
+    ):
+        raise CodeProvenanceError("current source-corpus replay identity changed")
+    _positive_int(source.get("canonical_bytes"), "current source canonical bytes")
+    _require_digest(source.get("refs_digest"), "current source refs digest")
+
+    prepared = dict(
+        _mapping(training_lineage.get("prepared_dataset"), "current prepared dataset")
+    )
+    _exact_keys(
+        prepared,
+        frozenset({"manifest", "train", "holdout", "manifest_payload"}),
+        "current prepared dataset",
+    )
+    manifest_identity = _content_identity(prepared.get("manifest"), "current manifest identity")
+    train_identity = _content_identity(prepared.get("train"), "current train identity")
+    holdout_identity = _content_identity(
+        prepared.get("holdout"), "current holdout identity", allow_empty=True
+    )
+    manifest = dict(_mapping(prepared.get("manifest_payload"), "current prepared manifest"))
+    _exact_keys(manifest, candidate.PREPARED_MANIFEST_KEYS, "current prepared manifest")
+    required_manifest = {
+        "schema": candidate.DATASET_SCHEMA,
+        "track": TRACK,
+        "hardware_class": HARDWARE_CLASS,
+        "corpus_version": candidate.CORPUS_VERSION,
+        "corpus_canonical_digest": candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+        "source_file_digest": gguf.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+        "split_algorithm": candidate.SPLIT_ALGORITHM,
+        "seed": gguf.DIAGNOSTIC_SEED,
+        "train_examples": candidate.EXPECTED_COUNTS["train"],
+        "holdout_examples": 0,
+        "holdout_file_digest": candidate.digest_bytes(b""),
+        "target_construction": "inputs.code_prompt + gold",
+        "quality_claim": candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+    }
+    for field, expected in required_manifest.items():
+        if manifest.get(field) != expected:
+            raise CodeProvenanceError(f"current prepared manifest field {field!r} changed")
+    if (
+        train_identity["digest"] != manifest.get("train_file_digest")
+        or holdout_identity["digest"] != manifest.get("holdout_file_digest")
+        or holdout_identity["bytes"] != 0
+    ):
+        raise CodeProvenanceError("current prepared train/holdout identity changed")
+
+    base = dict(_mapping(training_lineage.get("base_snapshot"), "current base snapshot"))
+    _lineage_base_model(training_lineage)
+    if base.get("required_bytes") != candidate.QWEN25_CODER_1_5B_BASE_REQUIRED_BYTES:
+        raise CodeProvenanceError("current base snapshot byte accounting changed")
+    if not _mapping(base.get("files"), "current base snapshot files"):
+        raise CodeProvenanceError("current base snapshot files are incomplete")
+
+    run = dict(_mapping(training_lineage.get("run"), "current training run"))
+    _exact_keys(
+        run,
+        frozenset({"kind", "training_metadata", "metrics", "adapter", "merged"}),
+        "current training run",
+    )
+    if run.get("kind") != "merged":
+        raise CodeProvenanceError("current training lineage is not a completed merged run")
+    run_metadata = _content_identity(
+        run.get("training_metadata"), "current deep-validated training metadata"
+    )
+    if run_metadata != receipt:
+        raise CodeProvenanceError("current training metadata differs from deep validation")
+    metrics = _content_identity(run.get("metrics"), "current deep-validated metrics")
+    _tree_identity(run.get("adapter"), "current training adapter tree")
+    _tree_identity(run.get("merged"), "current training merged tree")
+
+    required_metadata = {
+        "schema": CURRENT_TRAINING_SCHEMA,
+        "status": "complete",
+        "run_kind": "final_all_public",
+        "hotkey": HOTKEY,
+        "track": TRACK,
+        "hardware_class": HARDWARE_CLASS,
+        "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+        "corpus_version": candidate.CORPUS_VERSION,
+        "quality_claim": gguf.CURRENT94_FINAL_TRAINING_QUALITY_CLAIM,
+    }
+    for field, expected in required_metadata.items():
+        if metadata.get(field) != expected:
+            raise CodeProvenanceError(f"current training metadata field {field!r} changed")
+    _json_exact(metadata.get("base_snapshot"), base, "current training base snapshot")
+    dataset = _mapping(metadata.get("dataset"), "current training metadata dataset")
+    _exact_keys(dataset, frozenset({"manifest", "manifest_digest"}), "current metadata dataset")
+    _json_exact(dataset.get("manifest"), manifest, "current metadata prepared manifest")
+    if dataset.get("manifest_digest") != manifest_identity["digest"]:
+        raise CodeProvenanceError("current metadata prepared-manifest digest changed")
+    if metadata.get("metrics_digest") != metrics["digest"]:
+        raise CodeProvenanceError("current metadata metrics digest changed")
+    return CURRENT_TRAINING_SCHEMA
+
+
 def _validate_training_lineage_contract(
     training_lineage: Mapping[str, Any], metadata: Mapping[str, Any]
 ) -> str:
-    """Independently enforce the publishable v5/v6 lineage envelope."""
+    """Independently enforce the publishable v4/v5/v6 lineage envelope."""
+
+    if training_lineage.get("schema") == CURRENT_TRAINING_SCHEMA:
+        return _validate_current_training_lineage_contract(training_lineage, metadata)
 
     _exact_keys(
         training_lineage,
@@ -1329,25 +1609,33 @@ def _validate_calibrated_command(
     common_environment: Mapping[str, str] | None,
     minimum_start: int,
     maximum_log_bytes: int,
+    executed_object: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, str], int]:
     command = _mapping(value, f"{name} command")
+    expected_fields = {
+        "name",
+        "argv",
+        "cwd_role",
+        "environment",
+        "returncode",
+        "started_at_unix_ns",
+        "finished_at_unix_ns",
+        "stdout",
+        "stderr",
+    }
+    if executed_object is not None:
+        expected_fields.add("launch")
     _exact_keys(
         command,
-        frozenset(
-            {
-                "name",
-                "argv",
-                "cwd_role",
-                "environment",
-                "returncode",
-                "started_at_unix_ns",
-                "finished_at_unix_ns",
-                "stdout",
-                "stderr",
-            }
-        ),
+        frozenset(expected_fields),
         f"{name} command",
     )
+    if executed_object is not None:
+        launch = _mapping(command.get("launch"), f"{name} launch")
+        _exact_keys(launch, frozenset({"method", "executed_object"}), f"{name} launch")
+        if launch.get("method") != "proc-self-fd":
+            raise CodeProvenanceError(f"{name} launch method changed")
+        _json_exact(launch.get("executed_object"), executed_object, f"{name} executed object")
     exact_argv = _sequence(command.get("argv"), f"{name} command argv")
     if command.get("name") != name or list(exact_argv) != list(argv):
         raise CodeProvenanceError(f"{name} command argv changed")
@@ -1376,6 +1664,7 @@ def _validate_calibrated_commands(
     common_environment: Mapping[str, str] | None,
     minimum_start: int,
     maximum_log_bytes: int,
+    executed_object: Mapping[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, str], int]:
     commands = list(_sequence(value, f"{cwd_role} commands"))
     if len(commands) != len(expected):
@@ -1391,6 +1680,7 @@ def _validate_calibrated_commands(
             common_environment=environment,
             minimum_start=finished,
             maximum_log_bytes=maximum_log_bytes,
+            executed_object=(executed_object if name == "convert_f16" else None),
         )
     if environment is None:
         raise CodeProvenanceError(f"{cwd_role} commands are empty")
@@ -1407,6 +1697,7 @@ def _validate_determinism_replay(
     f16_digest: str,
     imatrix_digest: str,
     artifact: Mapping[str, Any],
+    executed_object: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     replay = dict(_mapping(value, "determinism replay"))
     _exact_keys(
@@ -1452,6 +1743,7 @@ def _validate_determinism_replay(
         common_environment=common_environment,
         minimum_start=minimum_start,
         maximum_log_bytes=maximum_log_bytes,
+        executed_object=executed_object,
     )
     return replay
 
@@ -1467,12 +1759,14 @@ def _validate_calibrated_v3(
     load_manifest: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     module = _calibrated_converter_module()
+    current = training_lineage.get("schema") == CURRENT_TRAINING_SCHEMA
+    base_model = _lineage_base_model(training_lineage)
     _generic_schema, expected_conversion_schema = _conversion_schemas(training_lineage)
-    conversion_label = (
-        "conversion-v3"
-        if expected_conversion_schema == CALIBRATED_CONVERSION_SCHEMA
-        else "conversion-v5"
-    )
+    conversion_label = {
+        CALIBRATED_CONVERSION_SCHEMA: "conversion-v3",
+        NORMALIZED_CALIBRATED_CONVERSION_SCHEMA: "conversion-v5",
+        CURRENT_CALIBRATED_CONVERSION_SCHEMA: "conversion-v6",
+    }[expected_conversion_schema]
     if (
         request.llama_cpp is None
         or request.calibration_current_dataset is None
@@ -1482,6 +1776,21 @@ def _validate_calibrated_v3(
             f"{conversion_label} requires --llama-cpp, --calibration-current-dataset, "
             "and --calibration-current-source-corpus"
         )
+    auxiliary = (request.calibration_aux_dataset, request.calibration_aux_source_corpus)
+    if current and (
+        request.converter_python is None
+        or not all(value is not None for value in auxiliary)
+    ):
+        raise CodeProvenanceError(
+            "conversion-v6 requires --converter-python, --calibration-aux-dataset, "
+            "and --calibration-aux-source-corpus"
+        )
+    if not current and any(value is not None for value in auxiliary):
+        raise CodeProvenanceError("legacy calibrated conversions forbid auxiliary inputs")
+    if any(value is not None for value in auxiliary) and not all(
+        value is not None for value in auxiliary
+    ):
+        raise CodeProvenanceError("auxiliary calibration inputs must be supplied as a pair")
     if load_manifest.get("quantization") != "Q4_K_M":
         raise CodeProvenanceError(f"{conversion_label} requires an exact Q4_K_M load manifest")
     try:
@@ -1492,12 +1801,14 @@ def _validate_calibrated_v3(
         raise CodeProvenanceError(f"llama.cpp checkout must resolve exactly to {LLAMA_CPP_ROOT}")
 
     bundle = _strict_calibrated_bundle(request, module)
+    converter_python = _converter_python_for_replay(request.converter_python)
     conversion_request = module.ConversionRequest(
         training_run=request.training_run,
         training_dataset=request.training_dataset,
         source_corpus=request.source_corpus,
         base=request.base,
         llama_cpp=llama_cpp_root,
+        converter_python=converter_python,
         converter=llama_cpp_root / "convert_hf_to_gguf.py",
         quantizer=llama_cpp_root / "build" / "bin" / "llama-quantize",
         output_bundle=bundle,
@@ -1506,15 +1817,31 @@ def _validate_calibrated_v3(
         calibration_profile=module.CALIBRATION_PROFILE,
         calibration_current_dataset=request.calibration_current_dataset,
         calibration_current_source_corpus=request.calibration_current_source_corpus,
+        calibration_aux_dataset=request.calibration_aux_dataset,
+        calibration_aux_source_corpus=request.calibration_aux_source_corpus,
         imatrix_tool=llama_cpp_root / "build" / "bin" / "llama-imatrix",
     )
     try:
-        toolchain = dict(_mapping(module._toolchain_identity(conversion_request), "toolchain"))
+        toolchain = dict(
+            _mapping(
+                module._toolchain_identity(
+                    conversion_request,
+                    include_converter_python=current,
+                ),
+                "toolchain",
+            )
+        )
         rows, material_value = module._load_calibration_material(conversion_request)
         material = dict(_mapping(material_value, "calibration replay material"))
+        if current:
+            module._validate_calibration_material_binding(material, training_lineage)
+            module._validate_load_manifest_for_lineage(load_manifest, artifact, training_lineage)
         model_metadata = dict(
             _mapping(
-                module._validate_calibrated_model_metadata(request.artifact / module.ENTRYPOINT),
+                module._validate_calibrated_model_metadata(
+                    request.artifact / module.ENTRYPOINT,
+                    **({"architecture": module.QWEN25_ARCHITECTURE} if current else {}),
+                ),
                 "calibrated model metadata",
             )
         )
@@ -1532,6 +1859,7 @@ def _validate_calibrated_v3(
         raise CodeProvenanceError("calibration replay profile changed")
     source = dict(_mapping(material.get("source"), "calibration replay source"))
     selection = dict(_mapping(material.get("selection"), "calibration replay selection"))
+    pool_prefix = "auxiliary" if current else "historical"
     _exact_keys(
         selection,
         frozenset(
@@ -1542,25 +1870,25 @@ def _validate_calibrated_v3(
                 "current_refs_digest",
                 "diagnostic_rows_excluded",
                 "diagnostic_refs_digest",
-                "historical_pool_rows",
-                "historical_selected_rows",
-                "historical_selected_refs_digest",
+                f"{pool_prefix}_pool_rows",
+                f"{pool_prefix}_selected_rows",
+                f"{pool_prefix}_selected_refs_digest",
                 "total_rows",
             }
         ),
         "calibration replay selection",
     )
     historical_pool_rows = (
-        historical.EXPECTED_COUNTS["train"]
-        if training_lineage.get("schema") == TRAINING_SCHEMA
-        else normalized_historical.EXPECTED_TRAIN_EXAMPLES
+        normalized_historical.EXPECTED_TRAIN_EXAMPLES
+        if current or training_lineage.get("schema") == NORMALIZED_TRAINING_SCHEMA
+        else historical.EXPECTED_COUNTS["train"]
     )
     expected_counts = {
         "seed": module.CALIBRATION_SEED,
         "current_rows": module.CALIBRATION_CURRENT_ROWS,
         "diagnostic_rows_excluded": module.CALIBRATION_DIAGNOSTIC_ROWS,
-        "historical_pool_rows": historical_pool_rows,
-        "historical_selected_rows": module.CALIBRATION_HISTORICAL_ROWS,
+        f"{pool_prefix}_pool_rows": historical_pool_rows,
+        f"{pool_prefix}_selected_rows": module.CALIBRATION_HISTORICAL_ROWS,
         "total_rows": module.CALIBRATION_TOTAL_ROWS,
     }
     if selection.get("algorithm") != module.CALIBRATION_SELECTION_ALGORITHM:
@@ -1574,7 +1902,7 @@ def _validate_calibrated_v3(
     for field in (
         "current_refs_digest",
         "diagnostic_refs_digest",
-        "historical_selected_refs_digest",
+        f"{pool_prefix}_selected_refs_digest",
     ):
         _require_digest(selection.get(field), f"calibration selection {field}")
     corpus_identity = _rendered_calibration_identity(rows, module)
@@ -1605,12 +1933,14 @@ def _validate_calibrated_v3(
         "imatrix calibration receipt",
     )
     expected_identity = {
-        "schema": IMATRIX_CALIBRATION_SCHEMA,
+        "schema": (
+            CURRENT_IMATRIX_CALIBRATION_SCHEMA if current else IMATRIX_CALIBRATION_SCHEMA
+        ),
         "status": "complete",
         "profile": module.CALIBRATION_PROFILE,
         "track": TRACK,
         "hardware_class": HARDWARE_CLASS,
-        "base_model": BASE_MODEL,
+        "base_model": base_model,
         "llama_cpp_revision": LLAMA_CPP_REVISION,
     }
     if any(calibration.get(key) != value for key, value in expected_identity.items()):
@@ -1637,21 +1967,68 @@ def _validate_calibrated_v3(
     }
     _json_exact(rendering, expected_rendering, "calibration rendering")
 
-    _exact_keys(
-        toolchain,
-        frozenset({"root", "revision", "converter", "imatrix", "quantizer", "runtime_libraries"}),
-        "replayed llama.cpp toolchain",
+    legacy_toolchain_keys = frozenset(
+        {"root", "revision", "converter", "imatrix", "quantizer", "runtime_libraries"}
     )
+    interpreter_toolchain_keys = legacy_toolchain_keys | {"converter_python"}
+    if frozenset(toolchain) not in {legacy_toolchain_keys, interpreter_toolchain_keys}:
+        _exact_keys(toolchain, interpreter_toolchain_keys, "replayed llama.cpp toolchain")
+    if current and frozenset(toolchain) != interpreter_toolchain_keys:
+        raise CodeProvenanceError("conversion-v6 replay lacks converter Python attestation")
     if toolchain.get("root") != str(llama_cpp_root):
         raise CodeProvenanceError("replayed llama.cpp root changed")
     if toolchain.get("revision") != LLAMA_CPP_REVISION:
         raise CodeProvenanceError("replayed llama.cpp revision changed")
+    converter_python_attestation: dict[str, Any] | None = None
+    if "converter_python" in toolchain:
+        declared_interpreter = dict(
+            _mapping(toolchain.get("converter_python"), "converter Python identity")
+        )
+        stable_file_keys = frozenset(
+            {"path", "bytes", "digest", "device", "inode", "mode", "mtime_ns", "ctime_ns"}
+        )
+        if current:
+            _exact_keys(
+                declared_interpreter,
+                stable_file_keys,
+                "current converter Python identity",
+            )
+        converter_python_attestation = _converter_python_receipt_identity(
+            declared_interpreter, "converter Python identity"
+        )
+        interpreter_path = declared_interpreter.get("path")
+        if not isinstance(interpreter_path, str) or not interpreter_path:
+            raise CodeProvenanceError("converter Python identity has no absolute path")
+        try:
+            supplied_interpreter = converter_python.resolve(strict=True)
+            replayed_interpreter = Path(interpreter_path).resolve(strict=True)
+        except OSError as exc:
+            raise CodeProvenanceError(f"converter Python path is unavailable: {exc}") from exc
+        if supplied_interpreter != replayed_interpreter:
+            raise CodeProvenanceError("converter Python path differs from explicit authorization")
     declared_tools = _mapping(calibration.get("toolchain"), "calibration toolchain")
+    calibration_toolchain_keys = frozenset(
+        {"converter_digest", "imatrix_digest", "quantizer_digest", "runtime_libraries"}
+    )
+    if current:
+        calibration_toolchain_keys |= {"converter_python"}
     _exact_keys(
         declared_tools,
-        frozenset({"converter_digest", "imatrix_digest", "quantizer_digest", "runtime_libraries"}),
+        calibration_toolchain_keys,
         "calibration toolchain",
     )
+    if current:
+        worker_interpreter_identity = _converter_python_receipt_identity(
+            declared_tools.get("converter_python"),
+            "calibration conversion-time converter Python identity",
+        )
+        _json_exact(
+            worker_interpreter_identity["portable"],
+            converter_python_attestation["portable"],
+            "calibration portable converter Python identity",
+        )
+    else:
+        worker_interpreter_identity = None
     tool_digests: dict[str, str] = {}
     actual_runtime_libraries = _validate_runtime_libraries(toolchain.get("runtime_libraries"))
     _validate_runtime_libraries(
@@ -1678,10 +2055,22 @@ def _validate_calibrated_v3(
     converter_path = str(_mapping(toolchain["converter"], "converter identity")["path"])
     imatrix_path = str(_mapping(toolchain["imatrix"], "imatrix identity")["path"])
     quantizer_path = str(_mapping(toolchain["quantizer"], "quantizer identity")["path"])
+    converter_prefix = (
+        (str(converter_python_attestation["portable"]["path"]), converter_path)
+        if converter_python_attestation is not None and request.converter_python is not None
+        else (converter_path,)
+    )
     command_argv = (
         (
             "convert_f16",
-            (converter_path, str(merged_root), "--outfile", module.F16_NAME, "--outtype", "f16"),
+            (
+                *converter_prefix,
+                str(merged_root),
+                "--outfile",
+                module.F16_NAME,
+                "--outtype",
+                "f16",
+            ),
         ),
         (
             "calibrate_imatrix",
@@ -1744,6 +2133,7 @@ def _validate_calibrated_v3(
         common_environment=None,
         minimum_start=0,
         maximum_log_bytes=module.MAX_CAPTURED_LOG_BYTES,
+        executed_object=worker_interpreter_identity,
     )
 
     intermediate = _mapping(calibration.get("intermediate"), "calibration intermediate")
@@ -1831,6 +2221,7 @@ def _validate_calibrated_v3(
         f16_digest=f16_digest,
         imatrix_digest=imatrix_digest,
         artifact=artifact,
+        executed_object=worker_interpreter_identity,
     )
 
     conversion_receipt = dict(receipt)
@@ -1858,7 +2249,7 @@ def _validate_calibrated_v3(
         "status": "complete",
         "track": TRACK,
         "hardware_class": HARDWARE_CLASS,
-        "base_model": BASE_MODEL,
+        "base_model": base_model,
         "llama_cpp_revision": LLAMA_CPP_REVISION,
     }
     if any(
@@ -1887,20 +2278,33 @@ def _validate_calibrated_v3(
     if conversion_receipt.get("calibration_receipt_digest") != calibration_digest:
         raise CodeProvenanceError(f"{conversion_label} calibration receipt binding changed")
     execution = _mapping(conversion_receipt.get("conversion"), f"{conversion_label} execution")
+    execution_keys = frozenset(
+        {
+            "converter_digest",
+            "imatrix_digest",
+            "quantizer_digest",
+            "runtime_libraries",
+            "commands",
+            "determinism_replay",
+        }
+    )
+    if current:
+        execution_keys |= {"converter_python"}
     _exact_keys(
         execution,
-        frozenset(
-            {
-                "converter_digest",
-                "imatrix_digest",
-                "quantizer_digest",
-                "runtime_libraries",
-                "commands",
-                "determinism_replay",
-            }
-        ),
+        execution_keys,
         f"{conversion_label} execution",
     )
+    if current:
+        conversion_time_interpreter = _converter_python_receipt_identity(
+            execution.get("converter_python"),
+            f"{conversion_label} conversion-time converter Python identity",
+        )
+        _json_exact(
+            conversion_time_interpreter,
+            worker_interpreter_identity,
+            f"{conversion_label} worker-local converter Python observation",
+        )
     for field, expected_digest in tool_digests.items():
         if execution.get(field) != expected_digest:
             raise CodeProvenanceError(f"{conversion_label} {field} changed")
@@ -1915,6 +2319,7 @@ def _validate_calibrated_v3(
         common_environment=command_environment,
         minimum_start=0,
         maximum_log_bytes=module.MAX_CAPTURED_LOG_BYTES,
+        executed_object=worker_interpreter_identity,
     )
     conversion_replay = _validate_determinism_replay(
         execution.get("determinism_replay"),
@@ -1925,14 +2330,29 @@ def _validate_calibrated_v3(
         f16_digest=f16_digest,
         imatrix_digest=imatrix_digest,
         artifact=artifact,
+        executed_object=worker_interpreter_identity,
     )
     _json_exact(conversion_commands, primary_commands, "cross-receipt primary commands")
     _json_exact(conversion_replay, calibration_replay, "cross-receipt determinism replay")
     _forbid_raw_calibration_fields(calibration)
+    if current:
+        raise CodeProvenanceError(
+            "current conversion-v6/calibration-v3 publication requires a signed "
+            "external-worker execution and containment attestation verified by an "
+            "integrated verifier; local process evidence is insufficient and publication "
+            "is disabled"
+        )
     return conversion_receipt, {
         "identity": dict(calibration_identity),
-        "schema": IMATRIX_CALIBRATION_SCHEMA,
+        "schema": (
+            CURRENT_IMATRIX_CALIBRATION_SCHEMA if current else IMATRIX_CALIBRATION_SCHEMA
+        ),
         "claim": VALIDATED_CALIBRATION_CLAIM,
+        **(
+            {"converter_python": converter_python_attestation}
+            if current and converter_python_attestation is not None
+            else {}
+        ),
         "receipt": calibration,
     }
 
@@ -1981,16 +2401,23 @@ def _validate_gguf_diagnostic(
     load_manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     summary, identity = _diagnostic_files(path, "GGUF diagnostic")
-    expected_lineage_claim = (
-        gguf.NORMALIZED_LINEAGE_CLAIM
-        if training_lineage.get("schema") == NORMALIZED_TRAINING_SCHEMA
-        else gguf.LINEAGE_CLAIM
-    )
+    schema = training_lineage.get("schema")
+    if schema == CURRENT_TRAINING_SCHEMA:
+        expected_schema = gguf.SCHEMA_V2
+        expected_lineage_claim = gguf.CURRENT_OVERLAP_LINEAGE_CLAIM
+    else:
+        expected_schema = gguf.SCHEMA
+        expected_lineage_claim = (
+            gguf.NORMALIZED_LINEAGE_CLAIM
+            if schema == NORMALIZED_TRAINING_SCHEMA
+            else gguf.LINEAGE_CLAIM
+        )
+    base_model = _lineage_base_model(training_lineage)
     if (
-        summary.get("schema") != gguf.SCHEMA
+        summary.get("schema") != expected_schema
         or summary.get("track") != TRACK
         or summary.get("hardware_class") != HARDWARE_CLASS
-        or summary.get("base_model") != BASE_MODEL
+        or summary.get("base_model") != base_model
         or summary.get("quality_claim") != gguf.QUALITY_CLAIM
         or summary.get("lineage_claim") != expected_lineage_claim
         or summary.get("artifact") != artifact
@@ -2049,17 +2476,20 @@ def validate_publication(request: PublicationRequest) -> Publication:
         )
         if dict(lineage_run_metrics) != metrics_identity:
             raise CodeProvenanceError("training metrics bytes differ from the validated lineage")
+        base_model = _lineage_base_model(training_lineage)
         load_payload, _raw_load = _json_file(request.load_spec, "load manifest")
         quantization = load_payload.get("quantization")
         if not isinstance(quantization, str):
             raise CodeProvenanceError("load manifest quantization must be a string")
-        artifact = gguf.artifact_identity(
-            request.artifact,
-            entrypoint=str(load_payload.get("entrypoint", "")),
-            expected_digest=artifact_digest,
-            quantization=quantization,
-        )
-        load_manifest = _validate_load_manifest(load_payload, artifact)
+        artifact_options: dict[str, Any] = {
+            "entrypoint": str(load_payload.get("entrypoint", "")),
+            "expected_digest": artifact_digest,
+            "quantization": quantization,
+        }
+        if training_schema == CURRENT_TRAINING_SCHEMA:
+            artifact_options["expected_architecture"] = QWEN25_ARCHITECTURE
+        artifact = gguf.artifact_identity(request.artifact, **artifact_options)
+        load_manifest = _validate_load_manifest(load_payload, artifact, base_model=base_model)
     except CodeProvenanceError:
         raise
     except Exception as exc:
@@ -2069,10 +2499,21 @@ def validate_publication(request: PublicationRequest) -> Publication:
     conversion, conversion_raw = _json_file(request.conversion_receipt, "conversion receipt")
     conversion_schema = conversion.get("schema")
     generic_schema, calibrated_schema = _conversion_schemas(training_lineage)
+    if (
+        training_schema == CURRENT_TRAINING_SCHEMA
+        and conversion_schema != CURRENT_CALIBRATED_CONVERSION_SCHEMA
+    ):
+        raise CodeProvenanceError(
+            "conversion receipt schema crosses training lineages; current v4 requires "
+            "exact calibrated conversion-v6"
+        )
     calibrated_inputs = (
         request.llama_cpp,
+        request.converter_python,
         request.calibration_current_dataset,
         request.calibration_current_source_corpus,
+        request.calibration_aux_dataset,
+        request.calibration_aux_source_corpus,
     )
     if conversion_schema == generic_schema:
         if any(value is not None for value in calibrated_inputs):
@@ -2083,7 +2524,11 @@ def validate_publication(request: PublicationRequest) -> Publication:
             requirement = (
                 "calibrated conversion-v3"
                 if calibrated_schema == CALIBRATED_CONVERSION_SCHEMA
-                else "calibrated conversion-v5"
+                else (
+                    "calibrated conversion-v5"
+                    if calibrated_schema == NORMALIZED_CALIBRATED_CONVERSION_SCHEMA
+                    else "calibrated conversion-v6"
+                )
             )
             raise CodeProvenanceError(
                 f"Q4_K_M publication requires {requirement} and imatrix-v2 receipts"
@@ -2140,6 +2585,7 @@ def validate_publication(request: PublicationRequest) -> Publication:
         CALIBRATED_CONVERSION_SCHEMA,
         NORMALIZED_CONVERSION_SCHEMA,
         NORMALIZED_CALIBRATED_CONVERSION_SCHEMA,
+        CURRENT_CALIBRATED_CONVERSION_SCHEMA,
     }:
         raise CodeProvenanceError("conversion receipt schema crosses training lineages")
     else:
@@ -2184,7 +2630,7 @@ def _wandb_config(publication: Publication) -> dict[str, Any]:
         "mt_hotkey": HOTKEY,
         "mt_track": TRACK,
         "mt_class": HARDWARE_CLASS,
-        "mt_base_model": BASE_MODEL,
+        "mt_base_model": _lineage_base_model(publication.training_lineage),
         "mt_corpus_version": publication.training_metadata["corpus_version"],
         "mt_artifact_digest": publication.artifact["tree_digest"],
         "mt_finished_at": publication.finished_block,
@@ -3195,8 +3641,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--gguf-diagnostic", type=Path)
     parser.add_argument("--calibration-receipt", type=Path)
     parser.add_argument("--llama-cpp", type=Path)
+    parser.add_argument("--converter-python", type=Path)
     parser.add_argument("--calibration-current-dataset", type=Path)
     parser.add_argument("--calibration-current-source-corpus", type=Path)
+    parser.add_argument("--calibration-aux-dataset", type=Path)
+    parser.add_argument("--calibration-aux-source-corpus", type=Path)
     parser.add_argument("--payload-file", type=Path)
     parser.add_argument("--authorized-payload-digest")
     return parser
@@ -3218,8 +3667,11 @@ def main(argv: Sequence[str] | None = None, *, wandb_client: Any | None = None) 
         gguf_diagnostic=args.gguf_diagnostic,
         calibration_receipt=args.calibration_receipt,
         llama_cpp=args.llama_cpp,
+        converter_python=args.converter_python,
         calibration_current_dataset=args.calibration_current_dataset,
         calibration_current_source_corpus=args.calibration_current_source_corpus,
+        calibration_aux_dataset=args.calibration_aux_dataset,
+        calibration_aux_source_corpus=args.calibration_aux_source_corpus,
     )
     publication_outcome: WandbPublicationOutcome | None = None
     try:

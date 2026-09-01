@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import struct
 import subprocess
 import tempfile
@@ -28,6 +29,72 @@ def _digest(character: str) -> str:
 
 def _training_lineage(schema: str) -> dict[str, object]:
     source_digest = _digest("1")
+    if schema == converter.CURRENT_TRAINING_SCHEMA:
+        empty_digest = converter.candidate.digest_bytes(b"")
+        manifest = {
+            "schema": converter.candidate.DATASET_SCHEMA,
+            "track": converter.candidate.TRACK,
+            "hardware_class": converter.candidate.HARDWARE_CLASS,
+            "corpus_version": converter.candidate.CORPUS_VERSION,
+            "corpus_canonical_digest": converter.candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+            "source_file_digest": evaluator.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+            "split_algorithm": converter.candidate.SPLIT_ALGORITHM,
+            "seed": evaluator.DIAGNOSTIC_SEED,
+            "train_examples": converter.candidate.EXPECTED_COUNTS["train"],
+            "holdout_examples": 0,
+            "train_refs_digest": _digest("5"),
+            "holdout_refs_digest": converter.candidate._refs_digest([]),
+            "train_file_digest": _digest("3"),
+            "holdout_file_digest": empty_digest,
+            "target_construction": "inputs.code_prompt + gold",
+            "quality_claim": converter.candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        }
+        receipt = {"bytes": 1, "digest": _digest("a")}
+        return {
+            "status": "provided_and_validated",
+            "schema": schema,
+            "receipt": receipt,
+            "source_corpus": {
+                "file": {
+                    "bytes": evaluator.CURRENT94_PUBLIC_CORPUS_BYTES,
+                    "digest": evaluator.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+                },
+                "corpus_version": converter.candidate.CORPUS_VERSION,
+                "canonical_bytes": 100,
+                "canonical_digest": converter.candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+                "task_count": converter.candidate.EXPECTED_COUNTS["train"],
+                "refs_digest": _digest("6"),
+            },
+            "prepared_dataset": {
+                "manifest": {"bytes": 1, "digest": _digest("2")},
+                "train": {"bytes": 1, "digest": _digest("3")},
+                "holdout": {"bytes": 0, "digest": empty_digest},
+                "manifest_payload": manifest,
+            },
+            "base_snapshot": {
+                "base_model": converter.candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                "required_bytes": converter.candidate.QWEN25_CODER_1_5B_BASE_REQUIRED_BYTES,
+                "files": {},
+            },
+            "run": {
+                "kind": "merged",
+                "training_metadata": receipt,
+                "metrics": {"bytes": 1, "digest": _digest("7")},
+                "adapter": {"digest": _digest("8")},
+                "merged": {
+                    "digest": _digest("b"),
+                    "files": [
+                        {
+                            "path": "config.json",
+                            "bytes": 3,
+                            "digest": _digest("c"),
+                        }
+                    ],
+                },
+            },
+            "conversion_binding_claim": "fixture",
+        }
+
     if schema == evaluator.TRAINING_SCHEMA_V5:
         manifest = {
             "schema": historical_candidate.DATASET_SCHEMA,
@@ -142,7 +209,7 @@ def _runtime_closure(
     }
 
 
-def _gguf(file_type: int) -> bytes:
+def _gguf(file_type: int, *, architecture: str = "qwen3") -> bytes:
     def string(value: str) -> bytes:
         encoded = value.encode("utf-8")
         return struct.pack("<Q", len(encoded)) + encoded
@@ -155,7 +222,7 @@ def _gguf(file_type: int) -> bytes:
             struct.pack("<Q", 2),
             string("general.architecture"),
             struct.pack("<I", 8),
-            string("qwen3"),
+            string(architecture),
             string("general.file_type"),
             struct.pack("<I", 4),
             struct.pack("<I", file_type),
@@ -230,9 +297,9 @@ def _contract_gguf(
     return bytes(payload)
 
 
-def _f16_gguf() -> bytes:
+def _f16_gguf(*, architecture: str = "qwen3") -> bytes:
     return _contract_gguf(
-        [("general.architecture", 8, "qwen3"), ("general.file_type", 4, 1)],
+        [("general.architecture", 8, architecture), ("general.file_type", 4, 1)],
         [("token_embd.weight", (1,), 0, struct.pack("<f", 1.0))],
     )
 
@@ -288,10 +355,11 @@ def _calibrated_model_gguf(
     *,
     entries: int = 1,
     imatrix_file: str = "calibration.imatrix.gguf",
+    architecture: str = "qwen3",
     replay_variant: bool = False,
 ) -> bytes:
     metadata: list[tuple[str, int, object]] = [
-        ("general.architecture", 8, "qwen3"),
+        ("general.architecture", 8, architecture),
         ("general.file_type", 4, 15),
         ("quantize.imatrix.file", 8, imatrix_file),
         ("quantize.imatrix.dataset", 8, "calibration.txt"),
@@ -321,11 +389,14 @@ class ConversionFixture(unittest.TestCase):
         self.source = self.root / "source.json"
         self.source.write_text("{}\n", encoding="utf-8")
         self.converter = self.checkout / "convert_hf_to_gguf.py"
+        self.converter_python = self.root / "converter-python"
         self.quantizer = self.checkout / "build" / "bin" / "llama-quantize"
         self.quantizer.parent.mkdir(parents=True)
         self.converter.write_text("pinned converter fixture\n", encoding="utf-8")
+        self.converter_python.write_text("pinned Python fixture\n", encoding="utf-8")
         self.quantizer.write_text("pinned quantizer fixture\n", encoding="utf-8")
         self.converter.chmod(0o700)
+        self.converter_python.chmod(0o700)
         self.quantizer.chmod(0o700)
         self.output = self.root / "q8-bundle"
         self.request = converter.ConversionRequest(
@@ -335,33 +406,30 @@ class ConversionFixture(unittest.TestCase):
             base=self.base,
             llama_cpp=self.checkout,
             converter=self.converter,
+            converter_python=self.converter_python,
             quantizer=self.quantizer,
             output_bundle=self.output,
             quantization="Q8_0",
             max_input_tokens=1024,
         )
-        self.lineage = {
-            "schema": evaluator.TRAINING_SCHEMA_V5,
-            "receipt": {"digest": _digest("a")},
-            "run": {
-                "merged": {
-                    "digest": _digest("b"),
-                    "files": [
-                        {
-                            "path": "config.json",
-                            "bytes": 3,
-                            "digest": _digest("c"),
-                        }
-                    ],
-                }
-            },
-        }
+        self.lineage = _training_lineage(evaluator.TRAINING_SCHEMA_V5)
+        converter_python_status = self.converter_python.stat()
         self.tools = {
             "root": str(self.checkout.resolve()),
             "revision": converter.LLAMA_CPP_REVISION,
             "converter": {
                 "path": str(self.converter.resolve()),
                 "digest": _digest("d"),
+            },
+            "converter_python": {
+                "path": str(self.converter_python.resolve()),
+                "bytes": converter_python_status.st_size,
+                "digest": _digest("9"),
+                "device": converter_python_status.st_dev,
+                "inode": converter_python_status.st_ino,
+                "mode": oct(stat.S_IMODE(converter_python_status.st_mode)),
+                "mtime_ns": converter_python_status.st_mtime_ns,
+                "ctime_ns": converter_python_status.st_ctime_ns,
             },
             "quantizer": {
                 "path": str(self.quantizer.resolve()),
@@ -397,8 +465,40 @@ class ConversionFixture(unittest.TestCase):
 
 
 class LineageDispatchTests(ConversionFixture):
-    def test_generic_dispatch_accepts_exact_completed_v5_and_v6(self) -> None:
-        for schema in (evaluator.TRAINING_SCHEMA_V5, evaluator.TRAINING_SCHEMA_V6):
+    def test_legacy_positional_request_order_has_no_silent_rebinding(self) -> None:
+        current_dataset = Path("/legacy/current-dataset")
+        current_source = Path("/legacy/current-source.json")
+        imatrix = Path("/legacy/llama-imatrix")
+        request = converter.ConversionRequest(
+            self.run,
+            self.dataset,
+            self.source,
+            self.base,
+            self.checkout,
+            self.converter,
+            self.quantizer,
+            self.output,
+            "Q4_K_M",
+            2048,
+            converter.CALIBRATION_PROFILE,
+            current_dataset,
+            current_source,
+            imatrix,
+        )
+        self.assertEqual(request.calibration_profile, converter.CALIBRATION_PROFILE)
+        self.assertEqual(request.calibration_current_dataset, current_dataset)
+        self.assertEqual(request.calibration_current_source_corpus, current_source)
+        self.assertEqual(request.imatrix_tool, imatrix)
+        self.assertIsNone(request.converter_python)
+        self.assertIsNone(request.calibration_aux_dataset)
+        self.assertIsNone(request.calibration_aux_source_corpus)
+
+    def test_dispatch_accepts_exact_completed_v4_v5_and_v6(self) -> None:
+        for schema in (
+            converter.CURRENT_TRAINING_SCHEMA,
+            evaluator.TRAINING_SCHEMA_V5,
+            evaluator.TRAINING_SCHEMA_V6,
+        ):
             with self.subTest(schema=schema):
                 lineage = _training_lineage(schema)
                 with mock.patch.object(
@@ -429,6 +529,7 @@ class LineageDispatchTests(ConversionFixture):
 
     def test_training_and_dataset_schemas_cannot_be_cross_swapped(self) -> None:
         for schema, dataset_schema in (
+            (converter.CURRENT_TRAINING_SCHEMA, historical_candidate.DATASET_SCHEMA),
             (evaluator.TRAINING_SCHEMA_V5, normalized_candidate.DATASET_SCHEMA),
             (evaluator.TRAINING_SCHEMA_V6, historical_candidate.DATASET_SCHEMA),
         ):
@@ -465,8 +566,78 @@ class LineageDispatchTests(ConversionFixture):
             ):
                 converter._load_lineage(self.request)
 
+    def test_current_v4_binds_qwen25_source_metrics_and_calibrated_only_schema(self) -> None:
+        lineage = _training_lineage(converter.CURRENT_TRAINING_SCHEMA)
+        converter._validate_loaded_lineage(lineage)
+        source = converter._conversion_source(lineage)
+        self.assertEqual(source["training_schema"], converter.CURRENT_TRAINING_SCHEMA)
+        self.assertEqual(
+            source["source_corpus"]["digest"],
+            evaluator.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+        )
+        self.assertEqual(source["training_metrics_digest"], _digest("7"))
+        self.assertEqual(
+            converter._conversion_schema(lineage, calibrated=True),
+            converter.CURRENT_CALIBRATED_CONVERSION_SCHEMA,
+        )
+        with self.assertRaisesRegex(converter.ConversionRefused, "requires calibrated"):
+            converter._conversion_schema(lineage, calibrated=False)
+
+        for mutate, message in (
+            (
+                lambda value: value["base_snapshot"].update({"base_model": "wrong/model"}),
+                "Qwen2.5-Coder-1.5B",
+            ),
+            (
+                lambda value: value["source_corpus"]["file"].update({"digest": _digest("9")}),
+                "exact current94 raw response",
+            ),
+            (
+                lambda value: value["run"]["metrics"].update({"digest": "bad"}),
+                "metrics digest",
+            ),
+        ):
+            changed = copy.deepcopy(lineage)
+            mutate(changed)
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(converter.ConversionRefused, message),
+            ):
+                converter._validate_loaded_lineage(changed)
+
+    def test_uncalibrated_current_v4_refuses_before_toolchain_children(self) -> None:
+        lineage = _training_lineage(converter.CURRENT_TRAINING_SCHEMA)
+        with (
+            mock.patch.object(converter, "_load_lineage", return_value=lineage),
+            mock.patch.object(converter, "_toolchain_identity") as toolchain,
+            mock.patch.object(converter.subprocess, "run") as process,
+            self.assertRaisesRegex(converter.ConversionRefused, "requires calibrated"),
+        ):
+            converter.convert(self.request)
+        toolchain.assert_not_called()
+        process.assert_not_called()
+
 
 class SuccessfulConversionTests(ConversionFixture):
+    def test_legacy_generic_request_omits_interpreter_and_keeps_direct_argv(self) -> None:
+        self.request = converter.ConversionRequest(
+            training_run=self.run,
+            training_dataset=self.dataset,
+            source_corpus=self.source,
+            base=self.base,
+            llama_cpp=self.checkout,
+            converter=self.converter,
+            quantizer=self.quantizer,
+            output_bundle=self.output,
+            quantization="Q8_0",
+            max_input_tokens=1024,
+        )
+        self.assertIsNone(self.request.converter_python)
+        self.run_conversion()
+        self.assertEqual(self.calls[0][0][0], str(self.converter.resolve()))
+        receipt = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
+        self.assertNotIn("converter_python", receipt["conversion"])
+
     def test_atomic_bundle_matches_publication_schema_and_exact_commands(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -725,6 +896,98 @@ class PythonImportSurfaceLifecycleTests(ConversionFixture):
 
 
 class CalibratedConversionTests(ConversionFixture):
+    def test_current_interpreter_launch_uses_held_read_only_nofollow_fd(self) -> None:
+        command_root = self.root / "fd-command"
+        command_root.mkdir(mode=0o700)
+        log_root = command_root / "logs"
+        log_root.mkdir(mode=0o700)
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        os.close(stdout_write)
+        os.close(stderr_write)
+        process = mock.Mock()
+        process.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        process.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+        local_identity = evaluator.file_identity(self.converter_python, "fixture interpreter")
+        with mock.patch.object(converter.subprocess, "Popen", return_value=process) as popen:
+            record = converter._bounded_conversion_command(
+                "convert_f16",
+                (str(self.converter_python), "ignored-converter.py"),
+                cwd=command_root,
+                log_root=log_root,
+                executable_path=self.converter_python,
+                executable_identity=local_identity,
+            )
+        options = popen.call_args.kwargs
+        descriptor = options["pass_fds"][0]
+        self.assertEqual(options["pass_fds"], (descriptor,))
+        self.assertEqual(options["executable"], f"/proc/self/fd/{descriptor}")
+        self.assertEqual(record["launch"]["method"], "proc-self-fd")
+        self.assertEqual(
+            record["launch"]["executed_object"],
+            converter._converter_python_receipt_identity(
+                local_identity, "fixture interpreter"
+            ),
+        )
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+
+    def test_post_exit_assertion_cannot_skip_fd_postcheck_or_close(self) -> None:
+        command_root = self.root / "forced-post-command"
+        command_root.mkdir(mode=0o700)
+        log_root = command_root / "logs"
+        log_root.mkdir(mode=0o700)
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        os.close(stdout_write)
+        os.close(stderr_write)
+        process = mock.Mock()
+        process.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        process.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        process.wait.side_effect = converter.ConversionRefused("primary process failure")
+        process.poll.return_value = 0
+        local_identity = evaluator.file_identity(self.converter_python, "fixture interpreter")
+        real_fd_identity = converter._fd_executable_identity
+        observed_descriptors: list[int] = []
+
+        def observe_fd(descriptor: int, path: Path, label: str) -> dict[str, object]:
+            observed_descriptors.append(descriptor)
+            return real_fd_identity(descriptor, path, label)
+
+        assertion_calls = 0
+
+        def fail_post_assertion(_path: Path, _label: str) -> None:
+            nonlocal assertion_calls
+            assertion_calls += 1
+            if assertion_calls == 2:
+                raise converter.ConversionRefused("forced post-exit assertion")
+
+        with (
+            mock.patch.object(converter.subprocess, "Popen", return_value=process),
+            mock.patch.object(converter, "_fd_executable_identity", side_effect=observe_fd),
+            mock.patch.object(
+                converter,
+                "_assert_child_pycache_absent",
+                side_effect=fail_post_assertion,
+            ),
+            self.assertRaisesRegex(converter.ConversionRefused, "primary process failure"),
+        ):
+            converter._bounded_conversion_command(
+                "convert_f16",
+                (str(self.converter_python), "ignored-converter.py"),
+                cwd=command_root,
+                log_root=log_root,
+                executable_path=self.converter_python,
+                executable_identity=local_identity,
+            )
+        self.assertEqual(assertion_calls, 2)
+        self.assertEqual(len(observed_descriptors), 2)
+        self.assertEqual(observed_descriptors[0], observed_descriptors[1])
+        with self.assertRaises(OSError):
+            os.fstat(observed_descriptors[0])
+
     def setUp(self) -> None:
         super().setUp()
         self.imatrix_tool = self.checkout / "build" / "bin" / "llama-imatrix"
@@ -772,6 +1035,7 @@ class CalibratedConversionTests(ConversionFixture):
         self.rendered_corpora: list[bytes] = []
         self.quantized_models: list[bytes] = []
         self.imatrix_bytes = _imatrix_gguf()
+        self.architecture = converter.QWEN3_ARCHITECTURE
         self.model_bytes = _calibrated_model_gguf()
         self.replay_model_bytes = self.model_bytes
 
@@ -783,11 +1047,18 @@ class CalibratedConversionTests(ConversionFixture):
         cwd: Path,
         log_root: Path,
         cwd_role: str = "private_staging",
+        executable_path: Path | None = None,
+        executable_identity: object | None = None,
     ) -> dict[str, object]:
         exact = [str(item) for item in argv]
         self.calibrated_calls.append((exact, cwd, log_root, cwd_role))
-        if exact[0] == str(self.converter.resolve()):
-            (cwd / exact[exact.index("--outfile") + 1]).write_bytes(_f16_gguf())
+        if exact[0] == str(self.converter.resolve()) or exact[:2] == [
+            str(self.converter_python.resolve()),
+            str(self.converter.resolve()),
+        ]:
+            (cwd / exact[exact.index("--outfile") + 1]).write_bytes(
+                _f16_gguf(architecture=self.architecture)
+            )
         elif exact[0] == str(self.imatrix_tool.resolve()):
             self.rendered_corpora.append((cwd / converter.CALIBRATION_CORPUS_NAME).read_bytes())
             (cwd / exact[exact.index("--output") + 1]).write_bytes(self.imatrix_bytes)
@@ -811,7 +1082,7 @@ class CalibratedConversionTests(ConversionFixture):
             "digest": empty_digest,
             "truncated": False,
         }
-        return {
+        record: dict[str, object] = {
             "name": name,
             "argv": exact,
             "cwd_role": cwd_role,
@@ -822,6 +1093,17 @@ class CalibratedConversionTests(ConversionFixture):
             "stdout": dict(stream),
             "stderr": dict(stream),
         }
+        if executable_path is not None:
+            self.assertEqual(executable_path, self.converter_python)
+            executed_object = converter._converter_python_receipt_identity(
+                executable_identity,
+                "fixture converter Python",
+            )
+            record["launch"] = {
+                "method": "proc-self-fd",
+                "executed_object": executed_object,
+            }
+        return record
 
     def run_calibrated(self) -> dict[str, object]:
         with (
@@ -884,6 +1166,7 @@ class CalibratedConversionTests(ConversionFixture):
         self.assertTrue(all(call[1] == replay_calls[0][1] for call in replay_calls))
         self.assertNotEqual(replay_calls[0][1], convert_cwd)
         self.assertTrue(all(call[3] == "determinism_replay" for call in replay_calls))
+        self.assertEqual(convert_argv[0], str(self.converter))
         self.assertEqual(convert_argv[3], converter.F16_NAME)
         self.assertEqual(
             imatrix_argv,
@@ -978,6 +1261,8 @@ class CalibratedConversionTests(ConversionFixture):
             conversion["conversion"]["runtime_libraries"],
             _runtime_closure(),
         )
+        self.assertNotIn("converter_python", calibration["toolchain"])
+        self.assertNotIn("converter_python", conversion["conversion"])
         self.assertEqual(
             conversion["calibration_receipt_digest"],
             "sha256:"
@@ -1031,6 +1316,134 @@ class CalibratedConversionTests(ConversionFixture):
                 "digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
             },
         )
+
+    def test_current_v4_qwen25_emits_fresh_v6_v3_qwen2_receipts(self) -> None:
+        self.lineage = _training_lineage(converter.CURRENT_TRAINING_SCHEMA)
+        aux_dataset = self.root / "normalized-aux-dataset"
+        aux_source = self.root / "normalized-aux-source.json"
+        aux_dataset.mkdir()
+        aux_source.write_text("{}\n", encoding="utf-8")
+        self.request = converter.replace(
+            self.request,
+            calibration_aux_dataset=aux_dataset,
+            calibration_aux_source_corpus=aux_source,
+        )
+        self.architecture = converter.QWEN25_ARCHITECTURE
+        self.model_bytes = _calibrated_model_gguf(architecture=self.architecture)
+        self.replay_model_bytes = self.model_bytes
+        current_source = converter._current_conversion_source(self.lineage)["source_corpus"]
+        auxiliary_manifest = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+            "seed": normalized_candidate.EXPECTED_SEED,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        }
+        self.material = {
+            "profile": converter.CALIBRATION_PROFILE,
+            "source": {
+                "current": {
+                    "corpus": current_source,
+                    "prepared_dataset": {"manifest": {"train_examples": 78}},
+                },
+                "auxiliary_normalized_historical": {
+                    "corpus": normalized_candidate.source_corpus_identity(),
+                    "prepared_dataset": {"manifest": auxiliary_manifest},
+                },
+            },
+            "selection": {
+                "algorithm": converter.CALIBRATION_SELECTION_ALGORITHM,
+                "seed": converter.CALIBRATION_SEED,
+                "current_rows": converter.CALIBRATION_CURRENT_ROWS,
+                "current_refs_digest": _digest("1"),
+                "diagnostic_rows_excluded": converter.CALIBRATION_DIAGNOSTIC_ROWS,
+                "diagnostic_refs_digest": _digest("2"),
+                "auxiliary_pool_rows": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+                "auxiliary_selected_rows": converter.CALIBRATION_HISTORICAL_ROWS,
+                "auxiliary_selected_refs_digest": _digest("3"),
+                "total_rows": converter.CALIBRATION_TOTAL_ROWS,
+            },
+        }
+
+        self.run_calibrated()
+
+        calibration = json.loads((self.output / converter.CALIBRATION_RECEIPT_NAME).read_bytes())
+        conversion = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
+        load = json.loads((self.output / converter.LOAD_SPEC_NAME).read_bytes())
+        self.assertEqual(calibration["schema"], converter.CURRENT_CALIBRATION_SCHEMA)
+        self.assertEqual(
+            conversion["schema"],
+            converter.CURRENT_CALIBRATED_CONVERSION_SCHEMA,
+        )
+        self.assertEqual(
+            calibration["base_model"],
+            converter.candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+        )
+        self.assertEqual(conversion["base_model"], calibration["base_model"])
+        self.assertEqual(load["base_model"], calibration["base_model"])
+        self.assertIn("auxiliary_normalized_historical", calibration["source"])
+        self.assertEqual(
+            conversion["source"]["training_metrics_digest"],
+            self.lineage["run"]["metrics"]["digest"],
+        )
+        self.assertEqual(
+            calibration["toolchain"]["converter_python"],
+            converter._converter_python_receipt_identity(
+                self.calibrated_tools["converter_python"], "fixture converter Python"
+            ),
+        )
+        self.assertEqual(
+            conversion["conversion"]["converter_python"],
+            calibration["toolchain"]["converter_python"],
+        )
+        for command_set in (
+            calibration["commands"],
+            calibration["determinism_replay"]["commands"],
+            conversion["conversion"]["commands"],
+            conversion["conversion"]["determinism_replay"]["commands"],
+        ):
+            self.assertEqual(command_set[0]["launch"]["method"], "proc-self-fd")
+            self.assertEqual(
+                command_set[0]["launch"]["executed_object"],
+                calibration["toolchain"]["converter_python"],
+            )
+            self.assertNotIn("launch", command_set[1])
+            self.assertNotIn("launch", command_set[2])
+        identity = evaluator.artifact_identity(
+            self.output / converter.ARTIFACT_NAME,
+            entrypoint=converter.ENTRYPOINT,
+            expected_digest=conversion["artifact"]["tree_digest"],
+            quantization="Q4_K_M",
+            expected_architecture=converter.QWEN25_ARCHITECTURE,
+        )
+        self.assertEqual(
+            identity["entrypoint"]["gguf"]["architecture"],
+            converter.QWEN25_ARCHITECTURE,
+        )
+
+        changed_conversion = copy.deepcopy(conversion)
+        changed_conversion["conversion"]["converter_python"]["portable"]["digest"] = _digest(
+            "0"
+        )
+        command_argv = tuple(
+            (command["name"], command["argv"])
+            for command in conversion["conversion"]["commands"]
+        )
+        with self.assertRaisesRegex(
+            converter.ConversionRefused,
+            "bind different converter Python identities",
+        ):
+            converter._validate_calibrated_receipts(
+                calibration_receipt=calibration,
+                conversion_receipt=changed_conversion,
+                calibration_digest=conversion["calibration_receipt_digest"],
+                expected_calibration=calibration,
+                expected_conversion=changed_conversion,
+                command_argv=command_argv,
+                replay_command_argv=command_argv,
+            )
 
     def test_malformed_imatrix_cleans_only_owned_staging(self) -> None:
         unrelated = self.root / "keep-me"
@@ -1316,8 +1729,91 @@ class CalibrationSelectionTests(ConversionFixture):
             normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
         )
 
+    def test_auxiliary_normalized_pool_is_separate_from_training_lineage_paths(self) -> None:
+        aux_dataset = self.root / "aux-normalized-dataset"
+        aux_source = self.root / "aux-normalized-source.json"
+        aux_dataset.mkdir()
+        aux_source.write_text("{}\n", encoding="utf-8")
+        (aux_dataset / "manifest.json").write_bytes(
+            converter.candidate.canonical_json_bytes(
+                {"schema": normalized_candidate.DATASET_SCHEMA}
+            )
+        )
+        self.historical_rows = self.historical_rows[: normalized_candidate.EXPECTED_TRAIN_EXAMPLES]
+        self.historical_manifest = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+            "seed": normalized_candidate.EXPECTED_SEED,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "excluded_refs_canonical_bytes": (
+                normalized_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+            ),
+            "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        }
+        self.request = converter.replace(
+            self.request,
+            calibration_aux_dataset=aux_dataset,
+            calibration_aux_source_corpus=aux_source,
+        )
+
+        rows, snapshot = self.load_material()
+
+        self.assertEqual(len(rows), converter.CALIBRATION_TOTAL_ROWS)
+        self.assertEqual(
+            json.loads((self.dataset / "manifest.json").read_bytes())["schema"],
+            historical_candidate.DATASET_SCHEMA,
+        )
+        self.assertNotIn("historical", snapshot["source"])
+        self.assertIn("auxiliary_normalized_historical", snapshot["source"])
+        self.assertEqual(
+            snapshot["selection"]["auxiliary_pool_rows"],
+            normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+        )
+        self.assertEqual(
+            snapshot["selection"]["auxiliary_selected_rows"],
+            converter.CALIBRATION_HISTORICAL_ROWS,
+        )
+
 
 class CalibratedMetadataTests(unittest.TestCase):
+    def test_qwen2_metadata_is_accepted_only_for_qwen25_contract(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
+            root = Path(temporary)
+            f16 = root / "f16.gguf"
+            model = root / "model.gguf"
+            f16.write_bytes(_f16_gguf(architecture=converter.QWEN25_ARCHITECTURE))
+            model.write_bytes(_calibrated_model_gguf(architecture=converter.QWEN25_ARCHITECTURE))
+            self.assertTrue(
+                converter._validate_f16_gguf(
+                    f16,
+                    architecture=converter.QWEN25_ARCHITECTURE,
+                )["digest"].startswith("sha256:")
+            )
+            self.assertEqual(
+                converter._validate_calibrated_model_metadata(
+                    model,
+                    architecture=converter.QWEN25_ARCHITECTURE,
+                )["imatrix_entries_count"],
+                1,
+            )
+            for validate in (
+                lambda: converter._validate_f16_gguf(
+                    f16,
+                    architecture=converter.QWEN3_ARCHITECTURE,
+                ),
+                lambda: converter._validate_calibrated_model_metadata(
+                    model,
+                    architecture=converter.QWEN3_ARCHITECTURE,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    converter.ConversionRefused,
+                    "architecture",
+                ):
+                    validate()
+
     def test_imatrix_accepts_canonical_dense_and_expert_dimensions(self) -> None:
         with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
             imatrix = Path(temporary) / "imatrix.gguf"
@@ -1467,8 +1963,8 @@ class FailureTests(ConversionFixture):
         def fail_quantizer(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
             exact = [str(item) for item in argv]
             self.calls.append((exact, dict(kwargs)))
-            if exact[0] == str(self.converter.resolve()):
-                Path(exact[3]).write_bytes(b"temporary f16")
+            if exact[:2] == [str(self.converter_python.resolve()), str(self.converter.resolve())]:
+                Path(exact[exact.index("--outfile") + 1]).write_bytes(b"temporary f16")
                 return subprocess.CompletedProcess(exact, 0, stdout=b"", stderr=b"")
             return subprocess.CompletedProcess(exact, 9, stdout=b"", stderr=b"refused")
 
@@ -2085,6 +2581,7 @@ class StaticSafetyTests(unittest.TestCase):
                 base=root,
                 llama_cpp=checkout,
                 converter=checkout / "convert_hf_to_gguf.py",
+                converter_python=root / "converter-python",
                 quantizer=checkout / "build/bin/llama-quantize",
                 output_bundle=root / "out",
                 quantization="Q8_0",
@@ -2101,10 +2598,11 @@ class StaticSafetyTests(unittest.TestCase):
             root = Path(temporary)
             checkout = root / "llama.cpp"
             converter_path = checkout / "convert_hf_to_gguf.py"
+            converter_python = root / "converter-python"
             quantizer_path = checkout / "build" / "bin" / "llama-quantize"
             git = root / "git"
             quantizer_path.parent.mkdir(parents=True)
-            for path in (converter_path, quantizer_path, git):
+            for path in (converter_path, converter_python, quantizer_path, git):
                 path.write_text("fixture\n", encoding="utf-8")
                 path.chmod(0o700)
             request = converter.ConversionRequest(
@@ -2114,6 +2612,7 @@ class StaticSafetyTests(unittest.TestCase):
                 base=root,
                 llama_cpp=checkout,
                 converter=converter_path,
+                converter_python=converter_python,
                 quantizer=quantizer_path,
                 output_bundle=root / "out",
                 quantization="Q8_0",

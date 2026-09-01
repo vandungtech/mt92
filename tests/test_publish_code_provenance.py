@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from training import code_candidate as candidate
 from training import historical_code_candidate as historical_candidate
 from training import normalized_historical_code_candidate as normalized_candidate
 from training import publish_code_provenance as provenance
@@ -223,6 +224,46 @@ class FakeWandb:
 
 
 class PublishCodeProvenanceTests(unittest.TestCase):
+    def test_legacy_positional_publication_request_order_has_no_silent_rebinding(self) -> None:
+        paths = [Path(f"/legacy/field-{index}") for index in range(13)]
+        request = provenance.PublicationRequest(
+            paths[0],
+            paths[1],
+            paths[2],
+            paths[3],
+            paths[4],
+            "sha256:" + "1" * 64,
+            paths[5],
+            paths[6],
+            42,
+            paths[7],
+            paths[8],
+            paths[9],
+            paths[10],
+            paths[11],
+            paths[12],
+        )
+        self.assertEqual(request.hf_diagnostic, paths[7])
+        self.assertEqual(request.gguf_diagnostic, paths[8])
+        self.assertEqual(request.calibration_receipt, paths[9])
+        self.assertEqual(request.llama_cpp, paths[10])
+        self.assertEqual(request.calibration_current_dataset, paths[11])
+        self.assertEqual(request.calibration_current_source_corpus, paths[12])
+        self.assertIsNone(request.converter_python)
+        self.assertIsNone(request.calibration_aux_dataset)
+        self.assertIsNone(request.calibration_aux_source_corpus)
+
+    def test_legacy_converter_python_fallback_resolves_real_symlink(self) -> None:
+        target = Path(sys.executable).resolve(strict=True)
+        temporary = tempfile.TemporaryDirectory(dir="/dev/shm")
+        self.addCleanup(temporary.cleanup)
+        link = Path(temporary.name) / "legacy-python-link"
+        link.symlink_to(target)
+        with mock.patch.object(provenance.sys, "executable", str(link)):
+            resolved = provenance._converter_python_for_replay(None)
+        self.assertEqual(resolved, target)
+        self.assertFalse(resolved.is_symlink())
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -2109,6 +2150,188 @@ class PublishCodeProvenanceTests(unittest.TestCase):
         self.rewrite_v3_receipts()
         return request
 
+    def prepare_current_calibrated_v6(self) -> provenance.PublicationRequest:
+        from training import convert_code_gguf as converter
+
+        request = self.prepare_calibrated_v3()
+        self.manifest = {
+            "schema": candidate.DATASET_SCHEMA,
+            "track": provenance.TRACK,
+            "hardware_class": provenance.HARDWARE_CLASS,
+            "corpus_version": candidate.CORPUS_VERSION,
+            "corpus_canonical_digest": candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+            "source_file_digest": provenance.gguf.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+            "split_algorithm": candidate.SPLIT_ALGORITHM,
+            "seed": provenance.gguf.DIAGNOSTIC_SEED,
+            "train_examples": candidate.EXPECTED_COUNTS["train"],
+            "holdout_examples": 0,
+            "train_refs_digest": "sha256:" + "a" * 64,
+            "holdout_refs_digest": candidate._refs_digest([]),
+            "train_file_digest": "sha256:" + "1" * 64,
+            "holdout_file_digest": candidate.digest_bytes(b""),
+            "target_construction": "inputs.code_prompt + gold",
+            "quality_claim": candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        }
+        self.base_identity = {
+            "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+            "required_bytes": candidate.QWEN25_CODER_1_5B_BASE_REQUIRED_BYTES,
+            "files": {"config.json": {"bytes": 660, "git_blob_sha1": "f" * 40}},
+        }
+        self.training_lineage.update(
+            {
+                "schema": provenance.CURRENT_TRAINING_SCHEMA,
+                "source_corpus": {
+                    "file": {
+                        "bytes": provenance.gguf.CURRENT94_PUBLIC_CORPUS_BYTES,
+                        "digest": provenance.gguf.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+                    },
+                    "corpus_version": candidate.CORPUS_VERSION,
+                    "canonical_bytes": 1,
+                    "canonical_digest": candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+                    "task_count": candidate.EXPECTED_COUNTS["train"],
+                    "refs_digest": "sha256:" + "2" * 64,
+                },
+                "prepared_dataset": {
+                    "manifest": self.manifest_identity,
+                    "train": {"bytes": 1, "digest": self.manifest["train_file_digest"]},
+                    "holdout": {
+                        "bytes": 0,
+                        "digest": self.manifest["holdout_file_digest"],
+                    },
+                    "manifest_payload": self.manifest,
+                },
+                "base_snapshot": self.base_identity,
+            }
+        )
+        self.metadata.update(
+            {
+                "schema": provenance.CURRENT_TRAINING_SCHEMA,
+                "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                "base_snapshot": self.base_identity,
+                "corpus_version": candidate.CORPUS_VERSION,
+                "dataset": {
+                    "manifest": self.manifest,
+                    "manifest_digest": self.manifest_identity["digest"],
+                },
+                "quality_claim": provenance.gguf.CURRENT94_FINAL_TRAINING_QUALITY_CLAIM,
+            }
+        )
+        self.rewrite_training_metadata()
+
+        self.load["base_model"] = candidate.QWEN25_CODER_1_5B_BASE_MODEL
+        write_json(request.load_spec, self.load)
+        self.artifact_identity["entrypoint"]["gguf"] = {
+            "architecture": converter.QWEN25_ARCHITECTURE,
+            "file_type": 15,
+        }
+
+        converter_python = self.root / "converter-python"
+        converter_python.write_bytes(b"pinned converter interpreter\n")
+        converter_python.chmod(0o700)
+        status = converter_python.stat()
+        interpreter_identity = {
+            "path": str(converter_python.resolve()),
+            "bytes": status.st_size,
+            "digest": digest(converter_python.read_bytes()),
+            "device": status.st_dev,
+            "inode": status.st_ino,
+            "mode": oct(stat.S_IMODE(status.st_mode)),
+            "mtime_ns": status.st_mtime_ns,
+            "ctime_ns": status.st_ctime_ns,
+        }
+        self.v3_toolchain["converter_python"] = interpreter_identity
+
+        aux_dataset = self.root / "normalized-aux-dataset"
+        aux_dataset.mkdir()
+        aux_source = self.root / "normalized-aux-source.json"
+        aux_source.write_text("{}\n", encoding="utf-8")
+        current_source = provenance._expected_conversion_source(self.training_lineage)[
+            "source_corpus"
+        ]
+        auxiliary_manifest = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_candidate.CORPUS_PROFILE,
+            "seed": normalized_candidate.EXPECTED_SEED,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "excluded_refs_digest": normalized_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        }
+        self.v3_source = {
+            "current": {
+                "corpus": copy.deepcopy(current_source),
+                "prepared_dataset": {"manifest": {"train_examples": 78}},
+            },
+            "auxiliary_normalized_historical": {
+                "corpus": normalized_candidate.source_corpus_identity(),
+                "prepared_dataset": {"manifest": auxiliary_manifest},
+            },
+        }
+        self.v3_selection = {
+            "algorithm": converter.CALIBRATION_SELECTION_ALGORITHM,
+            "seed": converter.CALIBRATION_SEED,
+            "current_rows": converter.CALIBRATION_CURRENT_ROWS,
+            "current_refs_digest": "sha256:" + "1" * 64,
+            "diagnostic_rows_excluded": converter.CALIBRATION_DIAGNOSTIC_ROWS,
+            "diagnostic_refs_digest": "sha256:" + "2" * 64,
+            "auxiliary_pool_rows": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "auxiliary_selected_rows": converter.CALIBRATION_HISTORICAL_ROWS,
+            "auxiliary_selected_refs_digest": "sha256:" + "3" * 64,
+            "total_rows": converter.CALIBRATION_TOTAL_ROWS,
+        }
+        self.v3_material = {
+            "profile": converter.CALIBRATION_PROFILE,
+            "source": copy.deepcopy(self.v3_source),
+            "selection": copy.deepcopy(self.v3_selection),
+        }
+        self.v3_calibration.update(
+            {
+                "schema": converter.CURRENT_CALIBRATION_SCHEMA,
+                "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                "source": copy.deepcopy(self.v3_source),
+                "selection": copy.deepcopy(self.v3_selection),
+                "load_manifest": copy.deepcopy(self.load),
+            }
+        )
+        self.v3_calibration["toolchain"]["converter_python"] = copy.deepcopy(
+            provenance._converter_python_receipt_identity(
+                interpreter_identity, "fixture converter Python"
+            )
+        )
+        self.v3_conversion.update(
+            {
+                "schema": converter.CURRENT_CALIBRATED_CONVERSION_SCHEMA,
+                "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                "source": provenance._expected_conversion_source(self.training_lineage),
+                "load_manifest": copy.deepcopy(self.load),
+            }
+        )
+        self.v3_conversion["conversion"]["converter_python"] = copy.deepcopy(
+            self.v3_calibration["toolchain"]["converter_python"]
+        )
+        for receipt_commands in (
+            self.v3_calibration["commands"],
+            self.v3_calibration["determinism_replay"]["commands"],
+            self.v3_conversion["conversion"]["commands"],
+            self.v3_conversion["conversion"]["determinism_replay"]["commands"],
+        ):
+            receipt_commands[0]["argv"].insert(0, str(converter_python.resolve()))
+            receipt_commands[0]["launch"] = {
+                "method": "proc-self-fd",
+                "executed_object": copy.deepcopy(
+                    self.v3_calibration["toolchain"]["converter_python"]
+                ),
+            }
+        self.rewrite_v3_receipts()
+        self.v6_request = replace(
+            request,
+            converter_python=converter_python,
+            calibration_aux_dataset=aux_dataset,
+            calibration_aux_source_corpus=aux_source,
+        )
+        self.v3_request = self.v6_request
+        return self.v6_request
+
     def rewrite_v3_receipts(self) -> None:
         write_json(self.v3_calibration_path, self.v3_calibration)
         self.v3_conversion["calibration_receipt_digest"] = digest(
@@ -2164,6 +2387,127 @@ class PublishCodeProvenanceTests(unittest.TestCase):
             publication.conversion["conversion"]["runtime_libraries"],
             self.v3_toolchain["runtime_libraries"],
         )
+        self.assertNotIn("converter_python", publication.calibration["receipt"]["toolchain"])
+        self.assertNotIn("converter_python", publication.conversion["conversion"])
+
+    def test_current_v4_qwen25_v6_v3_binds_interpreter_auxiliary_pool_and_qwen2(self) -> None:
+        self.prepare_current_calibrated_v6()
+        with (
+            mock.patch.object(provenance, "authorize_payload") as authorize,
+            mock.patch.object(provenance, "_publish_authorized_payload") as publish_io,
+            self.assertRaisesRegex(
+                provenance.CodeProvenanceError,
+                "signed external-worker execution and containment attestation",
+            ),
+        ):
+            self.validate_v3()
+        authorize.assert_not_called()
+        publish_io.assert_not_called()
+
+    def test_current_v6_requires_explicit_interpreter_and_auxiliary_pair(self) -> None:
+        request = self.prepare_current_calibrated_v6()
+        for field in (
+            "converter_python",
+            "calibration_aux_dataset",
+            "calibration_aux_source_corpus",
+        ):
+            with self.subTest(field=field):
+                self.v3_request = replace(request, **{field: None})
+                with self.assertRaisesRegex(
+                    provenance.CodeProvenanceError,
+                    "conversion-v6 requires",
+                ):
+                    self.validate_v3()
+        self.v3_request = request
+
+    def test_current_v6_rejects_interpreter_runtime_and_auxiliary_mismatches(self) -> None:
+        request = self.prepare_current_calibrated_v6()
+        other_interpreter = self.root / "other-converter-python"
+        other_interpreter.write_bytes(b"different interpreter\n")
+        other_interpreter.chmod(0o700)
+        self.v3_request = replace(request, converter_python=other_interpreter)
+        with self.assertRaisesRegex(provenance.CodeProvenanceError, "explicit authorization"):
+            self.validate_v3()
+
+        self.v3_request = request
+        self.v3_material["source"]["auxiliary_normalized_historical"]["corpus"][
+            "raw_digest"
+        ] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(provenance.CodeProvenanceError, "auxiliary calibration corpus"):
+            self.validate_v3()
+
+        self.v3_material["source"] = copy.deepcopy(self.v3_source)
+        self.v3_conversion["conversion"]["runtime_libraries"]["libraries"][0]["digest"] = (
+            "sha256:" + "0" * 64
+        )
+        self.rewrite_v3_receipts()
+        with self.assertRaisesRegex(provenance.CodeProvenanceError, "runtime library"):
+            self.validate_v3()
+
+    def test_current_v6_does_not_cross_host_match_worker_inode_but_remains_no_go(self) -> None:
+        self.prepare_current_calibrated_v6()
+        interpreter_path = Path(self.v3_toolchain["converter_python"]["path"])
+        original_identity = copy.deepcopy(self.v3_toolchain["converter_python"])
+        replacement_path = interpreter_path.with_name("replacement-converter-python")
+        replacement_path.write_bytes(interpreter_path.read_bytes())
+        replacement_path.chmod(0o700)
+        replacement_path.replace(interpreter_path)
+        replacement_status = interpreter_path.stat()
+        self.v3_toolchain["converter_python"] = {
+            "path": str(interpreter_path.resolve()),
+            "bytes": replacement_status.st_size,
+            "digest": digest(interpreter_path.read_bytes()),
+            "device": replacement_status.st_dev,
+            "inode": replacement_status.st_ino,
+            "mode": oct(stat.S_IMODE(replacement_status.st_mode)),
+            "mtime_ns": replacement_status.st_mtime_ns,
+            "ctime_ns": replacement_status.st_ctime_ns,
+        }
+        self.assertEqual(
+            self.v3_toolchain["converter_python"]["digest"],
+            original_identity["digest"],
+        )
+        self.assertNotEqual(
+            self.v3_toolchain["converter_python"]["inode"],
+            original_identity["inode"],
+        )
+        with self.assertRaisesRegex(
+            provenance.CodeProvenanceError,
+            "signed external-worker execution and containment attestation",
+        ):
+            self.validate_v3()
+
+    def test_current_v6_rejects_cross_receipt_interpreter_mismatch(self) -> None:
+        self.prepare_current_calibrated_v6()
+        self.v3_conversion["conversion"]["converter_python"]["portable"]["digest"] = (
+            "sha256:" + "0" * 64
+        )
+        self.rewrite_v3_receipts()
+        with self.assertRaisesRegex(
+            provenance.CodeProvenanceError,
+            "conversion-v6 worker-local converter Python observation changed",
+        ):
+            self.validate_v3()
+
+    def test_current_v6_rejects_non_qwen2_artifact_and_crossed_schema(self) -> None:
+        self.prepare_current_calibrated_v6()
+        self.artifact_identity["entrypoint"]["gguf"]["architecture"] = "qwen3"
+        with self.assertRaisesRegex(provenance.CodeProvenanceError, "qwen2 artifact"):
+            self.validate_v3()
+
+        self.artifact_identity["entrypoint"]["gguf"]["architecture"] = "qwen2"
+        self.v3_conversion["schema"] = provenance.CALIBRATED_CONVERSION_SCHEMA
+        self.rewrite_v3_receipts()
+        with self.assertRaisesRegex(provenance.CodeProvenanceError, "crosses training lineages"):
+            self.validate_v3()
+
+        self.v3_conversion["schema"] = ""
+        self.rewrite_v3_receipts()
+        with self.assertRaisesRegex(
+            provenance.CodeProvenanceError,
+            "exact calibrated conversion-v6",
+        ):
+            self.validate_v3()
 
     def test_normalized_calibrated_v5_binds_profile_exclusions_and_pool(self) -> None:
         self.prepare_calibrated_v5()
