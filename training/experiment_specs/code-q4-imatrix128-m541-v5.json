@@ -1,0 +1,864 @@
+{
+  "schema": "microtensor.code.calibrated-quantization-experiment.v1",
+  "created_at_utc": "2026-09-01T02:47:17Z",
+  "audit_finalized_at_utc": "2026-09-01T05:03:06Z",
+  "declaration_state": {
+    "build_started": false,
+    "model_execution_performed_by_this_edit": false,
+    "publication_performed_by_this_edit": false,
+    "final_source_placeholders_must_be_replaced_and_revalidated_before_commit": true
+  },
+  "candidate": {
+    "id": "qwen3-06b-historical7299-v5-q4-imatrix128-m541",
+    "quantization": "Q4_K_M",
+    "max_input_tokens": 541,
+    "single_candidate_only": true,
+    "canonical_external_invocation": "replay1",
+    "replay2_is_verification_only": true,
+    "output_bundles": {
+      "replay1": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay1-bundle",
+      "replay2": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay2-bundle"
+    },
+    "output_namespaces_verified_absent_at_utc": "2026-09-01T04:55:38Z"
+  },
+  "code": {
+    "commit": "60737e9ee82173413f3828f4fb6c83210c45f49b",
+    "converter": {
+      "path": "training/convert_code_gguf.py",
+      "sha256": "sha256:76f00c515d2bf234630e8585282897137ef2955feda4a7b8cc4d605b3b346a1d"
+    },
+    "evaluator": {
+      "path": "training/evaluate_code_gguf.py",
+      "sha256": "sha256:98091689311e20383ce05b58ae230ee149fd37504fb1f6edcf2d2a97594e3892"
+    },
+    "imported_modules": {
+      "training/code_candidate.py": "sha256:220e27023ee9c01560c0810d587dc417a70c92a314cb6874b97954b6ba8e5e0c",
+      "training/evaluate_code.py": "sha256:bcc87c6641d99ed9ac3d8534040de8a881347c2dc69678bbf87496a6c2384843",
+      "training/historical_code_candidate.py": "sha256:2e8540486e53f6ae348c8d471fdce97284c1fef0c6a4254b67e35db8f141d00a",
+      "training/publish_code_provenance.py": "sha256:3416d44f1598ba657417ff2cb61ed93761614dabfc7fddb2b82bd3f42c37d60b",
+      "training/train_code.py": "sha256:1472e226a99da4707e5002fe860f7d543e9f1a1117dc988f4d36ba3bea7ad4b1"
+    },
+    "isolated_execution": {
+      "module": "training.convert_code_gguf",
+      "detached_worktree_required": true,
+      "worktree_path": "/tmp/mt92-q4-code-60737e9",
+      "worktree_commit_must_equal_code_commit": true,
+      "repository_status_must_be_empty_before_and_after_each_invocation": true,
+      "pythonpath_inherited": false
+    }
+  },
+  "schemas": {
+    "training": "microtensor.code.training.v5",
+    "calibration_receipt": "microtensor.code.imatrix-calibration.v2",
+    "conversion_receipt": "microtensor.code.gguf-conversion.v3",
+    "determinism_replay": "microtensor.code.gguf-determinism-replay.v1",
+    "runtime_libraries": "microtensor.code.llama-cpp-runtime-libraries.v1",
+    "diagnostic": "microtensor.code.gguf-structural-evaluation.v1",
+    "wandb_payload": "microtensor.code.wandb-provenance.v1"
+  },
+  "lineage": {
+    "base_model": "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca",
+    "training_metadata_sha256": "sha256:2c637e7e9f8e9811d5150e9c8bbd01e596b2f30908aecb10c1a1a8e2dd2cfc6c",
+    "metrics_sha256": "sha256:9cc96df4c754e83f054b88caa9087ea2cde136291dd3726b146bb6a2a98922d6",
+    "metrics_records": 1001,
+    "merged_tree_sha256": "sha256:52b399b89edaec39005507045b0facbc31adf654a5e2d3e801b5a52e79c3a175",
+    "calibration_current": {
+      "manifest_sha256": "sha256:6af4fe8952293339773e133a867d78e817d759a83138bc7400af98e2e04898ff",
+      "train_file_sha256": "sha256:779995021b84418592da1f3d622e5a7eac80f59c3f2721a05b69e2355d30108a",
+      "holdout_file_sha256": "sha256:8b07f781c6d160f752963b3a42f343c18d53a785d7b7cd09f472fdddbd2d7993",
+      "source_corpus_sha256": "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5"
+    },
+    "calibration_historical": {
+      "manifest_sha256": "sha256:76594ff4df3c0b0caf56aa668a4c8dcac8291c425cfd1b46a3fb222d733a81e8",
+      "train_file_sha256": "sha256:7504904060eeb9f0ec6aa3a0edb81259eeae582683ee04c5f1a43a0483cc0b4f",
+      "source_corpus_sha256": "sha256:eb76adcaabdd11c9ce0005c22e50a8530397c32127515a4461b1340e77e2d4b5"
+    }
+  },
+  "conversion": {
+    "inputs": {
+      "base": "/dev/shm/microtensor-code/base-qwen3-06b",
+      "training_run": "/dev/shm/microtensor-code/runs/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5",
+      "training_dataset": "/dev/shm/microtensor-code/dataset-historical-7299-seed92-h0",
+      "historical_source_corpus": "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+      "calibration_current_dataset": "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+      "calibration_current_source_corpus": "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+      "llama_cpp": "/tmp/llama.cpp"
+    },
+    "calibration": {
+      "profile": "code-public-imatrix128-v1",
+      "seed": 92,
+      "selection_algorithm": "sha256-seed-ref-ascending-v1",
+      "current_rows": 78,
+      "current_diagnostic_rows_excluded": 16,
+      "historical_rows": 434,
+      "total_rows": 512,
+      "chunks": 128,
+      "context_tokens": 512,
+      "eos_token": "<|im_end|>",
+      "eos_token_id": 151645,
+      "maximum_rendered_bytes": 16777216,
+      "rendering": {
+        "schema": "prompt-completion-im-end-utf8-v1",
+        "encoding": "UTF-8",
+        "expression": "prompt + completion + <|im_end|> + LF"
+      }
+    },
+    "parent_environment_exact": {
+      "CUDA_VISIBLE_DEVICES": "",
+      "HF_HUB_OFFLINE": "1",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "PATH": "/tmp/mt-train-venv/bin:/usr/bin:/bin",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "0",
+      "PYTHONNOUSERSITE": "1",
+      "PYTHONPYCACHEPREFIX": ".microtensor-empty-pycache",
+      "TRANSFORMERS_OFFLINE": "1",
+      "VECLIB_MAXIMUM_THREADS": "1",
+      "WANDB_MODE": "offline"
+    },
+    "child_environment_exact": {
+      "CUDA_VISIBLE_DEVICES": "",
+      "HF_HUB_OFFLINE": "1",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "PATH": "/tmp/mt-train-venv/bin:/usr/bin:/bin",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "0",
+      "PYTHONNOUSERSITE": "1",
+      "PYTHONPYCACHEPREFIX": ".microtensor-empty-pycache",
+      "TRANSFORMERS_OFFLINE": "1",
+      "VECLIB_MAXIMUM_THREADS": "1",
+      "WANDB_MODE": "offline"
+    },
+    "top_level_invocations": [
+      {
+        "id": "replay1",
+        "cwd": "/tmp/mt92-q4-code-60737e9",
+        "environment_must_equal_parent_environment_exact": true,
+        "umask": "0077",
+        "stdin": "/dev/null",
+        "shell": false,
+        "argv": [
+          "/tmp/mt-train-venv/bin/python",
+          "-m",
+          "training.convert_code_gguf",
+          "--training-run",
+          "/dev/shm/microtensor-code/runs/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5",
+          "--training-dataset",
+          "/dev/shm/microtensor-code/dataset-historical-7299-seed92-h0",
+          "--source-corpus",
+          "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+          "--base",
+          "/dev/shm/microtensor-code/base-qwen3-06b",
+          "--llama-cpp",
+          "/tmp/llama.cpp",
+          "--converter",
+          "/tmp/llama.cpp/convert_hf_to_gguf.py",
+          "--quantizer",
+          "/tmp/llama.cpp/build/bin/llama-quantize",
+          "--output-bundle",
+          "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay1-bundle",
+          "--quantization",
+          "Q4_K_M",
+          "--max-input-tokens",
+          "541",
+          "--calibration-profile",
+          "code-public-imatrix128-v1",
+          "--calibration-current-dataset",
+          "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+          "--calibration-current-source-corpus",
+          "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+          "--imatrix-tool",
+          "/tmp/llama.cpp/build/bin/llama-imatrix"
+        ]
+      },
+      {
+        "id": "replay2",
+        "cwd": "/tmp/mt92-q4-code-60737e9",
+        "environment_must_equal_parent_environment_exact": true,
+        "umask": "0077",
+        "stdin": "/dev/null",
+        "shell": false,
+        "argv": [
+          "/tmp/mt-train-venv/bin/python",
+          "-m",
+          "training.convert_code_gguf",
+          "--training-run",
+          "/dev/shm/microtensor-code/runs/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5",
+          "--training-dataset",
+          "/dev/shm/microtensor-code/dataset-historical-7299-seed92-h0",
+          "--source-corpus",
+          "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+          "--base",
+          "/dev/shm/microtensor-code/base-qwen3-06b",
+          "--llama-cpp",
+          "/tmp/llama.cpp",
+          "--converter",
+          "/tmp/llama.cpp/convert_hf_to_gguf.py",
+          "--quantizer",
+          "/tmp/llama.cpp/build/bin/llama-quantize",
+          "--output-bundle",
+          "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay2-bundle",
+          "--quantization",
+          "Q4_K_M",
+          "--max-input-tokens",
+          "541",
+          "--calibration-profile",
+          "code-public-imatrix128-v1",
+          "--calibration-current-dataset",
+          "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+          "--calibration-current-source-corpus",
+          "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+          "--imatrix-tool",
+          "/tmp/llama.cpp/build/bin/llama-imatrix"
+        ]
+      }
+    ],
+    "commands_per_internal_pass": [
+      {
+        "name": "convert_f16",
+        "cwd_role": "private_staging_or_determinism_replay",
+        "argv": [
+          "/tmp/llama.cpp/convert_hf_to_gguf.py",
+          "/dev/shm/microtensor-code/runs/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5/merged",
+          "--outfile",
+          "model-f16.gguf",
+          "--outtype",
+          "f16"
+        ]
+      },
+      {
+        "name": "calibrate_imatrix",
+        "cwd_role": "private_staging_or_determinism_replay",
+        "argv": [
+          "/tmp/llama.cpp/build/bin/llama-imatrix",
+          "--offline",
+          "--model",
+          "model-f16.gguf",
+          "--file",
+          "calibration.txt",
+          "--output",
+          "calibration.imatrix.gguf",
+          "--output-format",
+          "gguf",
+          "--ctx-size",
+          "512",
+          "--chunks",
+          "128",
+          "--batch-size",
+          "512",
+          "--ubatch-size",
+          "512",
+          "--threads",
+          "1",
+          "--threads-batch",
+          "1",
+          "--device",
+          "none",
+          "--gpu-layers",
+          "0",
+          "--fit",
+          "off",
+          "--flash-attn",
+          "off",
+          "--no-ppl",
+          "--parse-special",
+          "--output-frequency",
+          "129",
+          "--save-frequency",
+          "0"
+        ]
+      },
+      {
+        "name": "quantize",
+        "cwd_role": "private_staging_or_determinism_replay",
+        "argv": [
+          "/tmp/llama.cpp/build/bin/llama-quantize",
+          "--imatrix",
+          "calibration.imatrix.gguf",
+          "model-f16.gguf",
+          "artifact/model.gguf",
+          "Q4_K_M",
+          "1"
+        ]
+      }
+    ],
+    "private_execution_tree": {
+      "cwd_mode_exact": "0700",
+      "recursive_double_snapshot_required_before_and_after_every_child": true,
+      "child_pycache_prefix_absent_before_and_after_every_child": true,
+      "reject_symlinks": true,
+      "reject_special_entries": true,
+      "reject_name_pattern": "lib*.so*",
+      "stable_fields": ["device", "inode", "mode", "size", "mtime_ns", "ctime_ns"]
+    },
+    "determinism": {
+      "external_invocations": 2,
+      "internal_full_passes_per_invocation": 2,
+      "canonical_publication_bundle": "replay1",
+      "replay2_never_replaces_replay1_by_posthoc_selection": true,
+      "external_policy": "start replay1 once; only after complete success start replay2 once; any failure after a conversion child starts permanently rejects this Q4 declaration; never run an ad-hoc third invocation",
+      "must_match_exactly": [
+        "rendered calibration corpus bytes and digest",
+        "F16 GGUF bytes, digest, and validated metadata",
+        "imatrix GGUF bytes, digest, tensor metadata, and entry count",
+        "Q4 GGUF bytes, digest, imatrix metadata, artifact file set, and artifact tree digest",
+        "load-spec.json bytes",
+        "all source, lineage, toolchain, runtime-closure, environment, argv, and semantic receipt fields not explicitly listed as permitted variance"
+      ],
+      "receipt_bytes_required_identical": false,
+      "receipt_variance_closed": true,
+      "receipt_variance_permitted_only": {
+        "calibration-receipt.json": [
+          "$.commands[*].started_at_unix_ns",
+          "$.commands[*].finished_at_unix_ns",
+          "$.commands[*].stdout",
+          "$.commands[*].stderr",
+          "$.determinism_replay.commands[*].started_at_unix_ns",
+          "$.determinism_replay.commands[*].finished_at_unix_ns",
+          "$.determinism_replay.commands[*].stdout",
+          "$.determinism_replay.commands[*].stderr"
+        ],
+        "conversion-receipt.json": [
+          "$.calibration_receipt_digest",
+          "$.conversion.commands[*].started_at_unix_ns",
+          "$.conversion.commands[*].finished_at_unix_ns",
+          "$.conversion.commands[*].stdout",
+          "$.conversion.commands[*].stderr",
+          "$.conversion.determinism_replay.commands[*].started_at_unix_ns",
+          "$.conversion.determinism_replay.commands[*].finished_at_unix_ns",
+          "$.conversion.determinism_replay.commands[*].stdout",
+          "$.conversion.determinism_replay.commands[*].stderr"
+        ]
+      }
+    },
+    "required_bundle_files": [
+      "artifact/model.gguf",
+      "calibration-receipt.json",
+      "conversion-receipt.json",
+      "load-spec.json"
+    ],
+    "private_intermediates_forbidden_from_publication": [
+      ".conversion-logs",
+      "calibration.imatrix.gguf",
+      "calibration.txt",
+      "determinism-replay",
+      "model-f16.gguf"
+    ],
+    "undeclared_retry_after_failed_tool_start_forbidden": true
+  },
+  "toolchain": {
+    "llama_cpp": {
+      "root": "/tmp/llama.cpp",
+      "root_must_resolve_exactly": "/tmp/llama.cpp",
+      "revision": "c589f0ed10c643678c4707dd160c21ac7633ebc0",
+      "clean_tracked_tree_required_before_and_after_each_invocation": true
+    },
+    "llama_converter": {
+      "path": "/tmp/llama.cpp/convert_hf_to_gguf.py",
+      "size_bytes": 12798,
+      "sha256": "sha256:e38975e1c68d98ac1664dfd530616eb35c72294382a4dd873d4746b23f27779f",
+      "required_execution_mode": "0755"
+    },
+    "python": {
+      "executable_path": "/tmp/mt-train-venv/bin/python",
+      "resolved_executable_path": "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11",
+      "implementation_version": "3.11.14",
+      "resolved_executable_size_bytes": 21333768,
+      "resolved_executable_sha256": "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e",
+      "mode_observed": "0775",
+      "rpath": "$ORIGIN/../lib",
+      "pyvenv_cfg_sha256": "sha256:709f935b708929cf63bfe1170ee9d78a48d866febcfc1f0036be03c6bc81ac69",
+      "packages": {
+        "numpy": "2.4.6",
+        "protobuf": "5.29.6",
+        "safetensors": "0.8.0",
+        "sentencepiece": "0.2.2",
+        "torch_distribution": "2.13.0",
+        "transformers": "5.16.1"
+      }
+    },
+    "source_import_guard": {
+      "root": "/tmp/llama.cpp",
+      "root_must_be_regular_non_symlink_directory": true,
+      "double_snapshot_stability_required": true,
+      "stable_fields": ["device", "inode", "mode", "size", "mtime_ns", "ctime_ns"],
+      "excluded_from_recursive_descent_but_root_entry_still_attested": [".git", "build", "build-*"],
+      "native_extension_candidate_suffix_rejected": ".so",
+      "legacy_pyc_outside___pycache___rejected": true,
+      "source_surface_symlinks_rejected": true,
+      "source_surface_special_entries_rejected": true,
+      "stale_source___pycache___bypassed_by_exact_PYTHONPYCACHEPREFIX": true
+    },
+    "checkout_mode_transition": {
+      "inventory_schema": "canonical-json-[relative,type,mode,uid,gid,size,symlink-target]-v1",
+      "inventory_order": "root-then-os.walk-lexicographic-dirs-files",
+      "inventory_root_entry": ".",
+      "before": {
+        "entries": 8898,
+        "group_or_world_writable_non_symlinks": 8858,
+        "inventory_sha256": "sha256:7b1cfb6977656b4faa2804fd11c7c347e5b2e82ed16cd085281c2f78f34bac1e"
+      },
+      "projected_after": {
+        "entries": 8898,
+        "group_or_world_writable_non_symlinks": 0,
+        "inventory_sha256": "sha256:76c872ba5b5de3263012399565b9df28cd8ae1de5a71e9f95e2a1746f2fb5414"
+      },
+      "projection": "preserve symlink modes and targets; apply mode & ~0o022 to every non-symlink on the same filesystem",
+      "allowed_command_argv": [
+        "find",
+        "/tmp/llama.cpp",
+        "-xdev",
+        "!",
+        "-type",
+        "l",
+        "-perm",
+        "/022",
+        "-exec",
+        "chmod",
+        "go-w",
+        "{}",
+        "+"
+      ],
+      "content_and_git_identity_must_remain_unchanged": true,
+      "required_sequence": "commit and publicly push this declaration first; then apply only the declared mode transition; then recompute the complete inventory and every content, Git, source-import, runtime-closure, and host-dependency preflight"
+    },
+    "runtime_libraries": {
+      "schema": "microtensor.code.llama-cpp-runtime-libraries.v1",
+      "root": "/tmp/llama.cpp",
+      "counts": {
+        "namespace_entries": 18,
+        "symlinks": 10,
+        "executables": 2,
+        "libraries": 6
+      },
+      "directories": [
+        {"path": ".", "mode": "0755"},
+        {"path": "build", "mode": "0755"},
+        {"path": "build/bin", "mode": "0755"}
+      ],
+      "build_bin_namespace": [
+        "build/bin/libggml-base.so",
+        "build/bin/libggml-base.so.0",
+        "build/bin/libggml-base.so.0.22.0",
+        "build/bin/libggml-cpu.so",
+        "build/bin/libggml-cpu.so.0",
+        "build/bin/libggml-cpu.so.0.22.0",
+        "build/bin/libggml.so",
+        "build/bin/libggml.so.0",
+        "build/bin/libggml.so.0.22.0",
+        "build/bin/libllama-common.so",
+        "build/bin/libllama-common.so.0",
+        "build/bin/libllama-common.so.0.3.0",
+        "build/bin/libllama-quantize-impl.so",
+        "build/bin/libllama.so",
+        "build/bin/libllama.so.0",
+        "build/bin/libllama.so.0.3.0",
+        "build/bin/llama-imatrix",
+        "build/bin/llama-quantize"
+      ],
+      "symlinks": [
+        {"path": "build/bin/libggml-base.so", "target": "libggml-base.so.0"},
+        {"path": "build/bin/libggml-base.so.0", "target": "libggml-base.so.0.22.0"},
+        {"path": "build/bin/libggml-cpu.so", "target": "libggml-cpu.so.0"},
+        {"path": "build/bin/libggml-cpu.so.0", "target": "libggml-cpu.so.0.22.0"},
+        {"path": "build/bin/libggml.so", "target": "libggml.so.0"},
+        {"path": "build/bin/libggml.so.0", "target": "libggml.so.0.22.0"},
+        {"path": "build/bin/libllama-common.so", "target": "libllama-common.so.0"},
+        {"path": "build/bin/libllama-common.so.0", "target": "libllama-common.so.0.3.0"},
+        {"path": "build/bin/libllama.so", "target": "libllama.so.0"},
+        {"path": "build/bin/libllama.so.0", "target": "libllama.so.0.3.0"}
+      ],
+      "executables": [
+        {
+          "path": "build/bin/llama-imatrix",
+          "bytes": 343128,
+          "digest": "sha256:3661d870d8645bb1c770328dcf2e4bf7f4bf076e70a6c8beabc1b60085499a35",
+          "mode": "0755"
+        },
+        {
+          "path": "build/bin/llama-quantize",
+          "bytes": 17928,
+          "digest": "sha256:e7d4504b4db541f9a17ae920a8b505bc07159055400319ee056f4309bd800580",
+          "mode": "0755"
+        }
+      ],
+      "libraries": [
+        {
+          "loader_path": "build/bin/libggml-base.so.0",
+          "target_path": "build/bin/libggml-base.so.0.22.0",
+          "bytes": 939528,
+          "digest": "sha256:73106e6e34d4f6dcd9f4ffca57f132070c48e93c9dd409df2333eea1b7c4806f",
+          "mode": "0755"
+        },
+        {
+          "loader_path": "build/bin/libggml-cpu.so.0",
+          "target_path": "build/bin/libggml-cpu.so.0.22.0",
+          "bytes": 1143800,
+          "digest": "sha256:196c9f2c112e51f17b79375e80b102c72bc872b3e4fc17295ab1564533812807",
+          "mode": "0755"
+        },
+        {
+          "loader_path": "build/bin/libggml.so.0",
+          "target_path": "build/bin/libggml.so.0.22.0",
+          "bytes": 56376,
+          "digest": "sha256:eaea0b8964d5acee7ce26bb4895137df772ad24387f45fbb51158495f596fa29",
+          "mode": "0755"
+        },
+        {
+          "loader_path": "build/bin/libllama-common.so.0",
+          "target_path": "build/bin/libllama-common.so.0.3.0",
+          "bytes": 5909928,
+          "digest": "sha256:ce12dd60805687b1dfbd574033d5163089979a1b2b556cb8a6c65b85af7048f5",
+          "mode": "0755"
+        },
+        {
+          "loader_path": "build/bin/libllama-quantize-impl.so",
+          "target_path": "build/bin/libllama-quantize-impl.so",
+          "bytes": 89792,
+          "digest": "sha256:d79664774038f0f42eccee8b1d5772b2bbe0f7840181401c73e30f2986113cbb",
+          "mode": "0755"
+        },
+        {
+          "loader_path": "build/bin/libllama.so.0",
+          "target_path": "build/bin/libllama.so.0.3.0",
+          "bytes": 4692320,
+          "digest": "sha256:8c809635a537f48c79bb058034ae9eb3c437693bc8b4fc13e0035c0be7bad8ed",
+          "mode": "0755"
+        }
+      ]
+    },
+    "loader_contract": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "runpath": "/tmp/llama.cpp/build/bin:",
+      "runpath_trailing_empty_component_means_cwd": true,
+      "cwd_shared_library_candidates_rejected_recursively": true,
+      "environment_contains_no_ld_or_ggml_backend_variables": true,
+      "llama_imatrix_direct_needed": [
+        "libllama-common.so.0",
+        "libllama.so.0",
+        "libggml-base.so.0",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ],
+      "llama_quantize_direct_needed": [
+        "libllama-quantize-impl.so",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ]
+    },
+    "external_host_elf_dependencies": {
+      "converter_enforces_this_list": false,
+      "external_preflight_required_immediately_before_and_after_each_invocation": true,
+      "scope": "union of host files resolved for the two llama.cpp executables plus the pinned Python direct NEEDED set; in-checkout libraries are separately enforced by the converter",
+      "values": [
+        {
+          "path": "/lib64/ld-linux-x86-64.so.2",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+          "size_bytes": 236616,
+          "sha256": "sha256:cd4df4f3c7b83673d61189bf2eaebd33ca4f2853ab9772b8a25e025ef99b1e81",
+          "build_id": "f58808c9c8a388055b126492a1706d732761f86e",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+          "size_bytes": 2125328,
+          "sha256": "sha256:8db37cf3f2169f59a0f07ef1fea308c35656668c64c8ff294e1860f4121eb161",
+          "build_id": "328820b908de8ea1ef79afa8995e302e819163d7",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+          "size_bytes": 5305304,
+          "sha256": "sha256:c19c2cf8d7cf91c4f273b1d3bbc56a9d19c91a739bfe57ad630756ee8ede7b77",
+          "build_id": "0698e1ff610cb3c6993dccbd82c1281b1b4c5ade",
+          "package": "libssl3t64:amd64",
+          "package_version": "3.0.13-0ubuntu3.6"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+          "size_bytes": 14408,
+          "sha256": "sha256:292d5f5af2e7360b3e18c56591a4960115373ecf40627660f9149b6c68a33f80",
+          "build_id": "af44f21a241c6f8d6a64a90fb3f9df259e856909",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+          "size_bytes": 183024,
+          "sha256": "sha256:02f3f192bf5f79b811f1e34a650fea443d407408703448906585232383957f60",
+          "build_id": "3072445288dd2aba348bf583c65f70509aab8141",
+          "package": "libgcc-s1:amd64",
+          "package_version": "14.2.0-4ubuntu2~24.04"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libgomp.so.1",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0",
+          "size_bytes": 352304,
+          "sha256": "sha256:16c68465193c58900805106b70b26eecd6da5da42155f237ccddb922a3280ee6",
+          "build_id": "be297f11b9b4baa3674f3d9e232b2a87b3abf6b2",
+          "package": "libgomp1:amd64",
+          "package_version": "14.2.0-4ubuntu2~24.04"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+          "size_bytes": 952616,
+          "sha256": "sha256:e9c4b28d340e415b8137480ec442662f981e1399386c5931dae0e886e3639e91",
+          "build_id": "3e529ddbfb8ec567af02e29b9658a3cea92518d5",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+          "size_bytes": 14408,
+          "sha256": "sha256:a27ffa9bf233d61a5f02ddb0cf770dd6579021afc1aa8aec0fb58ee4a965281a",
+          "build_id": "3632984714aa04b4903808821aeec4e5d899c9ee",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/librt.so.1",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/librt.so.1",
+          "size_bytes": 14624,
+          "sha256": "sha256:c6e6288545e24b0b3cfbf33320bda9236521625d8c3d628f3444f1ed40e5c7c5",
+          "build_id": "0e09b169482996cf807441c0a08e1b4c6ef80f44",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libssl.so.3",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libssl.so.3",
+          "size_bytes": 696512,
+          "sha256": "sha256:63597a81ef19496ad0423cbaaf04d5b0244c7a9e261e331a5a7f3ac0fcdb9590",
+          "build_id": "5f3b12d47114f9fbdc7765266cd0bb8f1b5ee8fc",
+          "package": "libssl3t64:amd64",
+          "package_version": "3.0.13-0ubuntu3.6"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33",
+          "size_bytes": 2592224,
+          "sha256": "sha256:a68762c86d371e6041f03f03a33a78fa235809ae7d81c90185940c93c3535aed",
+          "build_id": "ca77dae775ec87540acd7218fa990c40d1c94ab1",
+          "package": "libstdc++6:amd64",
+          "package_version": "14.2.0-4ubuntu2~24.04"
+        },
+        {
+          "path": "/usr/lib/x86_64-linux-gnu/libutil.so.1",
+          "resolved_path": "/usr/lib/x86_64-linux-gnu/libutil.so.1",
+          "size_bytes": 14408,
+          "sha256": "sha256:0f3f158a3bddc74152a56ae8d2be659485f90dd9abbca92d25961f973672d2f5",
+          "build_id": "2e05534da26fbc3db977a0c15695d5a30c05f090",
+          "package": "libc6:amd64",
+          "package_version": "2.39-0ubuntu8.8"
+        }
+      ]
+    }
+  },
+  "diagnostic": {
+    "evaluator_module": "training.evaluate_code_gguf",
+    "signed_runtime": {
+      "mechanism_version": "0.3.0",
+      "python_path": "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+      "python_resolved_path": "/usr/bin/python3.12",
+      "python_version": "3.12.3",
+      "python_size_bytes": 8016832,
+      "python_sha256": "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb"
+    },
+    "dataset": "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+    "dataset_manifest_sha256": "sha256:6af4fe8952293339773e133a867d78e817d759a83138bc7400af98e2e04898ff",
+    "diagnostic_jsonl": "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl",
+    "holdout_jsonl_sha256": "sha256:8b07f781c6d160f752963b3a42f343c18d53a785d7b7cd09f472fdddbd2d7993",
+    "refs_sha256": "sha256:73edc2a7674e0c718ea4ef7ea67c638b1a2c431320789b632aad5909309e01ee",
+    "examples": 16,
+    "source_corpus": "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+    "source_corpus_sha256": "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5",
+    "artifact_binding": {
+      "artifact_path": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay1-bundle/artifact",
+      "digest_source": "replay1 conversion-receipt.json $.artifact.tree_digest",
+      "entrypoint": "model.gguf",
+      "load_spec_source": "replay1 load-spec.json",
+      "quantization": "Q4_K_M"
+    },
+    "training_lineage_arguments": {
+      "training_run": "/dev/shm/microtensor-code/runs/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5",
+      "training_dataset": "/dev/shm/microtensor-code/dataset-historical-7299-seed92-h0",
+      "source_corpus": "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+      "base": "/dev/shm/microtensor-code/base-qwen3-06b"
+    },
+    "output_roots": [
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7299-b1ga16-v5-q4-imatrix128-m541-current16-signed-v030-r1",
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7299-b1ga16-v5-q4-imatrix128-m541-current16-signed-v030-r2",
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7299-b1ga16-v5-q4-imatrix128-m541-current16-signed-v030-r3"
+    ],
+    "output_namespaces_verified_absent_at_utc": "2026-09-01T04:55:38Z",
+    "repeat_policy": "run r1 first; validate it before starting r2; validate r2 before starting r3; run exactly three successful repeats and use the worst observed p95 TTFT; stop on any failure",
+    "quality_fields_required_null": [
+      "results.execution_pass_at_1",
+      "results.quality_score"
+    ],
+    "static_validation_only": {
+      "generated_or_corpus_code_compiled": false,
+      "generated_or_corpus_code_executed": false,
+      "scorer_extracted_code_parsed_with_ast_only": true
+    }
+  },
+  "gates": {
+    "artifact_tree_and_entrypoint_identical_across_external_invocations": true,
+    "successful_generations_minimum": 16,
+    "failed_generations_maximum": 0,
+    "scorer_extracted_parseable_python_minimum": 16,
+    "scorer_extracted_top_level_task_func_minimum": 16,
+    "scorer_extracted_residual_fences_maximum": 0,
+    "maximum_request_latency_ms": 31200,
+    "p95_ttft_ms_maximum": 5256,
+    "p95_ttft_ms_preferred": 4700,
+    "peak_rss_bytes_maximum": 1073741824,
+    "maximum_stream_pieces_per_request": 373,
+    "official_namespace_sandbox_selfcheck_required": true
+  },
+  "publication": {
+    "wandb": {
+      "schema": "microtensor.code.wandb-provenance.v1",
+      "destination": {
+        "entity": "microtensor",
+        "project": "training-runs",
+        "final_display_name": "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
+      },
+      "application_payload_must_exclude": [
+        "credentials",
+        "model weights",
+        "private keys",
+        "raw corpus",
+        "wallet files"
+      ],
+      "fresh_authorization_required_after_export": {
+        "require_confirmation_previous_api_key_was_rotated": true,
+        "disclose_exact_bytes": true,
+        "disclose_exact_sha256": true,
+        "disclose_lifecycle_and_bounded_service_metadata": true,
+        "previous_authorization_bytes": 84794,
+        "previous_authorization_digest": "sha256:86fc1a43cab1cdfa1ddcdcf8e922362f3ef96e19fffa2397a77737acd4052f1b",
+        "previous_authorization_is_invalid_for_revised_payload": true
+      },
+      "lifecycle": {
+        "deterministic_run_id": "mt92- plus the first 40 hex characters of SHA-256 over the canonical authorized envelope identity material",
+        "pending_display_name": "pending-<deterministic-run-id>",
+        "first_readback": "require finished state, pending display name, exact application config, exact application summary, and every history row after only disclosed automatic-field removal",
+        "final_commit_marker": "rename display name to the hotkey only after the first exact remote readback",
+        "second_readback": "after acknowledged rename, refetch and repeat exact verification with the final hotkey display name",
+        "readback_timeout_seconds": 30,
+        "terminal_failure_policy": "pending_failed, committed, and outcome_uncertain states are non-retryable; outcome_uncertain permits read-only reconciliation only"
+      },
+      "sdk": {
+        "version": "0.29.0",
+        "host": "microtensor-provenance",
+        "program": "microtensor-provenance",
+        "program_abspath": "/microtensor-provenance",
+        "error_reporting_variable": {
+          "name": "WANDB_ERROR_REPORTING",
+          "value": "false"
+        },
+        "automatic_history_fields": ["_runtime", "_step", "_timestamp"],
+        "automatic_summary_fields": ["_runtime", "_step", "_timestamp", "_wandb"],
+        "bounded_service_metadata_authorized_only_after_disclosure": true
+      }
+    },
+    "github": {
+      "repository": "https://github.com/vandungtech/mt92",
+      "authorized_publication_scope": "exact validated Q4 artifact and provenance only",
+      "artifact_release_must_be_immutable": true,
+      "q4_release_tag_derivation": "mt92-code-v0.3-q4- plus the first eight lowercase hex characters of the exact replay1 artifact tree SHA-256",
+      "existing_q8_fallback_release": "https://github.com/vandungtech/mt92/releases/tag/mt92-code-v0.3-q8-c4dff694",
+      "token_file": "/etc/microtensor-miner/github.token",
+      "token_file_required_owner": "root:root",
+      "token_file_required_mode": "0600",
+      "workflow": {
+        "path": ".github/workflows/artifact-selfcheck.yml",
+        "trigger": "workflow_dispatch",
+        "push_blocker": "GitHub token requires Workflows read/write permission",
+        "must_bind_exact_q4_release_bytes_and_digests": true,
+        "must_complete_official_namespace_selfcheck": true,
+        "secrets_or_transactions_permitted": false
+      }
+    }
+  },
+  "transaction_authorization": {
+    "allowed_transaction": "Microtensor artifact commitment only",
+    "netuid": 92,
+    "uid": 32,
+    "hotkey_name": "you-hot1",
+    "hotkey_ss58": "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r",
+    "registration_must_remain_exact": true,
+    "estimated_fee_tao_must_equal": 0,
+    "deposit_tao_must_equal": 0,
+    "forbidden_transactions": [
+      "registration",
+      "re-registration",
+      "staking",
+      "transfer",
+      "unstaking",
+      "any other paid or different transaction"
+    ],
+    "chain_preflight_immediately_before_compose_estimate_sign_and_send": true,
+    "public_artifact_and_provenance_must_be_immutable_and_readback_verified": true,
+    "submission_forbidden_while_round_feeds_or_config_hash_are_incoherent": true,
+    "stop_and_request_new_authorization_on_any_nonzero_or_different_transaction": true
+  },
+  "operational_blockers_at_declaration": {
+    "q4_artifact_built_and_validated": false,
+    "q4_immutable_github_release_exists": false,
+    "q4_wandb_payload_freshly_authorized": false,
+    "wandb_previous_api_key_rotation_confirmed": false,
+    "github_token_has_workflows_write_permission": false,
+    "official_namespace_selfcheck_available_on_this_host": false,
+    "coordinator_config_hash_matches_served_config": false,
+    "coordinator_and_public_round_feeds_are_coherent": false
+  },
+  "rank_target": {
+    "completion_condition": "official settled leaderboard rank 1 for UID 32 and the exact hotkey on netuid 92",
+    "current_leader_quality_at_declaration": 0.828,
+    "current_leader_cost_ms_at_declaration": 5356,
+    "inferred_minimum_quality_at_4800_ms": 0.7781,
+    "preferred_official_quality_minimum": 0.82,
+    "preferred_official_cost_ms_maximum": 4700,
+    "local_structural_diagnostics_are_not_official_quality": true
+  },
+  "safety": {
+    "calibration_runs_pinned_offline_model_forward_passes": true,
+    "corpus_code_executed": false,
+    "generated_code_compiled": false,
+    "generated_code_executed": false,
+    "hidden_or_scored_tests_accessed": false,
+    "credentials_or_wallet_values_in_child_environment": false,
+    "static_ast_parse_only_for_diagnostic_outputs": true,
+    "kernel_network_namespace_available_on_this_host": false,
+    "quality_claim": "none: public structural diagnostics are not execution pass@1"
+  },
+  "selection": {
+    "promote_only_if_every_local_gate_passes_on_every_required_repeat": true,
+    "retain_immutable_q8_as_fallback_on_any_q4_failure": true,
+    "official_validator_measurements_remain_authoritative": true,
+    "publication_and_submission_remain_blocked_until_all_operational_blockers_clear": true
+  }
+}
