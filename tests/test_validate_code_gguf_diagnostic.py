@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from training import code_candidate as candidate
+from training import convert_code_gguf as real_converter
 from training import evaluate_code_gguf as evaluator
 from training import validate_code_gguf_diagnostic as validator
 
@@ -58,6 +59,52 @@ def _write_v7_spec(path: Path, payload: dict[str, object]) -> validator.Normaliz
         encoding="utf-8",
     )
     return validator._load_normalized_v7_spec(path)
+
+
+def _current94_spec_payload() -> dict[str, object]:
+    commit = "c" * 40
+    return validator.current94_v8_spec_payload(
+        source_root=Path("/tmp") / f"mt92-current94-diagnostic-{commit[:7]}",
+        source_commit=commit,
+        source_files={
+            relative: _v7_identity("1") for relative in validator.CURRENT94_REQUIRED_SOURCE_FILES
+        },
+        training_receipt=_v7_identity("2"),
+        training_metrics=_v7_identity("3"),
+        merged_tree_digest="sha256:" + "4" * 64,
+        conversion_receipt=_v7_identity("5"),
+        calibration_receipt=_v7_identity("6"),
+        load_spec=_v7_identity("7"),
+        artifact={
+            "tree_digest": "sha256:" + "8" * 64,
+            "entrypoint_bytes": 42,
+            "entrypoint_digest": "sha256:" + "9" * 64,
+        },
+        conversion_runtime={
+            "converter_interpreter": {
+                "container_path": (
+                    "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11"
+                ),
+                "bytes": 21_333_768,
+                "digest": (
+                    "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e"
+                ),
+                "mode": "0o755",
+            },
+            "llama_cpp_runtime_closure": _v7_identity("a"),
+        },
+        runtime_identity=_v7_identity("b"),
+    )
+
+
+def _write_current94_spec(
+    path: Path, payload: dict[str, object]
+) -> validator.Current94SpecBindings:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return validator._load_current94_v8_spec(path)
 
 
 def _source_row(index: int, sentinel: Path) -> dict[str, object]:
@@ -1573,6 +1620,649 @@ class NormalizedV7ContractTests(unittest.TestCase):
             microtensor["release_version"] = "0.3.1"
             with self.assertRaises(validator.ValidationRefused):
                 validator._validate_normalized_runtime_identity(tampered, spec)
+
+
+class Current94V8ContractTests(unittest.TestCase):
+    def test_final_spec_is_deterministic_and_every_lineage_swap_refuses(self) -> None:
+        payload = _current94_spec_payload()
+        self.assertEqual(
+            validator._canonical_json_bytes(payload),
+            validator._canonical_json_bytes(_current94_spec_payload()),
+        )
+        self.assertEqual(payload["schema"], validator.CURRENT94_SPEC_SCHEMA)
+        self.assertEqual(payload["candidate"]["gguf_architecture"], "qwen2")
+        self.assertEqual(payload["conversion"]["schema"], validator.CURRENT94_CONVERSION_SCHEMA)
+        self.assertEqual(
+            payload["conversion"]["calibration_schema"],
+            validator.CURRENT94_CALIBRATION_SCHEMA,
+        )
+        self.assertEqual(payload["runtime"]["release_version"], "0.3.2")
+        self.assertEqual(payload["runtime"]["mechanism_version"], "0.3.0")
+        self.assertEqual(payload["diagnostic"]["relationship_to_training"], "training_overlap")
+        self.assertEqual(payload["training_lineage"]["run_kind"], "final_all_public")
+        self.assertEqual(payload["training_lineage"]["train_examples"], 94)
+        self.assertEqual(payload["training_lineage"]["holdout_examples"], 0)
+        self.assertEqual(
+            payload["safety_contract"], validator.CURRENT94_STATIC_VALIDATOR_SAFETY_CONTRACT
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "spec.json"
+            loaded = _write_current94_spec(path, payload)
+            self.assertEqual(loaded.conversion_receipt, _v7_identity("5"))
+            mutations = (
+                ("status", lambda item: item.update(status="prospective")),
+                (
+                    "conversion schema",
+                    lambda item: item["conversion"].update(
+                        schema="microtensor.code.gguf-conversion.v5"
+                    ),
+                ),
+                (
+                    "calibration schema",
+                    lambda item: item["conversion"].update(
+                        calibration_schema="microtensor.code.imatrix-calibration.v2"
+                    ),
+                ),
+                (
+                    "architecture",
+                    lambda item: item["candidate"].update(gguf_architecture="qwen3"),
+                ),
+                (
+                    "release",
+                    lambda item: item["runtime"].update(release_version="0.3.0"),
+                ),
+                (
+                    "training split",
+                    lambda item: item["training_lineage"].update(holdout_examples=16),
+                ),
+                (
+                    "converter interpreter",
+                    lambda item: item["conversion"]["runtime_receipt_content_binding"][
+                        "converter_interpreter"
+                    ].update(container_path="/attacker/python"),
+                ),
+                (
+                    "execution claim",
+                    lambda item: item["safety_contract"].update(
+                        generated_code_executed=True
+                    ),
+                ),
+            )
+            for label, mutate in mutations:
+                tampered = copy.deepcopy(payload)
+                mutate(tampered)
+                path.write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n")
+                with self.subTest(label=label), self.assertRaises(validator.ValidationRefused):
+                    validator._load_current94_v8_spec(path)
+
+    def test_current94_v6_v3_full_filesystem_fixture_is_static_and_portable(self) -> None:
+        class StaticEvaluator:
+            def __init__(self, artifact: dict[str, object]) -> None:
+                self.artifact = artifact
+                self.SUPPORTED_QUANTIZATIONS = {validator.QUANTIZATION: 15}
+
+            @property
+            def engine_type(self) -> object:
+                raise AssertionError("model engine must never be constructed")
+
+            def file_identity(self, *_args: object, **_kwargs: object) -> object:
+                raise AssertionError("worker interpreter filesystem must not be inspected")
+
+            def artifact_identity(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+                return copy.deepcopy(self.artifact)
+
+        def runtime_closure_receipt() -> dict[str, object]:
+            namespace_names: set[str] = set()
+            for relative, _size, _digest_value in (
+                real_converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT
+            ):
+                namespace_names.add(Path(relative).name)
+            for loader, target, _size, _digest_value in (
+                real_converter.LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT
+            ):
+                namespace_names.add(Path(loader).name)
+                namespace_names.add(Path(target).name)
+            for relative, target in real_converter.LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT:
+                namespace_names.add(Path(relative).name)
+                namespace_names.add(target)
+            return {
+                "schema": real_converter.RUNTIME_LIBRARY_SCHEMA,
+                "root": str(real_converter.LLAMA_CPP_ROOT),
+                "directories": [
+                    {"path": ".", "mode": "0755"},
+                    {"path": "build", "mode": "0755"},
+                    {"path": "build/bin", "mode": "0755"},
+                ],
+                "build_bin_namespace": [
+                    f"build/bin/{name}" for name in sorted(namespace_names)
+                ],
+                "symlinks": [
+                    {"path": relative, "target": target}
+                    for relative, target in real_converter.LLAMA_CPP_RUNTIME_SYMLINK_CONTRACT
+                ],
+                "executables": [
+                    {
+                        "path": relative,
+                        "bytes": size,
+                        "digest": digest,
+                        "mode": "0755",
+                    }
+                    for (
+                        relative,
+                        size,
+                        digest,
+                    ) in real_converter.LLAMA_CPP_BUILD_BIN_EXECUTABLE_CONTRACT
+                ],
+                "libraries": [
+                    {
+                        "loader_path": loader,
+                        "target_path": target,
+                        "bytes": size,
+                        "digest": digest,
+                        "mode": "0755",
+                    }
+                    for (
+                        loader,
+                        target,
+                        size,
+                        digest,
+                    ) in real_converter.LLAMA_CPP_RUNTIME_LIBRARY_CONTRACT
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            loaded = _write_current94_spec(
+                parent / "spec.json", _current94_spec_payload()
+            )
+            bundle = parent / "bundle"
+            artifact_root = bundle / "artifact"
+            artifact_root.mkdir(parents=True)
+            artifact_raw = b"synthetic GGUF receipt fixture; never loaded"
+            (artifact_root / validator.ENTRYPOINT).write_bytes(artifact_raw)
+            artifact_contract = {
+                "tree_digest": "sha256:" + "8" * 64,
+                "entrypoint_bytes": len(artifact_raw),
+                "entrypoint_digest": _digest(artifact_raw),
+            }
+            load_manifest = {
+                "format": "gguf",
+                "quantization": validator.QUANTIZATION,
+                "entrypoint": validator.ENTRYPOINT,
+                "max_input": {"tokens": validator.MAX_INPUT_TOKENS},
+                "preprocessing": {"tokenizer": "tokenizer.json"},
+                "base_model": validator.CURRENT94_BASE_MODEL,
+            }
+            load_raw = validator._pretty_json_bytes_for_current94(load_manifest)
+            (bundle / "load-spec.json").write_bytes(load_raw)
+
+            container_python = (
+                "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11"
+            )
+            portable_interpreter = {
+                "path": container_python,
+                "bytes": 21_333_768,
+                "digest": (
+                    "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e"
+                ),
+                "mode": "0o755",
+            }
+            interpreter_receipt = {
+                "portable": portable_interpreter,
+                "worker_observation": {
+                    "device": 91,
+                    "inode": 92,
+                    "mtime_ns": 93,
+                    "ctime_ns": 94,
+                },
+            }
+            self.assertEqual(
+                real_converter._converter_python_receipt_identity(
+                    interpreter_receipt, "synthetic nested converter Python"
+                ),
+                interpreter_receipt,
+            )
+            runtime_closure = runtime_closure_receipt()
+            closure_raw = validator._canonical_json_bytes(runtime_closure)
+            llama_root = real_converter.LLAMA_CPP_ROOT
+            command_argv = [
+                [
+                    container_python,
+                    str(llama_root / "convert_hf_to_gguf.py"),
+                ],
+                [str(llama_root / "build/bin/llama-imatrix"), "--synthetic"],
+                [str(llama_root / "build/bin/llama-quantize"), "--synthetic"],
+            ]
+            child_environment = real_converter._small_child_environment(single_thread=True)
+            empty_digest = _digest(b"")
+
+            def receipt_command(
+                name: str,
+                argv: list[str],
+                *,
+                cwd_role: str,
+                started_at: int,
+            ) -> dict[str, object]:
+                stream = {
+                    "bytes": 0,
+                    "captured_bytes": 0,
+                    "captured_digest": empty_digest,
+                    "digest": empty_digest,
+                    "truncated": False,
+                }
+                value: dict[str, object] = {
+                    "name": name,
+                    "argv": argv,
+                    "cwd_role": cwd_role,
+                    "environment": dict(child_environment),
+                    "returncode": 0,
+                    "started_at_unix_ns": started_at,
+                    "finished_at_unix_ns": started_at + 1,
+                    "stdout": copy.deepcopy(stream),
+                    "stderr": copy.deepcopy(stream),
+                }
+                if name == "convert_f16":
+                    value["launch"] = {
+                        "method": "proc-self-fd",
+                        "executed_object": copy.deepcopy(interpreter_receipt),
+                    }
+                return value
+
+            names = ("convert_f16", "calibrate_imatrix", "quantize")
+            commands = [
+                receipt_command(
+                    name,
+                    argv,
+                    cwd_role="private_staging",
+                    started_at=index * 2 + 1,
+                )
+                for index, (name, argv) in enumerate(
+                    zip(names, command_argv, strict=True)
+                )
+            ]
+            replay_commands = [
+                receipt_command(
+                    name,
+                    argv,
+                    cwd_role="determinism_replay",
+                    started_at=index * 2 + 11,
+                )
+                for index, (name, argv) in enumerate(
+                    zip(names, command_argv, strict=True)
+                )
+            ]
+            replay = {
+                "schema": "microtensor.code.gguf-determinism-replay.v1",
+                "commands": replay_commands,
+                "f16_digest": _digest(b"f16"),
+                "imatrix_digest": _digest(b"imatrix"),
+                "entrypoint_digest": artifact_contract["entrypoint_digest"],
+                "entrypoint_bytes": artifact_contract["entrypoint_bytes"],
+                "artifact_tree_digest": artifact_contract["tree_digest"],
+                "matches_primary": True,
+            }
+            source = {
+                "training_schema": real_converter.CURRENT_TRAINING_SCHEMA,
+                "dataset_schema": candidate.DATASET_SCHEMA,
+                "corpus_profile": real_converter.CURRENT_CORPUS_PROFILE,
+                "training_metadata_digest": _digest(b"training"),
+                "training_metrics_digest": _digest(b"metrics"),
+                "merged_tree_digest": _digest(b"merged"),
+                "source_corpus": {
+                    "bytes": evaluator.CURRENT94_PUBLIC_CORPUS_BYTES,
+                    "digest": evaluator.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
+                    "canonical_bytes": 1,
+                    "canonical_digest": candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+                    "task_count": candidate.EXPECTED_COUNTS["train"],
+                    "refs_digest": _digest(b"refs"),
+                },
+                "prepared_dataset": {
+                    "manifest_digest": _digest(b"manifest"),
+                    "train_digest": _digest(b"train"),
+                    "holdout_digest": _digest(b"holdout"),
+                    "train_examples": candidate.EXPECTED_COUNTS["train"],
+                    "holdout_examples": 0,
+                },
+                "base_snapshot": {
+                    "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                },
+            }
+            expected_receipt_artifact = {
+                **artifact_contract,
+                "quantization": validator.QUANTIZATION,
+            }
+            common = {
+                "status": "complete",
+                "track": validator.TRACK,
+                "hardware_class": validator.HARDWARE_CLASS,
+                "base_model": validator.CURRENT94_BASE_MODEL,
+                "llama_cpp_revision": real_converter.LLAMA_CPP_REVISION,
+            }
+            calibration = {
+                **common,
+                "schema": validator.CURRENT94_CALIBRATION_SCHEMA,
+                "profile": real_converter.CALIBRATION_PROFILE,
+                "source": {"synthetic": "public-calibration-source"},
+                "selection": {"indices": [0]},
+                "toolchain": {
+                    "converter_digest": "sha256:" + "b" * 64,
+                    "converter_python": copy.deepcopy(interpreter_receipt),
+                    "imatrix_digest": "sha256:" + "c" * 64,
+                    "quantizer_digest": "sha256:" + "d" * 64,
+                    "runtime_libraries": runtime_closure,
+                },
+                "commands": commands,
+                "determinism_replay": replay,
+                "artifact": {
+                    **expected_receipt_artifact,
+                    "calibration_metadata": {"synthetic": True},
+                },
+                "load_manifest": load_manifest,
+            }
+            conversion = {
+                **common,
+                "schema": validator.CURRENT94_CONVERSION_SCHEMA,
+                "source": source,
+                "conversion": {
+                    "converter_python": copy.deepcopy(interpreter_receipt),
+                    "runtime_libraries": runtime_closure,
+                    "converter_digest": "sha256:" + "b" * 64,
+                    "imatrix_digest": "sha256:" + "c" * 64,
+                    "quantizer_digest": "sha256:" + "d" * 64,
+                    "commands": copy.deepcopy(commands),
+                    "determinism_replay": copy.deepcopy(replay),
+                },
+                "artifact": expected_receipt_artifact,
+                "load_manifest": load_manifest,
+                "calibration_receipt_digest": _digest(b"replaced-when-written"),
+            }
+            portable_runtime = {
+                "converter_interpreter": {
+                    "container_path": portable_interpreter["path"],
+                    "bytes": portable_interpreter["bytes"],
+                    "digest": portable_interpreter["digest"],
+                    "mode": portable_interpreter["mode"],
+                },
+                "llama_cpp_runtime_closure": {
+                    "bytes": len(closure_raw),
+                    "digest": _digest(closure_raw),
+                },
+            }
+            base_spec = replace(
+                loaded,
+                bundle=bundle,
+                load_spec={"bytes": len(load_raw), "digest": _digest(load_raw)},
+                artifact_contract=artifact_contract,
+                conversion_runtime=portable_runtime,
+            )
+
+            def write_receipts(
+                calibration_value: dict[str, object],
+                conversion_value: dict[str, object],
+            ) -> validator.Current94SpecBindings:
+                calibration_raw = validator._pretty_json_bytes_for_current94(
+                    calibration_value
+                )
+                normalized_conversion = copy.deepcopy(conversion_value)
+                normalized_conversion["calibration_receipt_digest"] = _digest(
+                    calibration_raw
+                )
+                conversion_raw = validator._pretty_json_bytes_for_current94(
+                    normalized_conversion
+                )
+                (bundle / "calibration-receipt.json").write_bytes(calibration_raw)
+                (bundle / "conversion-receipt.json").write_bytes(conversion_raw)
+                return replace(
+                    base_spec,
+                    calibration_receipt={
+                        "bytes": len(calibration_raw),
+                        "digest": _digest(calibration_raw),
+                    },
+                    conversion_receipt={
+                        "bytes": len(conversion_raw),
+                        "digest": _digest(conversion_raw),
+                    },
+                )
+
+            artifact = {
+                "root": str(artifact_root),
+                "tree_digest": artifact_contract["tree_digest"],
+                "entrypoint": {
+                    "path": validator.ENTRYPOINT,
+                    "bytes": artifact_contract["entrypoint_bytes"],
+                    "digest": artifact_contract["entrypoint_digest"],
+                    "gguf": {"version": 3, "architecture": "qwen2", "file_type": 15},
+                },
+            }
+            converter = SimpleNamespace(
+                CURRENT_CALIBRATED_CONVERSION_SCHEMA=(
+                    real_converter.CURRENT_CALIBRATED_CONVERSION_SCHEMA
+                ),
+                CURRENT_CALIBRATION_SCHEMA=real_converter.CURRENT_CALIBRATION_SCHEMA,
+                CURRENT_TRAINING_SCHEMA=real_converter.CURRENT_TRAINING_SCHEMA,
+                QWEN25_ARCHITECTURE=real_converter.QWEN25_ARCHITECTURE,
+                LLAMA_CPP_REVISION=real_converter.LLAMA_CPP_REVISION,
+                CALIBRATION_PROFILE=real_converter.CALIBRATION_PROFILE,
+                LLAMA_CPP_ROOT=real_converter.LLAMA_CPP_ROOT,
+                _validate_current_loaded_lineage=mock.Mock(),
+                _current_conversion_source=mock.Mock(return_value=source),
+                _validate_calibration_material_binding=mock.Mock(),
+                _converter_python_receipt_identity=(
+                    real_converter._converter_python_receipt_identity
+                ),
+                _validate_calibrated_receipts=real_converter._validate_calibrated_receipts,
+                _runtime_library_closure=mock.Mock(
+                    side_effect=AssertionError("runtime binaries must not be inspected")
+                ),
+            )
+            tools = validator.Current94Toolset(
+                candidate=SimpleNamespace(),
+                evaluator=StaticEvaluator(artifact),
+                converter=converter,
+            )
+            spec = write_receipts(calibration, conversion)
+            result = validator._validate_current94_conversion_bundle(spec, tools, {})
+            self.assertEqual(result.artifact["tree_digest"], artifact_contract["tree_digest"])
+            self.assertEqual(
+                result.replay_receipts[0][
+                    "converter_interpreter_portable_receipt_content"
+                ],
+                portable_runtime["converter_interpreter"],
+            )
+            converter._runtime_library_closure.assert_not_called()
+
+            changed_conversion = copy.deepcopy(conversion)
+            changed_conversion["conversion"]["converter_python"]["portable"]["digest"] = (
+                "sha256:" + "0" * 64
+            )
+            changed_spec = write_receipts(calibration, changed_conversion)
+            with self.assertRaisesRegex(
+                validator.ValidationRefused,
+                "different converter Python identities",
+            ):
+                validator._validate_current94_conversion_bundle(changed_spec, tools, {})
+
+            changed_calibration = copy.deepcopy(calibration)
+            changed_conversion = copy.deepcopy(conversion)
+            changed_calibration["commands"][0]["launch"]["method"] = "direct-path"
+            changed_conversion["conversion"]["commands"][0]["launch"][
+                "method"
+            ] = "direct-path"
+            changed_spec = write_receipts(changed_calibration, changed_conversion)
+            with self.assertRaisesRegex(
+                validator.ValidationRefused,
+                "held-fd launch identity changed",
+            ):
+                validator._validate_current94_conversion_bundle(changed_spec, tools, {})
+
+            changed_calibration = copy.deepcopy(calibration)
+            changed_conversion = copy.deepcopy(conversion)
+            changed_calibration["determinism_replay"]["commands"][0]["launch"][
+                "executed_object"
+            ]["worker_observation"]["inode"] = 999
+            changed_conversion["conversion"]["determinism_replay"]["commands"][0][
+                "launch"
+            ]["executed_object"]["worker_observation"]["inode"] = 999
+            changed_spec = write_receipts(changed_calibration, changed_conversion)
+            with self.assertRaisesRegex(
+                validator.ValidationRefused,
+                "held-fd launch identity changed",
+            ):
+                validator._validate_current94_conversion_bundle(changed_spec, tools, {})
+
+            valid_spec = write_receipts(calibration, conversion)
+            changed_runtime = copy.deepcopy(portable_runtime)
+            changed_runtime["converter_interpreter"]["digest"] = "sha256:" + "f" * 64
+            with self.assertRaisesRegex(
+                validator.ValidationRefused,
+                "portable converter interpreter",
+            ):
+                validator._validate_current94_conversion_bundle(
+                    replace(valid_spec, conversion_runtime=changed_runtime),
+                    tools,
+                    {},
+                )
+
+    def test_signed_v032_runtime_identity_is_recomputed_and_release_swap_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            spec = _write_current94_spec(
+                Path(temporary) / "spec.json", _current94_spec_payload()
+            )
+        identity = {
+            "python": {
+                "version": validator.EXPECTED_PYTHON_VERSION,
+                "executable": {
+                    "path": "/usr/bin/python3.12",
+                    "bytes": 8_016_832,
+                    "digest": (
+                        "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb"
+                    ),
+                },
+            },
+            "microtensor": {"release_version": "0.3.2", "mechanism_version": "0.3.0"},
+        }
+        raw = validator._canonical_json_bytes(identity)
+        spec = replace(
+            spec,
+            runtime_contract={
+                **spec.runtime_contract,
+                "identity": {"bytes": len(raw), "digest": _digest(raw)},
+            },
+        )
+        tools = validator.Current94Toolset(
+            candidate=SimpleNamespace(),
+            evaluator=SimpleNamespace(
+                SIGNED_RELEASE_VERSION="0.3.2",
+                SIGNED_MECHANISM_VERSION="0.3.0",
+            ),
+            converter=SimpleNamespace(),
+        )
+        with mock.patch.object(
+            validator.sys,
+            "executable",
+            "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+        ):
+            validator._validate_current94_runtime_identity(identity, spec, tools)
+            tampered = copy.deepcopy(identity)
+            tampered["microtensor"]["release_version"] = "0.3.0"
+            with self.assertRaisesRegex(validator.ValidationRefused, "Microtensor"):
+                validator._validate_current94_runtime_identity(tampered, spec, tools)
+
+    def test_qwen25_v2_summary_and_overlap_claim_validate_without_running_poison(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = ReceiptFixture(Path(temporary) / "r1")
+            summary = fixture.write()
+            summary["schema"] = evaluator.SCHEMA_V2
+            summary["base_model"] = validator.CURRENT94_BASE_MODEL
+            summary["lineage_claim"] = evaluator.CURRENT_OVERLAP_LINEAGE_CLAIM
+            (fixture.root / "summary.json").write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            receipt = validator._validate_repeat(
+                "r1",
+                fixture.root,
+                context=fixture.context,
+                gates=validator.EXPECTED_GATES,
+                summary_schema=evaluator.SCHEMA_V2,
+                base_model=validator.CURRENT94_BASE_MODEL,
+                lineage_claim=evaluator.CURRENT_OVERLAP_LINEAGE_CLAIM,
+            )
+            self.assertEqual(receipt["gates"]["successful_generations"], 16)
+            self.assertFalse(fixture.sentinel.exists())
+
+    def test_current_report_repeats_non_authorizing_training_overlap_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec = _write_current94_spec(root / "spec.json", _current94_spec_payload())
+            spec = replace(spec, output_roots=tuple(root / repeat for repeat in validator.REPEATS))
+            conversion = validator.ConversionBindings(
+                artifact={
+                    "tree_digest": "sha256:" + "1" * 64,
+                    "entrypoint": {"digest": "sha256:" + "2" * 64},
+                },
+                load_manifest={},
+                replay_receipts=({"schema": validator.CURRENT94_CONVERSION_SCHEMA},),
+            )
+            tools = validator.Current94Toolset(
+                candidate=SimpleNamespace(),
+                evaluator=SimpleNamespace(
+                    SCHEMA_V2=evaluator.SCHEMA_V2,
+                    CURRENT_OVERLAP_LINEAGE_CLAIM=evaluator.CURRENT_OVERLAP_LINEAGE_CLAIM,
+                ),
+                converter=SimpleNamespace(),
+            )
+            with (
+                mock.patch.object(validator, "_load_current94_v8_spec", return_value=spec),
+                mock.patch.object(
+                    validator,
+                    "_prepare_current94_context",
+                    return_value=(object(), conversion),
+                ),
+                mock.patch.object(
+                    validator,
+                    "_validate_repeat",
+                    return_value={"raw_output_digests": []},
+                ) as validate_repeat,
+                mock.patch.object(
+                    validator,
+                    "_aggregate",
+                    return_value={
+                        "validated_repeat_hard_gates_passed": True,
+                        "all_declared_local_gates_passed": False,
+                    },
+                ),
+            ):
+                report = validator.validate_current94_v8_diagnostic(
+                    spec.path, "r1", _tools=tools
+                )
+        claim = report["claim"]
+        self.assertTrue(claim["diagnostic_rows_are_training_overlap"])
+        self.assertTrue(claim["conversion_v6_calibration_v3_bound"])
+        self.assertFalse(claim["generated_or_corpus_code_executed_by_this_static_validator"])
+        self.assertTrue(claim["conversion_runtime_receipt_content_bound"])
+        self.assertTrue(claim["converter_interpreter_portable_receipt_content_bound"])
+        self.assertFalse(claim["executed_interpreter_attested"])
+        self.assertFalse(claim["hermetic_conversion_attested"])
+        self.assertFalse(claim["conversion_runtime_execution_verified"])
+        self.assertFalse(claim["execution_pass_at_1_claimed"])
+        self.assertFalse(claim["quality_or_rank_claimed"])
+        self.assertFalse(claim["promotion_authorized"])
+        self.assertIn("hermetic containment", claim["remaining_external_gates"][0])
+        self.assertEqual(validate_repeat.call_args.kwargs["summary_schema"], evaluator.SCHEMA_V2)
+
+    def test_explicit_schema_dispatch_selects_only_current94_handler(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "spec.json"
+            _write_current94_spec(path, _current94_spec_payload())
+            expected = {"schema": validator.CURRENT94_VALIDATION_SCHEMA}
+            with mock.patch.object(
+                validator,
+                "validate_current94_v8_diagnostic",
+                return_value=expected,
+            ) as current:
+                self.assertEqual(validator.validate_declared_diagnostic(path, "r1"), expected)
+            current.assert_called_once_with(path, "r1")
 
 
 class StaticSafetyAndEntrypointTests(unittest.TestCase):

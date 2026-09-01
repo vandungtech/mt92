@@ -33,8 +33,10 @@ warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v1"
 NORMALIZED_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v2"
+CURRENT94_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v3"
 SPEC_SCHEMA: Final[str] = "microtensor.code.calibrated-quantization-experiment.v1"
 NORMALIZED_SPEC_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-experiment.v2"
+CURRENT94_SPEC_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-experiment.v3"
 SPEC_BYTES: Final[int] = 49_270
 SPEC_DIGEST: Final[str] = "sha256:7dc168c55316b3cc378809d13f8fe3777bfa29824bc97dd603c215324b8bd97d"
 SOURCE_ROOT: Final[Path] = Path(
@@ -345,6 +347,122 @@ NORMALIZED_PINNED_MODULE_PATHS: Final[dict[str, str]] = {
     ),
 }
 
+# This protocol is intentionally disjoint from both historical schemas above.
+# Its final outcome identities are supplied only after a fresh current94 v6/v3
+# conversion exists; this module never guesses or backfills those identities.
+CURRENT94_CANDIDATE_ID: Final[str] = (
+    "qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8-q4-m541-v6"
+)
+CURRENT94_NAMESPACE: Final[str] = f"{CURRENT94_CANDIDATE_ID}-training-overlap-signed-v032"
+CURRENT94_BUNDLE_ROOT: Final[Path] = Path(
+    "/dev/shm/microtensor-code/"  # noqa: S108
+    "qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8-"
+    "q4-m541-v6-bundle"
+)
+CURRENT94_OUTPUT_ROOTS: Final[tuple[Path, Path, Path]] = tuple(
+    Path("/dev/shm/microtensor-code/evaluations")  # noqa: S108
+    / f"{CURRENT94_NAMESPACE}-{repeat}"
+    for repeat in REPEATS
+)
+CURRENT94_TRAINING_RUN: Final[Path] = Path(
+    "/dev/shm/microtensor-code/runs/"  # noqa: S108
+    "qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8"
+)
+CURRENT94_TRAINING_DATASET: Final[Path] = Path(
+    "/dev/shm/microtensor-code/dataset-final-seed92-h0"  # noqa: S108
+)
+CURRENT94_TRAINING_SOURCE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/public-code-corpus-v1.json"  # noqa: S108
+)
+CURRENT94_TRAINING_BASE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/base-qwen25-coder-15b"  # noqa: S108
+)
+CURRENT94_BASE_MODEL: Final[str] = (
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a"
+)
+CURRENT94_GGUF_ARCHITECTURE: Final[str] = "qwen2"
+CURRENT94_TRAINING_SCHEMA: Final[str] = "microtensor.code.training.v4"
+CURRENT94_DATASET_SCHEMA: Final[str] = "microtensor.code.prepared.v1"
+CURRENT94_CORPUS_PROFILE: Final[str] = "bigcodebench94"
+CURRENT94_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v6"
+CURRENT94_CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v3"
+CURRENT94_SIGNED_RELEASE: Final[str] = "0.3.2"
+CURRENT94_SIGNED_MECHANISM: Final[str] = "0.3.0"
+CURRENT94_RUN_KIND: Final[str] = "final_all_public"
+CURRENT94_TRAIN_EXAMPLES: Final[int] = 94
+CURRENT94_HOLDOUT_EXAMPLES: Final[int] = 0
+CURRENT94_TRAINING_QUALITY_CLAIM: Final[str] = (
+    "none: all 94 public examples were used for training; public code tests are withheld; "
+    "no holdout or execution pass@1 was measured"
+)
+CURRENT94_DIAGNOSTIC_RELATIONSHIP: Final[str] = "training_overlap"
+CURRENT94_REQUIRED_SOURCE_FILES: Final[frozenset[str]] = frozenset(
+    {
+        *NORMALIZED_REQUIRED_SOURCE_FILES,
+        "training/publish_code_provenance.py",
+    }
+)
+CURRENT94_PINNED_MODULE_PATHS: Final[dict[str, str]] = {
+    **NORMALIZED_PINNED_MODULE_PATHS,
+    "training.convert_code_gguf": "training/convert_code_gguf.py",
+    "training.publish_code_provenance": "training/publish_code_provenance.py",
+}
+CURRENT94_PINNED_IMPORTS: Final[frozenset[str]] = frozenset(
+    {
+        "training",
+        "training.code_candidate",
+        "training.convert_code_gguf",
+        "training.evaluate_code",
+        "training.evaluate_code_gguf",
+        "training.historical_code_candidate",
+        "training.normalized_historical_code_candidate",
+        "training.publish_code_provenance",
+    }
+)
+CURRENT94_PINNED_POST_CONTEXT_IMPORTS: Final[frozenset[str]] = frozenset(
+    {*CURRENT94_PINNED_IMPORTS, "training.train_code"}
+)
+
+
+def _current94_artifact_use_policy() -> dict[str, Any]:
+    """Return the immutable, non-authorizing scope of this local diagnostic."""
+
+    return {
+        "intended_use": "local_training_overlap_structural_and_timing_diagnostic_only",
+        "training_overlap": True,
+        "conversion_v6_bound": True,
+        "calibration_v3_bound": True,
+        "conversion_runtime_receipt_content_bound": True,
+        "converter_interpreter_portable_receipt_content_bound": True,
+        "executed_interpreter_attested": False,
+        "hermetic_conversion_attested": False,
+        "conversion_runtime_execution_verified": False,
+        "generated_or_corpus_code_executed_by_this_static_validator": False,
+        "execution_pass_at_1_claimed": False,
+        "quality_or_rank_claimed": False,
+        "publication_authorized": False,
+        "submission_authorized": False,
+        "transaction_authorized": False,
+        "limitation": (
+            "all 16 public diagnostic rows overlap the final 94/0 training lineage; local "
+            "structural and timing diagnostics are not holdout evidence, execution pass@1, "
+            "an official validator measurement, or a settled-rank certificate"
+        ),
+    }
+
+CURRENT94_STATIC_VALIDATOR_SAFETY_CONTRACT: Final[dict[str, bool]] = {
+    "generated_code_imported_by_this_static_validator": False,
+    "generated_code_executed_by_this_static_validator": False,
+    "generated_code_bytecode_compiled_by_this_static_validator": False,
+    "corpus_code_imported_by_this_static_validator": False,
+    "corpus_code_executed_by_this_static_validator": False,
+    "corpus_code_bytecode_compiled_by_this_static_validator": False,
+    "static_ast_parse_only_by_this_static_validator": True,
+    "hidden_or_scored_tests_accessed_by_this_static_validator": False,
+}
+
+
+
 
 class ValidationRefused(ValueError):
     """The diagnostic or any of its declared bindings failed closed."""
@@ -360,6 +478,18 @@ class Toolset:
 
 _PINNED_TOOL_CACHE: Toolset | None = None
 _NORMALIZED_TOOL_CACHE: Toolset | None = None
+
+
+@dataclass(frozen=True)
+class Current94Toolset:
+    """Pinned current94 modules used only for static replay and receipt validation."""
+
+    candidate: ModuleType
+    evaluator: ModuleType
+    converter: ModuleType
+
+
+_CURRENT94_TOOL_CACHE: Current94Toolset | None = None
 
 
 @dataclass(frozen=True)
@@ -403,6 +533,34 @@ class NormalizedSpecBindings:
     calibration_receipt: dict[str, Any] | None
     load_spec: dict[str, Any]
     artifact_contract: dict[str, Any]
+    runtime_contract: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Current94SpecBindings:
+    """Final current94-v8 inputs; no mutable outcome identity is inferred."""
+
+    path: Path
+    raw: bytes
+    payload: dict[str, Any]
+    output_roots: tuple[Path, Path, Path]
+    bundle: Path
+    dataset: Path
+    diagnostic_jsonl: Path
+    diagnostic_source: Path
+    training_arguments: tuple[Path, Path, Path, Path]
+    source_root: Path
+    source_commit: str
+    source_files: dict[str, dict[str, Any]]
+    gates: dict[str, int]
+    training_receipt: dict[str, Any]
+    training_metrics: dict[str, Any]
+    merged_tree_digest: str
+    conversion_receipt: dict[str, Any]
+    calibration_receipt: dict[str, Any]
+    load_spec: dict[str, Any]
+    artifact_contract: dict[str, Any]
+    conversion_runtime: dict[str, Any]
     runtime_contract: dict[str, Any]
 
 
@@ -931,6 +1089,273 @@ def _load_normalized_v7_spec(path: Path) -> NormalizedSpecBindings:
     )
 
 
+def _current94_conversion_runtime(value: Any) -> dict[str, Any]:
+    runtime = _mapping(value, "current94 conversion runtime receipt content binding")
+    _exact_keys(
+        runtime,
+        frozenset({"converter_interpreter", "llama_cpp_runtime_closure"}),
+        "current94 conversion runtime receipt content binding",
+    )
+    interpreter = _mapping(
+        runtime.get("converter_interpreter"), "current94 converter interpreter"
+    )
+    _exact_keys(
+        interpreter,
+        frozenset({"container_path", "bytes", "digest", "mode"}),
+        "current94 converter interpreter",
+    )
+    expected_path = (
+        "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11"
+    )
+    if (
+        interpreter.get("container_path") != expected_path
+        or interpreter.get("mode") != "0o755"
+    ):
+        raise ValidationRefused("current94 converter interpreter container path or mode changed")
+    normalized_interpreter = {
+        "container_path": expected_path,
+        "bytes": _integer(
+            interpreter.get("bytes"), "current94 converter interpreter bytes", minimum=1
+        ),
+        "digest": _require_digest(
+            interpreter.get("digest"), "current94 converter interpreter digest"
+        ),
+        "mode": "0o755",
+    }
+    closure = _content_identity(
+        runtime.get("llama_cpp_runtime_closure"),
+        "current94 llama.cpp runtime closure",
+    )
+    return {
+        "converter_interpreter": normalized_interpreter,
+        "llama_cpp_runtime_closure": closure,
+    }
+
+
+def current94_v8_spec_payload(
+    *,
+    source_root: Path,
+    source_commit: str,
+    source_files: Mapping[str, Mapping[str, Any]],
+    training_receipt: Mapping[str, Any],
+    training_metrics: Mapping[str, Any],
+    merged_tree_digest: str,
+    conversion_receipt: Mapping[str, Any],
+    calibration_receipt: Mapping[str, Any],
+    load_spec: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+    conversion_runtime: Mapping[str, Any],
+    runtime_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the only accepted final current94-v8 diagnostic spec.
+
+    Every mutable training, conversion, artifact, and runtime outcome must be
+    observed first and passed explicitly.  This function performs no I/O and
+    never creates a model engine or imports, compiles, or executes code data.
+    """
+
+    if not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise ValidationRefused("current94 source commit must be 40 lowercase hex characters")
+    expected_root = Path("/tmp") / f"mt92-current94-diagnostic-{source_commit[:7]}"  # noqa: S108
+    if not source_root.is_absolute() or source_root != expected_root:
+        raise ValidationRefused(f"current94 source root must be {expected_root}")
+    if frozenset(source_files) != CURRENT94_REQUIRED_SOURCE_FILES:
+        raise ValidationRefused("current94 source file closure changed")
+    normalized_files = {
+        relative: _content_identity(source_files[relative], f"current94 source {relative}")
+        for relative in sorted(source_files)
+    }
+    training_identity = _content_identity(training_receipt, "current94 training receipt")
+    metrics_identity = _content_identity(training_metrics, "current94 training metrics")
+    merged_digest = _require_digest(merged_tree_digest, "current94 merged tree digest")
+    conversion_identity = _content_identity(conversion_receipt, "current94 conversion receipt")
+    calibration_identity = _content_identity(
+        calibration_receipt, "current94 calibration receipt"
+    )
+    load_identity = _content_identity(load_spec, "current94 load spec")
+    artifact_identity = _normalized_artifact_contract(artifact)
+    conversion_runtime_identity = _current94_conversion_runtime(conversion_runtime)
+    signed_runtime_identity = _content_identity(
+        runtime_identity, "current94 signed runtime identity"
+    )
+    return {
+        "schema": CURRENT94_SPEC_SCHEMA,
+        "status": "final",
+        "artifact_use_policy": _current94_artifact_use_policy(),
+        "safety_contract": dict(CURRENT94_STATIC_VALIDATOR_SAFETY_CONTRACT),
+        "candidate": {
+            "id": CURRENT94_CANDIDATE_ID,
+            "base_model": CURRENT94_BASE_MODEL,
+            "gguf_architecture": CURRENT94_GGUF_ARCHITECTURE,
+            "bundle": str(CURRENT94_BUNDLE_ROOT),
+            "entrypoint": ENTRYPOINT,
+            "quantization": QUANTIZATION,
+            "max_input_tokens": MAX_INPUT_TOKENS,
+        },
+        "source": {
+            "commit": source_commit,
+            "root": str(source_root),
+            "files": normalized_files,
+        },
+        "diagnostic": {
+            "dataset": "/dev/shm/microtensor-code/dataset-dev-seed92-h16",  # noqa: S108
+            "diagnostic_jsonl": (
+                "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl"  # noqa: S108
+            ),
+            "source_corpus": str(CURRENT94_TRAINING_SOURCE),
+            "manifest": {"bytes": 1_070, "digest": EXPECTED_LINEAGE_DIGESTS["manifest"]},
+            "holdout": {"bytes": 23_390, "digest": EXPECTED_LINEAGE_DIGESTS["holdout"]},
+            "source": {
+                "bytes": 152_605,
+                "digest": EXPECTED_LINEAGE_DIGESTS["source"],
+            },
+            "refs_digest": EXPECTED_LINEAGE_DIGESTS["refs"],
+            "examples": EXPECTED_EXAMPLES,
+            "relationship_to_training": CURRENT94_DIAGNOSTIC_RELATIONSHIP,
+            "output_roots": [str(path) for path in CURRENT94_OUTPUT_ROOTS],
+        },
+        "training_lineage": {
+            "schema": CURRENT94_TRAINING_SCHEMA,
+            "run_kind": CURRENT94_RUN_KIND,
+            "training_run": str(CURRENT94_TRAINING_RUN),
+            "training_dataset": str(CURRENT94_TRAINING_DATASET),
+            "source_corpus": str(CURRENT94_TRAINING_SOURCE),
+            "base": str(CURRENT94_TRAINING_BASE),
+            "receipt": training_identity,
+            "metrics": metrics_identity,
+            "merged_tree_digest": merged_digest,
+            "dataset_schema": CURRENT94_DATASET_SCHEMA,
+            "corpus_profile": CURRENT94_CORPUS_PROFILE,
+            "train_examples": CURRENT94_TRAIN_EXAMPLES,
+            "holdout_examples": CURRENT94_HOLDOUT_EXAMPLES,
+            "quality_claim": CURRENT94_TRAINING_QUALITY_CLAIM,
+        },
+        "conversion": {
+            "schema": CURRENT94_CONVERSION_SCHEMA,
+            "calibration_schema": CURRENT94_CALIBRATION_SCHEMA,
+            "receipt": conversion_identity,
+            "calibration_receipt": calibration_identity,
+            "load_spec": load_identity,
+            "artifact": artifact_identity,
+            "runtime_receipt_content_binding": conversion_runtime_identity,
+        },
+        "runtime": {
+            "release_version": CURRENT94_SIGNED_RELEASE,
+            "mechanism_version": CURRENT94_SIGNED_MECHANISM,
+            "identity": signed_runtime_identity,
+            "interpreter": {
+                "path": "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",  # noqa: S108
+                "resolved_path": "/usr/bin/python3.12",
+                "bytes": 8_016_832,
+                "digest": (
+                    "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb"
+                ),
+            },
+        },
+        "gates": dict(EXPECTED_GATES),
+    }
+
+
+def _load_current94_v8_spec(path: Path) -> Current94SpecBindings:
+    payload_value, raw = _strict_json_file(
+        path,
+        "current94 v8 diagnostic spec",
+        maximum=256 * 1024,
+    )
+    payload = dict(_mapping(payload_value, "current94 v8 diagnostic spec"))
+    expected_raw = (
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+    if raw != expected_raw:
+        raise ValidationRefused("current94 v8 diagnostic spec is not canonical sorted JSON")
+    _exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema",
+                "status",
+                "artifact_use_policy",
+                "safety_contract",
+                "candidate",
+                "source",
+                "diagnostic",
+                "training_lineage",
+                "conversion",
+                "runtime",
+                "gates",
+            }
+        ),
+        "current94 v8 diagnostic spec",
+    )
+    if payload.get("schema") != CURRENT94_SPEC_SCHEMA or payload.get("status") != "final":
+        raise ValidationRefused("current94 v8 diagnostic spec is not final")
+    source = _mapping(payload.get("source"), "current94 source")
+    training = _mapping(payload.get("training_lineage"), "current94 training lineage")
+    conversion = _mapping(payload.get("conversion"), "current94 conversion")
+    runtime = _mapping(payload.get("runtime"), "current94 runtime")
+    rebuilt = current94_v8_spec_payload(
+        source_root=Path(str(source.get("root"))),
+        source_commit=str(source.get("commit")),
+        source_files=_mapping(source.get("files"), "current94 source files"),
+        training_receipt=_mapping(training.get("receipt"), "current94 training receipt"),
+        training_metrics=_mapping(training.get("metrics"), "current94 training metrics"),
+        merged_tree_digest=str(training.get("merged_tree_digest")),
+        conversion_receipt=_mapping(conversion.get("receipt"), "current94 conversion receipt"),
+        calibration_receipt=_mapping(
+            conversion.get("calibration_receipt"), "current94 calibration receipt"
+        ),
+        load_spec=_mapping(conversion.get("load_spec"), "current94 load spec"),
+        artifact=_mapping(conversion.get("artifact"), "current94 artifact"),
+        conversion_runtime=_mapping(
+            conversion.get("runtime_receipt_content_binding"), "current94 conversion runtime"
+        ),
+        runtime_identity=_mapping(runtime.get("identity"), "current94 runtime identity"),
+    )
+    _json_exact(payload, rebuilt, "current94 v8 diagnostic spec contract")
+    diagnostic = _mapping(payload["diagnostic"], "current94 diagnostic")
+    return Current94SpecBindings(
+        path=path,
+        raw=raw,
+        payload=payload,
+        output_roots=CURRENT94_OUTPUT_ROOTS,
+        bundle=CURRENT94_BUNDLE_ROOT,
+        dataset=Path(str(diagnostic["dataset"])),
+        diagnostic_jsonl=Path(str(diagnostic["diagnostic_jsonl"])),
+        diagnostic_source=Path(str(diagnostic["source_corpus"])),
+        training_arguments=(
+            CURRENT94_TRAINING_RUN,
+            CURRENT94_TRAINING_DATASET,
+            CURRENT94_TRAINING_SOURCE,
+            CURRENT94_TRAINING_BASE,
+        ),
+        source_root=Path(str(source["root"])),
+        source_commit=str(source["commit"]),
+        source_files={
+            str(key): dict(_mapping(value, f"current94 source {key}"))
+            for key, value in _mapping(source["files"], "current94 source files").items()
+        },
+        gates=dict(EXPECTED_GATES),
+        training_receipt=dict(_mapping(training["receipt"], "current94 training receipt")),
+        training_metrics=dict(_mapping(training["metrics"], "current94 training metrics")),
+        merged_tree_digest=str(training["merged_tree_digest"]),
+        conversion_receipt=dict(
+            _mapping(conversion["receipt"], "current94 conversion receipt")
+        ),
+        calibration_receipt=dict(
+            _mapping(conversion["calibration_receipt"], "current94 calibration receipt")
+        ),
+        load_spec=dict(_mapping(conversion["load_spec"], "current94 load spec")),
+        artifact_contract=dict(_mapping(conversion["artifact"], "current94 artifact")),
+        conversion_runtime=dict(
+            _mapping(conversion["runtime_receipt_content_binding"], "current94 conversion runtime")
+        ),
+        runtime_contract=dict(_mapping(runtime, "current94 runtime")),
+    )
+
+
 def _load_spec(path: Path) -> SpecBindings:
     payload, raw = _strict_json_file(path, "v6 experiment spec", maximum=SPEC_BYTES)
     if len(raw) != SPEC_BYTES or _digest_bytes(raw) != SPEC_DIGEST:
@@ -1439,6 +1864,182 @@ def _load_normalized_v7_tools(spec: NormalizedSpecBindings) -> Toolset:
     return _NORMALIZED_TOOL_CACHE
 
 
+def _load_current94_v8_tools(spec: Current94SpecBindings) -> Current94Toolset:
+    """Load the clean, content-addressed current94 static tool closure."""
+
+    global _CURRENT94_TOOL_CACHE
+
+    try:
+        resolved = spec.source_root.resolve(strict=True)
+    except OSError as exc:
+        raise ValidationRefused(f"current94 source root cannot be resolved: {exc}") from exc
+    if resolved != spec.source_root:
+        raise ValidationRefused("current94 source root resolved elsewhere")
+    _require_namespace_training_package(resolved)
+    _require_no_normalized_import_shadows(resolved)
+    training_names = {entry.name for entry in (resolved / "training").iterdir()}
+    for relative in CURRENT94_PINNED_MODULE_PATHS.values():
+        path = Path(relative)
+        for name in training_names:
+            if (
+                name == path.stem
+                or name == f"{path.stem}.pyc"
+                or (name.startswith(f"{path.stem}.") and name.endswith((".so", ".pyd")))
+            ):
+                raise ValidationRefused(f"current94 source contains a shadow for {path.name}")
+
+    origin = _git_output(resolved, ("remote", "get-url", "origin"), "current94 source origin")
+    try:
+        normalized_origin = origin.decode("utf-8", errors="strict").strip().rstrip("/")
+    except UnicodeDecodeError as exc:
+        raise ValidationRefused("current94 source origin is not UTF-8") from exc
+    if normalized_origin.endswith(".git"):
+        normalized_origin = normalized_origin[:-4]
+    if normalized_origin != REPOSITORY:
+        raise ValidationRefused("current94 source origin is not the authorized repository")
+    if _git_output(
+        resolved,
+        ("cat-file", "-t", spec.source_commit),
+        "current94 source commit object",
+    ) != b"commit\n":
+        raise ValidationRefused("current94 source commit is not a Git commit object")
+    if _git_output(resolved, ("rev-parse", "--verify", "HEAD"), "current94 source HEAD") != (
+        spec.source_commit + "\n"
+    ).encode("ascii"):
+        raise ValidationRefused("current94 source HEAD changed")
+    _git_output(
+        resolved,
+        ("rev-parse", "--verify", f"{ADVERTISED_REMOTE_REF}^{{commit}}"),
+        "current94 advertised remote head",
+    )
+    _git_output(
+        resolved,
+        ("merge-base", "--is-ancestor", spec.source_commit, ADVERTISED_REMOTE_REF),
+        "current94 source advertised ancestry",
+    )
+    if _git_output(
+        resolved,
+        ("rev-parse", "--is-shallow-repository"),
+        "current94 source shallow state",
+    ) != b"false\n":
+        raise ValidationRefused("current94 source ancestry is shallow")
+    if _git_output(resolved, ("replace", "-l"), "current94 source replacement refs"):
+        raise ValidationRefused("current94 source contains replacement refs")
+    graft_path_raw = _git_output(
+        resolved,
+        ("rev-parse", "--git-path", "info/grafts"),
+        "current94 source graft path",
+    )
+    try:
+        graft_path = Path(graft_path_raw.decode("utf-8", errors="strict").strip())
+    except UnicodeDecodeError as exc:
+        raise ValidationRefused("current94 source graft path is not UTF-8") from exc
+    if not str(graft_path):
+        raise ValidationRefused("current94 source graft path is empty")
+    if not graft_path.is_absolute():
+        graft_path = resolved / graft_path
+    if os.path.lexists(graft_path):
+        raise ValidationRefused("current94 source contains a graft file")
+    status = _git_output(
+        resolved,
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+        "current94 source worktree",
+    )
+    ignored = _git_output(
+        resolved,
+        (
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+        ),
+        "current94 source ignored inventory",
+    )
+    if status or ignored:
+        raise ValidationRefused("current94 source worktree or import closure is not clean")
+    for relative, expected in sorted(spec.source_files.items()):
+        if _git_output(
+            resolved,
+            ("ls-files", "-v", "--", relative),
+            f"current94 source index {relative}",
+        ) != f"H {relative}\n".encode():
+            raise ValidationRefused(f"current94 source {relative} has unusual index flags")
+        committed_raw = _git_output(
+            resolved,
+            ("show", f"{spec.source_commit}:{relative}"),
+            f"current94 source commit blob {relative}",
+        )
+        if {"bytes": len(committed_raw), "digest": _digest_bytes(committed_raw)} != expected:
+            raise ValidationRefused(f"current94 source commit blob {relative} changed")
+        if _source_file_identity(resolved / relative, f"current94 source {relative}") != expected:
+            raise ValidationRefused(f"current94 source {relative} changed")
+
+    preloaded = frozenset(
+        name for name in sys.modules if name == "training" or name.startswith("training.")
+    )
+    if preloaded:
+        if _CURRENT94_TOOL_CACHE is None or preloaded not in {
+            CURRENT94_PINNED_IMPORTS,
+            CURRENT94_PINNED_POST_CONTEXT_IMPORTS,
+        }:
+            raise ValidationRefused(
+                f"current94 training package was preloaded: {sorted(preloaded)}"
+            )
+        toolset = _CURRENT94_TOOL_CACHE
+    else:
+        root_text = str(resolved)
+        sanitized_path = [root_text]
+        for entry in sys.path:
+            search_root = resolved if not entry else Path(entry).resolve(strict=False)
+            if search_root == resolved:
+                continue
+            if _child_import_competitor(search_root):
+                raise ValidationRefused(
+                    "current94 evaluator child import path has a training competitor: "
+                    f"{search_root}"
+                )
+            sanitized_path.append(entry)
+        sys.path[:] = sanitized_path
+        try:
+            candidate = importlib.import_module("training.code_candidate")
+            evaluator = importlib.import_module("training.evaluate_code_gguf")
+            converter = importlib.import_module("training.convert_code_gguf")
+        except ImportError as exc:
+            raise ValidationRefused(f"current94 static tool import failed: {exc}") from exc
+        toolset = Current94Toolset(
+            candidate=candidate,
+            evaluator=evaluator,
+            converter=converter,
+        )
+
+    imported = frozenset(
+        name for name in sys.modules if name == "training" or name.startswith("training.")
+    )
+    allowed = {CURRENT94_PINNED_IMPORTS, CURRENT94_PINNED_POST_CONTEXT_IMPORTS}
+    if imported not in allowed:
+        raise ValidationRefused(f"current94 evaluator import closure changed: {sorted(imported)}")
+    package = sys.modules["training"]
+    _require_namespace_training_package(resolved, package)
+    for name in sorted(imported - {"training"}):
+        relative = CURRENT94_PINNED_MODULE_PATHS.get(name)
+        if relative is None:
+            raise ValidationRefused(f"current94 module {name} is not declared")
+        module_path = getattr(sys.modules[name], "__file__", None)
+        if not isinstance(module_path, str):
+            raise ValidationRefused(f"current94 module {name} has no source path")
+        try:
+            if Path(module_path).resolve(strict=True) != resolved / relative:
+                raise ValidationRefused(f"current94 module {name} came from another tree")
+        except OSError as exc:
+            raise ValidationRefused(f"current94 module source cannot be resolved: {exc}") from exc
+    if _CURRENT94_TOOL_CACHE is None:
+        _CURRENT94_TOOL_CACHE = toolset
+    elif toolset is not _CURRENT94_TOOL_CACHE:
+        raise ValidationRefused("current94 static tool module objects changed")
+    return _CURRENT94_TOOL_CACHE
+
+
 def _validate_conversion_bundle(
     root: Path,
     *,
@@ -1892,6 +2493,342 @@ def _validate_normalized_conversion_bundle(
     )
 
 
+def _current94_canonical_receipt(
+    path: Path,
+    expected: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    payload, raw = _strict_json_file(path, label)
+    if {"bytes": len(raw), "digest": _digest_bytes(raw)} != dict(expected):
+        raise ValidationRefused(f"{label} identity changed")
+    value = dict(_mapping(payload, label))
+    canonical = (
+        json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+    if raw != canonical:
+        raise ValidationRefused(f"{label} is not canonical sorted JSON")
+    return value
+
+
+def _validate_current94_conversion_bundle(
+    spec: Current94SpecBindings,
+    tools: Current94Toolset,
+    training_lineage: Mapping[str, Any],
+) -> ConversionBindings:
+    """Validate v6/v3 receipts and artifact bytes without executing a tool or model."""
+
+    converter = tools.converter
+    evaluator = tools.evaluator
+    if (
+        getattr(converter, "CURRENT_CALIBRATED_CONVERSION_SCHEMA", None)
+        != CURRENT94_CONVERSION_SCHEMA
+        or getattr(converter, "CURRENT_CALIBRATION_SCHEMA", None)
+        != CURRENT94_CALIBRATION_SCHEMA
+        or getattr(converter, "CURRENT_TRAINING_SCHEMA", None) != CURRENT94_TRAINING_SCHEMA
+        or getattr(converter, "QWEN25_ARCHITECTURE", None) != CURRENT94_GGUF_ARCHITECTURE
+    ):
+        raise ValidationRefused("current94 converter schema constants changed")
+    label = "current94 calibrated conversion bundle"
+    _require_exact_tree(
+        spec.bundle,
+        {
+            "artifact": "directory",
+            "calibration-receipt.json": "file",
+            "conversion-receipt.json": "file",
+            "load-spec.json": "file",
+        },
+        label,
+    )
+    _require_exact_tree(spec.bundle / "artifact", {ENTRYPOINT: "file"}, f"{label} artifact")
+    load_manifest = _current94_canonical_receipt(
+        spec.bundle / "load-spec.json", spec.load_spec, "current94 load spec"
+    )
+    calibration = _current94_canonical_receipt(
+        spec.bundle / "calibration-receipt.json",
+        spec.calibration_receipt,
+        "current94 calibration receipt",
+    )
+    conversion = _current94_canonical_receipt(
+        spec.bundle / "conversion-receipt.json",
+        spec.conversion_receipt,
+        "current94 conversion receipt",
+    )
+    expected_load = {
+        "format": "gguf",
+        "quantization": QUANTIZATION,
+        "entrypoint": ENTRYPOINT,
+        "max_input": {"tokens": MAX_INPUT_TOKENS},
+        "preprocessing": {"tokenizer": "tokenizer.json"},
+        "base_model": CURRENT94_BASE_MODEL,
+    }
+    _json_exact(load_manifest, expected_load, "current94 load spec")
+    if (
+        conversion.get("schema") != CURRENT94_CONVERSION_SCHEMA
+        or calibration.get("schema") != CURRENT94_CALIBRATION_SCHEMA
+        or conversion.get("status") != "complete"
+        or calibration.get("status") != "complete"
+        or conversion.get("track") != TRACK
+        or calibration.get("track") != TRACK
+        or conversion.get("hardware_class") != HARDWARE_CLASS
+        or calibration.get("hardware_class") != HARDWARE_CLASS
+        or conversion.get("base_model") != CURRENT94_BASE_MODEL
+        or calibration.get("base_model") != CURRENT94_BASE_MODEL
+        or conversion.get("llama_cpp_revision") != converter.LLAMA_CPP_REVISION
+        or calibration.get("llama_cpp_revision") != converter.LLAMA_CPP_REVISION
+        or calibration.get("profile") != converter.CALIBRATION_PROFILE
+    ):
+        raise ValidationRefused("current94 v6/v3 receipt identity changed")
+    try:
+        converter._validate_current_loaded_lineage(training_lineage)
+        expected_source = converter._current_conversion_source(training_lineage)
+    except Exception as exc:
+        raise ValidationRefused(f"current94 conversion lineage replay failed: {exc}") from exc
+    _json_exact(conversion.get("source"), expected_source, "current94 conversion source")
+    material = {"source": calibration.get("source"), "selection": calibration.get("selection")}
+    try:
+        converter._validate_calibration_material_binding(material, training_lineage)
+    except Exception as exc:
+        raise ValidationRefused(f"current94 calibration source binding failed: {exc}") from exc
+
+    conversion_execution = _mapping(
+        conversion.get("conversion"), "current94 conversion execution"
+    )
+    primary_commands = _sequence(
+        conversion_execution.get("commands"), "current94 conversion commands"
+    )
+    replay = _mapping(
+        conversion_execution.get("determinism_replay"),
+        "current94 conversion determinism replay",
+    )
+    replay_commands = _sequence(replay.get("commands"), "current94 replay commands")
+    expected_names = ("convert_f16", "calibrate_imatrix", "quantize")
+
+    def command_bindings(
+        values: Sequence[Any], label_prefix: str
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        if len(values) != len(expected_names):
+            raise ValidationRefused(f"{label_prefix} must contain exactly three commands")
+        result: list[tuple[str, tuple[str, ...]]] = []
+        for value, expected_name in zip(values, expected_names, strict=True):
+            command = _mapping(value, f"{label_prefix} {expected_name}")
+            argv = _sequence(command.get("argv"), f"{label_prefix} {expected_name} argv")
+            if command.get("name") != expected_name or any(
+                not isinstance(item, str) for item in argv
+            ):
+                raise ValidationRefused(f"{label_prefix} command order or argv changed")
+            result.append((expected_name, tuple(str(item) for item in argv)))
+        return tuple(result)
+
+    command_argv = command_bindings(primary_commands, "current94 primary conversion")
+    replay_argv = command_bindings(replay_commands, "current94 replay conversion")
+    try:
+        converter._validate_calibrated_receipts(
+            calibration_receipt=calibration,
+            conversion_receipt=conversion,
+            calibration_digest=_digest_bytes(
+                _pretty_json_bytes_for_current94(calibration)
+            ),
+            expected_calibration=calibration,
+            expected_conversion=conversion,
+            command_argv=command_argv,
+            replay_command_argv=replay_argv,
+        )
+    except Exception as exc:
+        raise ValidationRefused(f"current94 v6/v3 receipt replay failed: {exc}") from exc
+
+    runtime_binding = _current94_conversion_runtime(spec.conversion_runtime)
+    interpreter = _mapping(
+        runtime_binding["converter_interpreter"], "current94 converter interpreter"
+    )
+    try:
+        receipt_interpreter = converter._converter_python_receipt_identity(
+            conversion_execution.get("converter_python"),
+            "current94 conversion receipt interpreter",
+        )
+        calibration_toolchain = _mapping(
+            calibration.get("toolchain"), "current94 calibration toolchain"
+        )
+        calibration_interpreter = converter._converter_python_receipt_identity(
+            calibration_toolchain.get("converter_python"),
+            "current94 calibration receipt interpreter",
+        )
+    except Exception as exc:
+        raise ValidationRefused(
+            f"current94 nested converter interpreter receipt is malformed: {exc}"
+        ) from exc
+    _json_exact(
+        calibration_interpreter,
+        receipt_interpreter,
+        "current94 calibration/conversion nested converter interpreter binding",
+    )
+
+    def launched_interpreter(
+        commands: Sequence[Any], label_prefix: str
+    ) -> dict[str, Any]:
+        command = _mapping(commands[0], f"{label_prefix} convert_f16 command")
+        launch = _mapping(
+            command.get("launch"), f"{label_prefix} convert_f16 launch"
+        )
+        _exact_keys(
+            launch,
+            frozenset({"method", "executed_object"}),
+            f"{label_prefix} convert_f16 launch",
+        )
+        if launch.get("method") != "proc-self-fd":
+            raise ValidationRefused(
+                f"{label_prefix} convert_f16 launch method changed"
+            )
+        try:
+            value = converter._converter_python_receipt_identity(
+                launch.get("executed_object"),
+                f"{label_prefix} convert_f16 executed interpreter",
+            )
+        except Exception as exc:
+            raise ValidationRefused(
+                f"{label_prefix} convert_f16 executed interpreter is malformed: {exc}"
+            ) from exc
+        _json_exact(
+            value,
+            receipt_interpreter,
+            f"{label_prefix} convert_f16 executed interpreter binding",
+        )
+        return value
+
+    primary_launched_interpreter = launched_interpreter(
+        primary_commands, "current94 primary"
+    )
+    replay_launched_interpreter = launched_interpreter(
+        replay_commands, "current94 replay"
+    )
+    _json_exact(
+        primary_launched_interpreter,
+        replay_launched_interpreter,
+        "current94 primary/replay executed interpreter binding",
+    )
+    receipt_portable = _mapping(
+        receipt_interpreter.get("portable"),
+        "current94 conversion receipt portable interpreter",
+    )
+    portable_interpreter_binding = {
+        "container_path": receipt_portable.get("path"),
+        "bytes": receipt_portable.get("bytes"),
+        "digest": receipt_portable.get("digest"),
+        "mode": receipt_portable.get("mode"),
+    }
+    _json_exact(
+        portable_interpreter_binding,
+        interpreter,
+        "current94 portable converter interpreter receipt content binding",
+    )
+    interpreter_container_path = str(interpreter["container_path"])
+    for bindings, prefix in ((command_argv, "primary"), (replay_argv, "replay")):
+        convert_argv = bindings[0][1]
+        if (
+            len(convert_argv) < 2
+            or convert_argv[0] != interpreter_container_path
+            or convert_argv[1] != str(converter.LLAMA_CPP_ROOT / "convert_hf_to_gguf.py")
+        ):
+            raise ValidationRefused(f"current94 {prefix} converter interpreter binding changed")
+
+    receipt_closure = _mapping(
+        conversion_execution.get("runtime_libraries"),
+        "current94 receipt runtime closure",
+    )
+    closure_raw = _canonical_json_bytes(receipt_closure)
+    if {
+        "bytes": len(closure_raw),
+        "digest": _digest_bytes(closure_raw),
+    } != runtime_binding["llama_cpp_runtime_closure"]:
+        raise ValidationRefused("current94 runtime-closure receipt content binding changed")
+    for field in ("converter_digest", "imatrix_digest", "quantizer_digest"):
+        _require_digest(
+            conversion_execution.get(field), f"current94 conversion receipt {field}"
+        )
+
+    try:
+        artifact = evaluator.artifact_identity(
+            spec.bundle / "artifact",
+            entrypoint=ENTRYPOINT,
+            expected_digest=spec.artifact_contract["tree_digest"],
+            quantization=QUANTIZATION,
+            expected_architecture=CURRENT94_GGUF_ARCHITECTURE,
+        )
+    except Exception as exc:
+        raise ValidationRefused(f"current94 qwen2 artifact validation failed: {exc}") from exc
+    entrypoint = _mapping(artifact.get("entrypoint"), "current94 artifact entrypoint")
+    gguf = _mapping(entrypoint.get("gguf"), "current94 GGUF header")
+    expected_header = {
+        "version": 3,
+        "architecture": CURRENT94_GGUF_ARCHITECTURE,
+        "file_type": evaluator.SUPPORTED_QUANTIZATIONS[QUANTIZATION],
+    }
+    _json_exact(gguf, expected_header, "current94 qwen2 GGUF header")
+    actual_artifact_contract = {
+        "tree_digest": artifact.get("tree_digest"),
+        "entrypoint_bytes": entrypoint.get("bytes"),
+        "entrypoint_digest": entrypoint.get("digest"),
+    }
+    _json_exact(
+        actual_artifact_contract,
+        spec.artifact_contract,
+        "current94 candidate bundle identity",
+    )
+    if (
+        entrypoint.get("path") != ENTRYPOINT
+        or artifact.get("root") != str(spec.bundle / "artifact")
+    ):
+        raise ValidationRefused("current94 artifact resolved outside its declared bundle")
+    conversion_artifact = _mapping(conversion.get("artifact"), "current94 conversion artifact")
+    expected_receipt_artifact = {
+        "tree_digest": spec.artifact_contract["tree_digest"],
+        "entrypoint_digest": spec.artifact_contract["entrypoint_digest"],
+        "entrypoint_bytes": spec.artifact_contract["entrypoint_bytes"],
+        "quantization": QUANTIZATION,
+    }
+    _json_exact(conversion_artifact, expected_receipt_artifact, "current94 receipt artifact")
+    _json_exact(calibration.get("load_manifest"), load_manifest, "current94 calibration load")
+    _json_exact(conversion.get("load_manifest"), load_manifest, "current94 conversion load")
+    _json_exact(calibration.get("artifact"), {
+        **expected_receipt_artifact,
+        "calibration_metadata": _mapping(
+            _mapping(calibration.get("artifact"), "current94 calibration artifact").get(
+                "calibration_metadata"
+            ),
+            "current94 calibration metadata",
+        ),
+    }, "current94 calibration artifact")
+    return ConversionBindings(
+        artifact=dict(artifact),
+        load_manifest=load_manifest,
+        replay_receipts=(
+            {
+                "schema": CURRENT94_CONVERSION_SCHEMA,
+                "conversion_receipt": dict(spec.conversion_receipt),
+                "calibration_schema": CURRENT94_CALIBRATION_SCHEMA,
+                "calibration_receipt": dict(spec.calibration_receipt),
+                "converter_interpreter_portable_receipt_content": dict(interpreter),
+                "runtime_closure_receipt_content_identity": dict(
+                    runtime_binding["llama_cpp_runtime_closure"]
+                ),
+            },
+        ),
+    )
+
+
+def _pretty_json_bytes_for_current94(value: Any) -> bytes:
+    """Return converter-style canonical receipt bytes without touching the filesystem."""
+
+    return (
+        json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+
+
 def _validate_public_lineage(lineage: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> None:
     prepared = _mapping(lineage.get("prepared_dataset"), "public prepared dataset")
     manifest_file = _mapping(prepared.get("manifest"), "public manifest identity")
@@ -2074,6 +3011,148 @@ def _validate_normalized_runtime_identity(
         "digest": _digest_bytes(raw),
     } != dict(expected_identity):
         raise ValidationRefused("normalized full signed runtime identity changed")
+
+
+def _validate_current94_training_lineage(
+    lineage: Mapping[str, Any],
+    spec: Current94SpecBindings,
+    tools: Current94Toolset,
+) -> None:
+    if lineage.get("status") != "provided_and_validated" or lineage.get("schema") != (
+        CURRENT94_TRAINING_SCHEMA
+    ):
+        raise ValidationRefused("current94 completed v4 training lineage changed")
+    receipt = _mapping(lineage.get("receipt"), "current94 training receipt")
+    run = _mapping(lineage.get("run"), "current94 training run")
+    metrics = _mapping(run.get("metrics"), "current94 training metrics")
+    merged = _mapping(run.get("merged"), "current94 merged tree")
+    base = _mapping(lineage.get("base_snapshot"), "current94 base snapshot")
+    prepared = _mapping(lineage.get("prepared_dataset"), "current94 prepared dataset")
+    manifest = _mapping(prepared.get("manifest_payload"), "current94 prepared manifest")
+    if (
+        dict(receipt) != spec.training_receipt
+        or dict(metrics) != spec.training_metrics
+        or merged.get("digest") != spec.merged_tree_digest
+        or run.get("kind") != "merged"
+        or base.get("base_model") != CURRENT94_BASE_MODEL
+        or manifest.get("schema") != CURRENT94_DATASET_SCHEMA
+        or manifest.get("train_examples") != CURRENT94_TRAIN_EXAMPLES
+        or manifest.get("holdout_examples") != CURRENT94_HOLDOUT_EXAMPLES
+        or manifest.get("quality_claim")
+        != tools.candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
+    ):
+        raise ValidationRefused("current94 94/0 final-all-public training binding changed")
+    contract = tools.evaluator.lineage_evaluation_contract(lineage)
+    expected_contract = {
+        "base_model": CURRENT94_BASE_MODEL,
+        "gguf_architecture": CURRENT94_GGUF_ARCHITECTURE,
+        "evaluation_schema": tools.evaluator.SCHEMA_V2,
+        "lineage_claim": tools.evaluator.CURRENT_OVERLAP_LINEAGE_CLAIM,
+    }
+    _json_exact(contract, expected_contract, "current94 lineage-derived evaluation contract")
+
+
+def _validate_current94_runtime_identity(
+    identity: Mapping[str, Any],
+    spec: Current94SpecBindings,
+    tools: Current94Toolset,
+) -> None:
+    declared = _mapping(spec.runtime_contract, "current94 runtime contract")
+    if (
+        declared.get("release_version") != CURRENT94_SIGNED_RELEASE
+        or declared.get("mechanism_version") != CURRENT94_SIGNED_MECHANISM
+        or getattr(tools.evaluator, "SIGNED_RELEASE_VERSION", None) != CURRENT94_SIGNED_RELEASE
+        or getattr(tools.evaluator, "SIGNED_MECHANISM_VERSION", None)
+        != CURRENT94_SIGNED_MECHANISM
+    ):
+        raise ValidationRefused("current94 signed release/mechanism declaration changed")
+    expected_interpreter = _mapping(declared.get("interpreter"), "current94 signed interpreter")
+    python = _mapping(identity.get("python"), "current94 runtime Python")
+    executable = _mapping(python.get("executable"), "current94 runtime Python executable")
+    lexical = Path(sys.executable)
+    try:
+        resolved = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise ValidationRefused("current94 validator Python cannot be resolved") from exc
+    if (
+        str(lexical) != expected_interpreter.get("path")
+        or str(resolved) != expected_interpreter.get("resolved_path")
+        or executable.get("path") != expected_interpreter.get("resolved_path")
+        or executable.get("bytes") != expected_interpreter.get("bytes")
+        or executable.get("digest") != expected_interpreter.get("digest")
+        or python.get("version") != EXPECTED_PYTHON_VERSION
+    ):
+        raise ValidationRefused("current94 signed Python identity changed")
+    microtensor = _mapping(identity.get("microtensor"), "current94 signed Microtensor runtime")
+    if (
+        microtensor.get("release_version") != CURRENT94_SIGNED_RELEASE
+        or microtensor.get("mechanism_version") != CURRENT94_SIGNED_MECHANISM
+    ):
+        raise ValidationRefused("current94 signed Microtensor identity changed")
+    expected_identity = _mapping(declared.get("identity"), "current94 runtime identity")
+    raw = _canonical_json_bytes(identity)
+    if {"bytes": len(raw), "digest": _digest_bytes(raw)} != dict(expected_identity):
+        raise ValidationRefused("current94 full signed runtime identity changed")
+
+
+def _prepare_current94_context(
+    spec: Current94SpecBindings,
+    tools: Current94Toolset,
+) -> tuple[ValidationContext, ConversionBindings]:
+    evaluator = tools.evaluator
+    try:
+        rows, evaluation_dataset = evaluator.load_public_diagnostic(
+            spec.dataset,
+            spec.diagnostic_jsonl,
+            spec.diagnostic_source,
+        )
+        _validate_public_lineage(evaluation_dataset, rows)
+        training_lineage, extra_modules = evaluator.load_v4_training_lineage(
+            *spec.training_arguments
+        )
+        _validate_current94_training_lineage(training_lineage, spec, tools)
+        conversion = _validate_current94_conversion_bundle(spec, tools, training_lineage)
+        runtime = evaluator.load_signed_runtime(extra_tool_modules=extra_modules)
+    except ValidationRefused:
+        raise
+    except Exception as exc:
+        raise ValidationRefused(f"current94 static lineage/runtime replay failed: {exc}") from exc
+    _validate_current94_runtime_identity(
+        _mapping(runtime.identity, "current94 signed runtime identity"), spec, tools
+    )
+    try:
+        manifest = runtime.load_manifest_type(
+            format=runtime.artifact_format.GGUF,
+            quantization=QUANTIZATION,
+            entrypoint=ENTRYPOINT,
+            max_input={"tokens": MAX_INPUT_TOKENS},
+            preprocessing={"tokenizer": "tokenizer.json"},
+            base_model=CURRENT94_BASE_MODEL,
+        ).to_dict()
+    except Exception as exc:
+        raise ValidationRefused(
+            f"current94 signed load-manifest construction failed: {exc}"
+        ) from exc
+    _json_exact(manifest, conversion.load_manifest, "current94 signed load manifest")
+    configuration = {
+        "generation": evaluator.generation_contract(MAX_INPUT_TOKENS),
+        "load_manifest": manifest,
+        "artifact_digest": conversion.artifact["tree_digest"],
+        "diagnostic_refs_digest": evaluation_dataset["diagnostic_jsonl"]["refs_digest"],
+        "expected_gguf_architecture": CURRENT94_GGUF_ARCHITECTURE,
+    }
+    context = ValidationContext(
+        candidate=tools.candidate,
+        evaluator=evaluator,
+        rows=tuple(dict(row) for row in rows),
+        evaluation_dataset=dict(evaluation_dataset),
+        training_lineage=dict(training_lineage),
+        runtime=runtime,
+        artifact=dict(conversion.artifact),
+        configuration=configuration,
+        configuration_digest=_digest_bytes(_canonical_json_bytes(configuration)),
+    )
+    return context, conversion
 
 
 def _prepare_context(
@@ -2422,6 +3501,9 @@ def _validate_repeat(
     *,
     context: ValidationContext,
     gates: Mapping[str, int],
+    summary_schema: str | None = None,
+    base_model: str = BASE_MODEL,
+    lineage_claim: str | None = None,
 ) -> dict[str, Any]:
     _require_exact_tree(
         root,
@@ -2452,14 +3534,16 @@ def _validate_repeat(
     if summary_raw != expected_summary_raw:
         raise ValidationRefused("diagnostic summary is not the evaluator's canonical JSON")
     expected_identity = {
-        "schema": context.evaluator.SCHEMA,
+        "schema": context.evaluator.SCHEMA if summary_schema is None else summary_schema,
         "status": "complete",
         "track": TRACK,
         "hardware_class": HARDWARE_CLASS,
-        "base_model": BASE_MODEL,
+        "base_model": base_model,
         "quality_claim": context.evaluator.QUALITY_CLAIM,
         "runtime_claim": context.evaluator.RUNTIME_CLAIM,
-        "lineage_claim": context.evaluator.LINEAGE_CLAIM,
+        "lineage_claim": (
+            context.evaluator.LINEAGE_CLAIM if lineage_claim is None else lineage_claim
+        ),
     }
     for field, expected in expected_identity.items():
         if summary.get(field) != expected:
@@ -2716,8 +3800,97 @@ def validate_normalized_v7_diagnostic(
     }
 
 
+def validate_current94_v8_diagnostic(
+    experiment_spec: Path,
+    through: str,
+    *,
+    _tools: Current94Toolset | None = None,
+) -> dict[str, Any]:
+    """Validate current94/Qwen2.5 receipts without constructing a model engine."""
+
+    if through not in REPEATS:
+        raise ValidationRefused(f"through must be one of {REPEATS}")
+    spec = _load_current94_v8_spec(experiment_spec)
+    tools = _tools if _tools is not None else _load_current94_v8_tools(spec)
+    context, conversion = _prepare_current94_context(spec, tools)
+    completed = REPEATS.index(through) + 1
+    _require_no_staging(spec.output_roots)
+    for root in spec.output_roots[completed:]:
+        if os.path.lexists(root):
+            raise ValidationRefused(
+                f"future current94 diagnostic root already exists before {through}: {root}"
+            )
+    receipts = [
+        _validate_repeat(
+            repeat,
+            spec.output_roots[index],
+            context=context,
+            gates=spec.gates,
+            summary_schema=tools.evaluator.SCHEMA_V2,
+            base_model=CURRENT94_BASE_MODEL,
+            lineage_claim=tools.evaluator.CURRENT_OVERLAP_LINEAGE_CLAIM,
+        )
+        for index, repeat in enumerate(REPEATS[:completed])
+    ]
+    aggregate = _aggregate(receipts)
+    for receipt in receipts:
+        receipt.pop("raw_output_digests")
+    conversion_record = conversion.replay_receipts[0]
+    use_policy = _mapping(spec.payload.get("artifact_use_policy"), "current94 use policy")
+    return {
+        "schema": CURRENT94_VALIDATION_SCHEMA,
+        "status": "validated" if completed == len(REPEATS) else "partially_validated",
+        "protocol": "current94-v8",
+        "through": through,
+        "experiment_spec": {"bytes": len(spec.raw), "digest": _digest_bytes(spec.raw)},
+        "conversion": {
+            "schema": CURRENT94_CONVERSION_SCHEMA,
+            "calibration_schema": CURRENT94_CALIBRATION_SCHEMA,
+            "bundle": str(spec.bundle),
+            "artifact_tree_digest": conversion.artifact["tree_digest"],
+            "entrypoint_digest": conversion.artifact["entrypoint"]["digest"],
+            "load_manifest_digest": _digest_bytes(
+                _canonical_json_bytes(conversion.load_manifest)
+            ),
+            "receipt_bindings": conversion_record,
+        },
+        "runtime": {
+            "release_version": CURRENT94_SIGNED_RELEASE,
+            "mechanism_version": CURRENT94_SIGNED_MECHANISM,
+        },
+        "repeats": receipts,
+        "aggregate": aggregate,
+        "claim": {
+            "local_structural_and_timing_diagnostics_only": True,
+            "generated_or_corpus_code_executed_by_this_static_validator": False,
+            "completed_v4_final_all_public_training_lineage_bound": True,
+            "diagnostic_rows_are_training_overlap": True,
+            "qwen25_qwen2_contract_bound": True,
+            "conversion_v6_calibration_v3_bound": True,
+            "conversion_runtime_receipt_content_bound": True,
+            "converter_interpreter_portable_receipt_content_bound": True,
+            "executed_interpreter_attested": False,
+            "hermetic_conversion_attested": False,
+            "conversion_runtime_execution_verified": False,
+            "signed_release_v032_mechanism_v030_bound": True,
+            "artifact_use_policy": dict(use_policy),
+            "execution_pass_at_1_claimed": False,
+            "quality_or_rank_claimed": False,
+            "promotion_authorized": False,
+            "remaining_local_repeats": list(REPEATS[completed:]),
+            "remaining_external_gates": [
+                (
+                    "a live launch remains blocked until a reviewed hermetic containment "
+                    "boundary exists"
+                ),
+                "official validator measurement and settled rank remain external",
+            ],
+        },
+    }
+
+
 def validate_declared_diagnostic(experiment_spec: Path, through: str) -> dict[str, Any]:
-    """Dispatch only between the two explicit immutable diagnostic schemas."""
+    """Dispatch only among the three explicit immutable diagnostic schemas."""
 
     payload, _raw = _strict_json_file(
         experiment_spec,
@@ -2729,6 +3902,8 @@ def validate_declared_diagnostic(experiment_spec: Path, through: str) -> dict[st
         return validate_diagnostic(experiment_spec, through)
     if schema == NORMALIZED_SPEC_SCHEMA:
         return validate_normalized_v7_diagnostic(experiment_spec, through)
+    if schema == CURRENT94_SPEC_SCHEMA:
+        return validate_current94_v8_diagnostic(experiment_spec, through)
     raise ValidationRefused("diagnostic experiment schema is unsupported")
 
 

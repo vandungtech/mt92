@@ -53,6 +53,7 @@ ATTEMPT_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-launch-attempt.v1
 LEGACY_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v1"
 ADDENDUM_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-execution-addendum.v1"
 NORMALIZED_ADDENDUM_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-execution-addendum.v2"
+CURRENT94_ADDENDUM_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-execution-addendum.v3"
 ADDENDUM_STATUS: Final[str] = "final"
 REPOSITORY: Final[str] = "https://github.com/vandungtech/mt92"
 SOURCE_COMMIT: Final[str] = "c9c4effe77271b2d70d4eee745de654af9d1e74d"
@@ -69,6 +70,17 @@ NORMALIZED_SPEC_RELATIVE: Final[str] = (
 NORMALIZED_ADDENDUM_RELATIVE: Final[str] = (
     "training/experiment_specs/"
     "code-historical7730-normalized-v7-q4-m541-py311-diagnostic-addendum.json"
+)
+CURRENT94_SPEC_RELATIVE: Final[str] = (
+    "training/experiment_specs/"
+    "code-current94-qwen25-coder-15b-v8-q4-m541-v6-diagnostic.json"
+)
+CURRENT94_ADDENDUM_RELATIVE: Final[str] = (
+    "training/experiment_specs/"
+    "code-current94-qwen25-coder-15b-v8-q4-m541-v6-diagnostic-addendum.json"
+)
+CURRENT94_DECLARATION_LEXICAL_PATH: Final[Path] = (
+    Path(os.path.abspath(__file__)).parent.parent / CURRENT94_ADDENDUM_RELATIVE
 )
 LAUNCHER_RELATIVE: Final[str] = "training/run_code_gguf_diagnostic.py"
 VALIDATOR_RELATIVE: Final[str] = "training/validate_code_gguf_diagnostic.py"
@@ -206,6 +218,47 @@ NORMALIZED_DIAGNOSTIC_JSONL: Final[Path] = DIAGNOSTIC_JSONL
 NORMALIZED_CURRENT_SOURCE: Final[Path] = CURRENT_SOURCE_CORPUS
 NORMALIZED_SPEC_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-experiment.v2"
 NORMALIZED_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v2"
+CURRENT94_SPEC_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-experiment.v3"
+CURRENT94_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v3"
+
+CURRENT94_CANDIDATE_ID: Final[str] = (
+    "qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8-q4-m541-v6"
+)
+CURRENT94_BASE_MODEL: Final[str] = (
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a"
+)
+CURRENT94_BUNDLE_ROOT: Final[Path] = Path(
+    "/dev/shm/microtensor-code/"  # noqa: S108
+    "qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8-"
+    "q4-m541-v6-bundle"
+)
+CURRENT94_NAMESPACE: Final[str] = f"{CURRENT94_CANDIDATE_ID}-training-overlap-signed-v032"
+CURRENT94_REPORT_ROOT: Final[Path] = Path(
+    "/dev/shm/microtensor-code/diagnostic-launch-receipts"  # noqa: S108
+) / CURRENT94_NAMESPACE
+CURRENT94_OUTPUT_ROOTS: Final[tuple[Path, Path, Path]] = tuple(
+    Path("/dev/shm/microtensor-code/evaluations")  # noqa: S108
+    / f"{CURRENT94_NAMESPACE}-{repeat}"
+    for repeat in REPEATS
+)
+CURRENT94_TRAINING_RUN: Final[Path] = Path(
+    "/dev/shm/microtensor-code/runs/"  # noqa: S108
+    "qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8"
+)
+CURRENT94_TRAINING_DATASET: Final[Path] = Path(
+    "/dev/shm/microtensor-code/dataset-final-seed92-h0"  # noqa: S108
+)
+CURRENT94_TRAINING_SOURCE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/public-code-corpus-v1.json"  # noqa: S108
+)
+CURRENT94_TRAINING_BASE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/base-qwen25-coder-15b"  # noqa: S108
+)
+CURRENT94_LIVE_BLOCKER: Final[str] = (
+    "current94 live launch is disabled until a reviewed hermetic containment boundary "
+    "provides reviewed proof of filesystem, network, process-tree, native-loader, and "
+    "receipt integrity"
+)
 
 INSPECTION_SCOPE: Final[str] = (
     "Linux /proc fields are sampled while the PTRACE_TRACEME exec-stop is held, before "
@@ -283,6 +336,20 @@ NORMALIZED_PREFLIGHT_CHECKS: Final[list[str]] = [
     "public_diagnostic_dataset",
     "signed_runtime",
     "static_python_process_escape_scan",
+]
+CURRENT94_PREFLIGHT_CHECKS: Final[list[str]] = [
+    "final_current94_v8_experiment_spec",
+    "public_launcher_validator_and_spec_source",
+    "pinned_current94_source_files_commit_and_clean_status",
+    "signed_evaluator_interpreter",
+    "signed_microtensor_release_0_3_2_mechanism_0_3_0",
+    "completed_v4_final_all_public_94_0_training_lineage",
+    "qwen25_qwen2_conversion_v6_calibration_v3_bundle",
+    "converter_interpreter_and_runtime_closure_receipt_content_bindings",
+    "candidate_artifact_tree_entrypoint_and_load_spec",
+    "public_training_overlap_diagnostic_dataset",
+    "generated_and_corpus_code_no_execution_contract",
+    "reviewed_hermetic_live_containment",
 ]
 
 
@@ -632,6 +699,21 @@ def expected_invocations() -> tuple[dict[str, Any], dict[str, Any], dict[str, An
             }
         )
     return records[0], records[1], records[2]
+def _is_current94_live_request_lexically(path: Path) -> bool:
+    """Recognize the declared current94 live alias without filesystem access."""
+
+    value = os.path.normpath(os.fspath(path))
+    if os.path.isabs(value):
+        return value == os.path.normpath(os.fspath(CURRENT94_DECLARATION_LEXICAL_PATH))
+    return value == os.path.normpath(CURRENT94_ADDENDUM_RELATIVE)
+
+
+def _refuse_current94_live() -> None:
+    raise LaunchRefused(CURRENT94_LIVE_BLOCKER)
+
+
+
+
 
 
 def _repository_root() -> Path:
@@ -676,6 +758,67 @@ def _normalized_artifact_use_policy() -> dict[str, Any]:
             "this artifact is permanently publication- and submission-ineligible"
         ),
     }
+
+
+def _current94_artifact_use_policy() -> dict[str, Any]:
+    return {
+        "intended_use": "local_training_overlap_structural_and_timing_diagnostic_only",
+        "training_overlap": True,
+        "conversion_v6_bound": True,
+        "calibration_v3_bound": True,
+        "conversion_runtime_receipt_content_bound": True,
+        "converter_interpreter_portable_receipt_content_bound": True,
+        "executed_interpreter_attested": False,
+        "hermetic_conversion_attested": False,
+        "conversion_runtime_execution_verified": False,
+        "generated_or_corpus_code_executed_by_this_static_validator": False,
+        "execution_pass_at_1_claimed": False,
+        "quality_or_rank_claimed": False,
+        "publication_authorized": False,
+        "submission_authorized": False,
+        "transaction_authorized": False,
+        "limitation": (
+            "all 16 public diagnostic rows overlap the final 94/0 training lineage; local "
+            "structural and timing diagnostics are not holdout evidence, execution pass@1, "
+            "an official validator measurement, or a settled-rank certificate"
+        ),
+    }
+
+
+CURRENT94_SAFETY_CONTRACT: Final[dict[str, bool]] = {
+    "generated_code_imported_by_this_static_validator": False,
+    "generated_code_executed_by_this_static_validator": False,
+    "generated_code_bytecode_compiled_by_this_static_validator": False,
+    "corpus_code_imported_by_this_static_validator": False,
+    "corpus_code_executed_by_this_static_validator": False,
+    "corpus_code_bytecode_compiled_by_this_static_validator": False,
+    "static_ast_parse_only_by_this_static_validator": True,
+    "hidden_or_scored_tests_accessed_by_this_static_validator": False,
+}
+CURRENT94_GATES: Final[dict[str, int]] = {
+    "successful_generations_minimum": 16,
+    "failed_generations_maximum": 0,
+    "scorer_extracted_parseable_python_minimum": 16,
+    "scorer_extracted_top_level_task_func_minimum": 16,
+    "scorer_extracted_residual_fences_maximum": 0,
+    "maximum_request_latency_ms": 31_200,
+    "p95_ttft_ms_maximum": 5_256,
+    "p95_ttft_ms_preferred": 4_700,
+    "peak_rss_bytes_maximum": 1_073_741_824,
+    "maximum_stream_pieces_per_request": 373,
+}
+CURRENT94_REQUIRED_SOURCE_FILES: Final[frozenset[str]] = frozenset(
+    {
+        "training/code_candidate.py",
+        "training/convert_code_gguf.py",
+        "training/evaluate_code.py",
+        "training/evaluate_code_gguf.py",
+        "training/historical_code_candidate.py",
+        "training/normalized_historical_code_candidate.py",
+        "training/publish_code_provenance.py",
+        "training/train_code.py",
+    }
+)
 
 
 def _normalized_spec_values(raw: bytes) -> dict[str, Any]:
@@ -846,6 +989,270 @@ def _normalized_spec_values(raw: bytes) -> dict[str, Any]:
     }
 
 
+def _current94_spec_values(raw: bytes) -> dict[str, Any]:
+    payload = _mapping(_strict_json(raw, "current94 v8 diagnostic spec"), "current94 spec")
+    if raw != _pretty_json_bytes(payload):
+        raise LaunchRefused("current94 v8 diagnostic spec is not canonical sorted JSON")
+    _exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema",
+                "status",
+                "artifact_use_policy",
+                "safety_contract",
+                "candidate",
+                "source",
+                "diagnostic",
+                "training_lineage",
+                "conversion",
+                "runtime",
+                "gates",
+            }
+        ),
+        "current94 v8 diagnostic spec",
+    )
+    if payload.get("schema") != CURRENT94_SPEC_SCHEMA or payload.get("status") != "final":
+        raise LaunchRefused("current94 v8 diagnostic spec is not final")
+    policy = _mapping(payload.get("artifact_use_policy"), "current94 artifact use policy")
+    if _canonical_json_bytes(policy) != _canonical_json_bytes(_current94_artifact_use_policy()):
+        raise LaunchRefused("current94 artifact use policy changed")
+    if _canonical_json_bytes(payload.get("safety_contract")) != _canonical_json_bytes(
+        CURRENT94_SAFETY_CONTRACT
+    ):
+        raise LaunchRefused("current94 no-execution safety contract changed")
+
+    candidate = _mapping(payload.get("candidate"), "current94 candidate")
+    _exact_keys(
+        candidate,
+        frozenset(
+            {
+                "id",
+                "base_model",
+                "gguf_architecture",
+                "bundle",
+                "entrypoint",
+                "quantization",
+                "max_input_tokens",
+            }
+        ),
+        "current94 candidate",
+    )
+    expected_candidate = {
+        "id": CURRENT94_CANDIDATE_ID,
+        "base_model": CURRENT94_BASE_MODEL,
+        "gguf_architecture": "qwen2",
+        "bundle": str(CURRENT94_BUNDLE_ROOT),
+        "entrypoint": "model.gguf",
+        "quantization": "Q4_K_M",
+        "max_input_tokens": 541,
+    }
+    if dict(candidate) != expected_candidate:
+        raise LaunchRefused("current94 Qwen2.5/qwen2 candidate contract changed")
+
+    source = _mapping(payload.get("source"), "current94 source")
+    _exact_keys(source, frozenset({"commit", "root", "files"}), "current94 source")
+    source_commit = source.get("commit")
+    if not isinstance(source_commit, str) or _COMMIT.fullmatch(source_commit) is None:
+        raise LaunchRefused("current94 source commit is malformed")
+    source_root = Path(str(source.get("root")))
+    expected_source_root = Path("/tmp") / f"mt92-current94-diagnostic-{source_commit[:7]}"  # noqa: S108
+    if source_root != expected_source_root:
+        raise LaunchRefused(f"current94 source root must be {expected_source_root}")
+    source_files = _mapping(source.get("files"), "current94 source files")
+    _exact_keys(source_files, CURRENT94_REQUIRED_SOURCE_FILES, "current94 source files")
+    for relative, identity in source_files.items():
+        _normalized_content_identity(identity, f"current94 source {relative}")
+
+    diagnostic = _mapping(payload.get("diagnostic"), "current94 diagnostic")
+    _exact_keys(
+        diagnostic,
+        frozenset(
+            {
+                "dataset",
+                "diagnostic_jsonl",
+                "source_corpus",
+                "manifest",
+                "holdout",
+                "source",
+                "refs_digest",
+                "examples",
+                "relationship_to_training",
+                "output_roots",
+            }
+        ),
+        "current94 diagnostic",
+    )
+    expected_diagnostic = {
+        "dataset": str(DATASET),
+        "diagnostic_jsonl": str(DIAGNOSTIC_JSONL),
+        "source_corpus": str(CURRENT94_TRAINING_SOURCE),
+        "manifest": {
+            "bytes": 1_070,
+            "digest": "sha256:6af4fe8952293339773e133a867d78e817d759a83138bc7400af98e2e04898ff",
+        },
+        "holdout": {
+            "bytes": 23_390,
+            "digest": "sha256:8b07f781c6d160f752963b3a42f343c18d53a785d7b7cd09f472fdddbd2d7993",
+        },
+        "source": {
+            "bytes": 152_605,
+            "digest": "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5",
+        },
+        "refs_digest": "sha256:73edc2a7674e0c718ea4ef7ea67c638b1a2c431320789b632aad5909309e01ee",
+        "examples": 16,
+        "relationship_to_training": "training_overlap",
+        "output_roots": [str(path) for path in CURRENT94_OUTPUT_ROOTS],
+    }
+    if _canonical_json_bytes(diagnostic) != _canonical_json_bytes(expected_diagnostic):
+        raise LaunchRefused("current94 training-overlap diagnostic contract changed")
+
+    training = _mapping(payload.get("training_lineage"), "current94 training lineage")
+    _exact_keys(
+        training,
+        frozenset(
+            {
+                "schema",
+                "run_kind",
+                "training_run",
+                "training_dataset",
+                "source_corpus",
+                "base",
+                "receipt",
+                "metrics",
+                "merged_tree_digest",
+                "dataset_schema",
+                "corpus_profile",
+                "train_examples",
+                "holdout_examples",
+                "quality_claim",
+            }
+        ),
+        "current94 training lineage",
+    )
+    expected_training = {
+        "schema": "microtensor.code.training.v4",
+        "run_kind": "final_all_public",
+        "training_run": str(CURRENT94_TRAINING_RUN),
+        "training_dataset": str(CURRENT94_TRAINING_DATASET),
+        "source_corpus": str(CURRENT94_TRAINING_SOURCE),
+        "base": str(CURRENT94_TRAINING_BASE),
+        "dataset_schema": "microtensor.code.prepared.v1",
+        "corpus_profile": "bigcodebench94",
+        "train_examples": 94,
+        "holdout_examples": 0,
+        "quality_claim": (
+            "none: all 94 public examples were used for training; public code tests are "
+            "withheld; no holdout or execution pass@1 was measured"
+        ),
+    }
+    for field, expected in expected_training.items():
+        if training.get(field) != expected:
+            raise LaunchRefused(f"current94 training field {field} changed")
+    _normalized_content_identity(training.get("receipt"), "current94 training receipt")
+    _normalized_content_identity(training.get("metrics"), "current94 training metrics")
+    _digest(training.get("merged_tree_digest"), "current94 merged tree digest")
+
+    conversion = _mapping(payload.get("conversion"), "current94 conversion")
+    _exact_keys(
+        conversion,
+        frozenset(
+            {
+                "schema",
+                "calibration_schema",
+                "receipt",
+                "calibration_receipt",
+                "load_spec",
+                "artifact",
+                "runtime_receipt_content_binding",
+            }
+        ),
+        "current94 conversion",
+    )
+    if (
+        conversion.get("schema") != "microtensor.code.gguf-conversion.v6"
+        or conversion.get("calibration_schema")
+        != "microtensor.code.imatrix-calibration.v3"
+    ):
+        raise LaunchRefused("current94 conversion-v6/calibration-v3 binding changed")
+    for field in ("receipt", "calibration_receipt", "load_spec"):
+        _normalized_content_identity(conversion.get(field), f"current94 conversion {field}")
+    artifact = _mapping(conversion.get("artifact"), "current94 artifact")
+    _exact_keys(
+        artifact,
+        frozenset({"tree_digest", "entrypoint_bytes", "entrypoint_digest"}),
+        "current94 artifact",
+    )
+    artifact_values = {
+        "tree_digest": _digest(artifact.get("tree_digest"), "current94 artifact tree"),
+        "entrypoint_bytes": _integer(
+            artifact.get("entrypoint_bytes"), "current94 artifact bytes", minimum=1
+        ),
+        "entrypoint_digest": _digest(
+            artifact.get("entrypoint_digest"), "current94 artifact entrypoint"
+        ),
+    }
+    conversion_runtime = _mapping(
+        conversion.get("runtime_receipt_content_binding"), "current94 conversion runtime"
+    )
+    _exact_keys(
+        conversion_runtime,
+        frozenset({"converter_interpreter", "llama_cpp_runtime_closure"}),
+        "current94 conversion runtime",
+    )
+    converter_interpreter = _mapping(
+        conversion_runtime.get("converter_interpreter"),
+        "current94 converter interpreter",
+    )
+    _exact_keys(
+        converter_interpreter,
+        frozenset({"container_path", "bytes", "digest", "mode"}),
+        "current94 converter interpreter",
+    )
+    if (
+        converter_interpreter.get("container_path")
+        != "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11"
+        or converter_interpreter.get("mode") != "0o755"
+    ):
+        raise LaunchRefused("current94 converter interpreter container path or mode changed")
+    _integer(converter_interpreter.get("bytes"), "current94 converter Python bytes", minimum=1)
+    _digest(converter_interpreter.get("digest"), "current94 converter Python digest")
+    _normalized_content_identity(
+        conversion_runtime.get("llama_cpp_runtime_closure"),
+        "current94 llama.cpp runtime closure",
+    )
+
+    runtime = _mapping(payload.get("runtime"), "current94 runtime")
+    _exact_keys(
+        runtime,
+        frozenset({"release_version", "mechanism_version", "identity", "interpreter"}),
+        "current94 runtime",
+    )
+    if (
+        runtime.get("release_version") != "0.3.2"
+        or runtime.get("mechanism_version") != "0.3.0"
+    ):
+        raise LaunchRefused("current94 signed release/mechanism changed")
+    _normalized_content_identity(runtime.get("identity"), "current94 signed runtime identity")
+    if _mapping(runtime.get("interpreter"), "current94 signed interpreter") != {
+        "path": str(INTERPRETER_PATH),
+        "resolved_path": str(INTERPRETER_RESOLVED),
+        "bytes": INTERPRETER_BYTES,
+        "digest": INTERPRETER_DIGEST,
+    }:
+        raise LaunchRefused("current94 signed evaluator interpreter changed")
+    if _mapping(payload.get("gates"), "current94 gates") != CURRENT94_GATES:
+        raise LaunchRefused("current94 diagnostic gates changed")
+    return {
+        "payload": dict(payload),
+        "source_root": source_root,
+        "source_commit": source_commit,
+        "artifact": artifact_values,
+        "artifact_use_policy": dict(policy),
+        "conversion_runtime": dict(conversion_runtime),
+    }
+
+
 def _normalized_v7_expected_invocations(
     spec_payload: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -895,6 +1302,118 @@ def _normalized_v7_expected_invocations(
             }
         )
     return records[0], records[1], records[2]
+
+
+def _current94_expected_invocations(
+    spec_payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    values = _current94_spec_values(_pretty_json_bytes(spec_payload))
+    artifact = _mapping(values["artifact"], "current94 artifact")
+    records: list[dict[str, Any]] = []
+    for repeat, output_root in zip(REPEATS, CURRENT94_OUTPUT_ROOTS, strict=True):
+        argv = [
+            str(INTERPRETER_PATH),
+            "-m",
+            "training.evaluate_code_gguf",
+            "--dataset",
+            str(DATASET),
+            "--diagnostic-jsonl",
+            str(DIAGNOSTIC_JSONL),
+            "--source-corpus",
+            str(CURRENT94_TRAINING_SOURCE),
+            "--artifact",
+            str(CURRENT94_BUNDLE_ROOT / "artifact"),
+            "--artifact-digest",
+            str(artifact["tree_digest"]),
+            "--entrypoint",
+            "model.gguf",
+            "--quantization",
+            "Q4_K_M",
+            "--max-input-tokens",
+            "541",
+            "--training-run",
+            str(CURRENT94_TRAINING_RUN),
+            "--training-dataset",
+            str(CURRENT94_TRAINING_DATASET),
+            "--training-source-corpus",
+            str(CURRENT94_TRAINING_SOURCE),
+            "--training-base",
+            str(CURRENT94_TRAINING_BASE),
+            "--out",
+            str(output_root),
+        ]
+        argv_raw = _canonical_json_bytes(argv)
+        records.append(
+            {
+                "repeat": repeat,
+                "argv": argv,
+                "argv_canonical_json_bytes": len(argv_raw),
+                "argv_canonical_json_sha256": _digest_bytes(argv_raw),
+                "output_root": str(output_root),
+            }
+        )
+    return records[0], records[1], records[2]
+
+
+def current94_v8_static_addendum_payload(
+    *,
+    experiment_spec_raw: bytes,
+    public_commit: str,
+    public_files: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build a non-executable current94 declaration from final observed identities."""
+
+    values = _current94_spec_values(experiment_spec_raw)
+    if _COMMIT.fullmatch(public_commit) is None:
+        raise LaunchRefused("current94 public commit must be 40 lowercase hex characters")
+    required_public_files = frozenset(
+        {LAUNCHER_RELATIVE, VALIDATOR_RELATIVE, CURRENT94_SPEC_RELATIVE}
+    )
+    if frozenset(public_files) != required_public_files:
+        raise LaunchRefused("current94 public source file closure changed")
+    normalized_files = {
+        relative: _parse_identity(public_files[relative], f"current94 public {relative}").as_dict()
+        for relative in sorted(public_files)
+    }
+    spec_identity = FileIdentity(len(experiment_spec_raw), _digest_bytes(experiment_spec_raw))
+    if normalized_files[CURRENT94_SPEC_RELATIVE] != spec_identity.as_dict():
+        raise LaunchRefused("current94 public spec identity differs from supplied bytes")
+    artifact = _mapping(values["artifact"], "current94 artifact")
+    return {
+        "schema": CURRENT94_ADDENDUM_SCHEMA,
+        "status": "blocked",
+        "blocker": CURRENT94_LIVE_BLOCKER,
+        "public_source": {
+            "repository": REPOSITORY,
+            "commit": public_commit,
+            "identity_scope": "declared_content_identities_for_offline_static_inspection_only",
+            "files": normalized_files,
+        },
+        "experiment_spec": {
+            "path": CURRENT94_SPEC_RELATIVE,
+            **spec_identity.as_dict(),
+        },
+        "artifact_use_policy": dict(values["artifact_use_policy"]),
+        "interpreter": {
+            "path": str(INTERPRETER_PATH),
+            "resolved_path": str(INTERPRETER_RESOLVED),
+            "bytes": INTERPRETER_BYTES,
+            "sha256": INTERPRETER_DIGEST,
+        },
+        "static_preflight": {
+            "validator_path": VALIDATOR_RELATIVE,
+            "validator_mode": "in_process_static_only",
+            "model_engine_construction_permitted": False,
+            "live_launch_permitted": False,
+            "required_checks": list(CURRENT94_PREFLIGHT_CHECKS),
+            "source_commit": values["source_commit"],
+            "artifact_tree_sha256": artifact["tree_digest"],
+            "artifact_entrypoint_bytes": artifact["entrypoint_bytes"],
+            "artifact_entrypoint_sha256": artifact["entrypoint_digest"],
+            "conversion_runtime_receipt_content_binding": dict(values["conversion_runtime"]),
+        },
+        "planned_invocations": list(_current94_expected_invocations(values["payload"])),
+    }
 
 
 def normalized_v7_addendum_payload(
@@ -1062,17 +1581,82 @@ def _load_normalized_v7_contract(path: Path) -> LaunchContract:
     )
 
 
-def _load_contract(path: Path) -> LaunchContract:
+def inspect_current94_static_declaration_offline(path: Path) -> dict[str, Any]:
+    """Inspect declared local bytes and Git state; never authorize or dispatch a launch."""
+
     repository_root = _repository_root()
+    expected_path = repository_root / CURRENT94_ADDENDUM_RELATIVE
+    try:
+        if path.resolve(strict=True) != expected_path:
+            raise LaunchRefused(f"current94 declaration must be repository file {expected_path}")
+    except OSError as exc:
+        raise LaunchRefused(f"current94 diagnostic declaration cannot be resolved: {exc}") from exc
+    raw = _stable_regular_bytes(
+        path,
+        "current94 diagnostic declaration",
+        maximum=MAX_ADDENDUM_BYTES,
+    )
+    payload = _mapping(_strict_json(raw, "current94 diagnostic declaration"), "declaration")
+    if raw != _pretty_json_bytes(payload):
+        raise LaunchRefused("current94 diagnostic declaration is not canonical sorted JSON")
+    public_source = _mapping(payload.get("public_source"), "current94 public source")
+    public_commit = public_source.get("commit")
+    if not isinstance(public_commit, str):
+        raise LaunchRefused("current94 public commit is absent")
+    public_files = _mapping(public_source.get("files"), "current94 public files")
+    spec_path = repository_root / CURRENT94_SPEC_RELATIVE
+    spec_raw = _stable_regular_bytes(
+        spec_path,
+        "current94 diagnostic spec",
+        maximum=MAX_ADDENDUM_BYTES,
+    )
+    expected_payload = current94_v8_static_addendum_payload(
+        experiment_spec_raw=spec_raw,
+        public_commit=public_commit,
+        public_files=public_files,
+    )
+    if _canonical_json_bytes(payload) != _canonical_json_bytes(expected_payload):
+        raise LaunchRefused("current94 diagnostic declaration contract changed")
+    declared = {
+        relative: _parse_identity(public_files[relative], f"current94 public {relative}")
+        for relative in public_files
+    }
+    for relative, expected in declared.items():
+        _require_identity(
+            _file_identity(repository_root / relative, f"current94 public {relative}"),
+            expected,
+            f"current94 public {relative}",
+        )
+    public_git = _validate_public_git_binding(repository_root, public_commit, declared)
+    return {
+        "schema": "microtensor.code.gguf-diagnostic-static-declaration-inspection.v1",
+        "status": "verified_offline_static_only",
+        "live_launch_permitted": False,
+        "blocker": CURRENT94_LIVE_BLOCKER,
+        "declaration": FileIdentity(len(raw), _digest_bytes(raw)).as_dict(),
+        "experiment_spec": FileIdentity(len(spec_raw), _digest_bytes(spec_raw)).as_dict(),
+        "local_declared_file_content_verified": True,
+        "public_git": public_git,
+    }
+
+
+def _load_contract(path: Path) -> LaunchContract:
+    if _is_current94_live_request_lexically(path):
+        _refuse_current94_live()
     try:
         resolved = path.resolve(strict=True)
     except OSError as exc:
         raise LaunchRefused(f"diagnostic addendum cannot be resolved: {exc}") from exc
+    if resolved == CURRENT94_DECLARATION_LEXICAL_PATH:
+        _refuse_current94_live()
+    repository_root = _repository_root()
+    if resolved == repository_root / CURRENT94_ADDENDUM_RELATIVE:
+        _refuse_current94_live()
     if resolved == repository_root / ADDENDUM_RELATIVE:
         return _load_v6_contract(path)
     if resolved == repository_root / NORMALIZED_ADDENDUM_RELATIVE:
         return _load_normalized_v7_contract(path)
-    raise LaunchRefused("diagnostic addendum is outside both declared immutable protocols")
+    raise LaunchRefused("diagnostic addendum is outside the three declared immutable protocols")
 
 
 def _load_v6_contract(path: Path) -> LaunchContract:
@@ -1547,9 +2131,14 @@ def _load_validator(contract: LaunchContract) -> ModuleType:
     except Exception as exc:
         sys.modules.pop(module_name, None)
         raise LaunchRefused(f"static validator could not be loaded: {exc}") from exc
-    schema_name = (
-        "VALIDATION_SCHEMA" if contract.protocol == "v6" else ("NORMALIZED_VALIDATION_SCHEMA")
-    )
+    schema_names = {
+        "v6": "VALIDATION_SCHEMA",
+        "normalized-v7": "NORMALIZED_VALIDATION_SCHEMA",
+        "current94-v8": "CURRENT94_VALIDATION_SCHEMA",
+    }
+    schema_name = schema_names.get(contract.protocol)
+    if schema_name is None:
+        raise LaunchRefused(f"static validator protocol is unsupported: {contract.protocol}")
     if getattr(module, schema_name, None) != contract.validation_schema:
         raise LaunchRefused("static validator schema changed")
     return module
@@ -1690,6 +2279,16 @@ def _static_process_escape_scan(context: Any) -> dict[str, Any]:
     }
 
 
+def _preflight_checks(contract: LaunchContract) -> list[str]:
+    if contract.protocol == "v6":
+        return list(PREFLIGHT_CHECKS)
+    if contract.protocol == "normalized-v7":
+        return list(NORMALIZED_PREFLIGHT_CHECKS)
+    if contract.protocol == "current94-v8":
+        return list(CURRENT94_PREFLIGHT_CHECKS)
+    raise LaunchRefused(f"static preflight protocol is unsupported: {contract.protocol}")
+
+
 def _static_preflight(contract: LaunchContract) -> Preflight:
     source = _git_source_identity(contract)
     interpreter = _signed_interpreter_identity(contract)
@@ -1700,11 +2299,17 @@ def _static_preflight(contract: LaunchContract) -> Preflight:
             tools = validator._load_pinned_tools(spec.source_root)
             conversion = validator._validate_conversion_bundles(spec, tools)
             context = validator._prepare_context(spec, tools, conversion)
-        else:
+        elif contract.protocol == "normalized-v7":
             spec = validator._load_normalized_v7_spec(contract.experiment_spec)
             tools = validator._load_normalized_v7_tools(spec)
             conversion = validator._validate_normalized_conversion_bundle(spec, tools)
             context = validator._prepare_normalized_context(spec, tools, conversion)
+        elif contract.protocol == "current94-v8":
+            spec = validator._load_current94_v8_spec(contract.experiment_spec)
+            tools = validator._load_current94_v8_tools(spec)
+            context, conversion = validator._prepare_current94_context(spec, tools)
+        else:
+            raise LaunchRefused(f"static preflight protocol is unsupported: {contract.protocol}")
         process_escape_scan = _static_process_escape_scan(context)
         canonical = validator._canonical_json_bytes
         digest = validator._digest_bytes
@@ -1734,9 +2339,7 @@ def _static_preflight(contract: LaunchContract) -> Preflight:
         "runtime_sha256": digest(canonical(context.runtime.identity)),
         "conversion_replays_sha256": digest(canonical(list(conversion.replay_receipts))),
         "process_escape_scan": process_escape_scan,
-        "checks": list(
-            PREFLIGHT_CHECKS if contract.protocol == "v6" else NORMALIZED_PREFLIGHT_CHECKS
-        ),
+        "checks": _preflight_checks(contract),
         "model_engine_constructed": False,
     }
     return Preflight(report=report, validator=validator)
@@ -1748,11 +2351,14 @@ def _validate_through(
     repeat: str,
 ) -> tuple[dict[str, Any], str]:
     try:
-        validation = (
-            validator.validate_diagnostic
-            if contract.protocol == "v6"
-            else validator.validate_normalized_v7_diagnostic
-        )
+        if contract.protocol == "v6":
+            validation = validator.validate_diagnostic
+        elif contract.protocol == "normalized-v7":
+            validation = validator.validate_normalized_v7_diagnostic
+        elif contract.protocol == "current94-v8":
+            validation = validator.validate_current94_v8_diagnostic
+        else:
+            raise LaunchRefused(f"validation protocol is unsupported: {contract.protocol}")
         report = validation(contract.experiment_spec, repeat)
         raw = validator._canonical_json_bytes(report)
     except Exception as exc:
@@ -1798,6 +2404,51 @@ def _validate_through(
             or claim.get("remaining_external_gates") != expected_external
         ):
             raise LaunchRefused("normalized validation artifact-use claim changed")
+    if contract.protocol == "current94-v8":
+        expected_policy = dict(contract.artifact_use_policy)
+        expected_claim_keys = frozenset(
+            {
+                "local_structural_and_timing_diagnostics_only",
+                "generated_or_corpus_code_executed_by_this_static_validator",
+                "completed_v4_final_all_public_training_lineage_bound",
+                "diagnostic_rows_are_training_overlap",
+                "qwen25_qwen2_contract_bound",
+                "conversion_v6_calibration_v3_bound",
+                "conversion_runtime_receipt_content_bound",
+                "converter_interpreter_portable_receipt_content_bound",
+                "executed_interpreter_attested",
+                "hermetic_conversion_attested",
+                "conversion_runtime_execution_verified",
+                "signed_release_v032_mechanism_v030_bound",
+                "artifact_use_policy",
+                "execution_pass_at_1_claimed",
+                "quality_or_rank_claimed",
+                "promotion_authorized",
+                "remaining_local_repeats",
+                "remaining_external_gates",
+            }
+        )
+        _exact_keys(claim, expected_claim_keys, "current94 validation claim")
+        policy = _mapping(claim.get("artifact_use_policy"), "current94 artifact use policy")
+        if (
+            _canonical_json_bytes(policy) != _canonical_json_bytes(expected_policy)
+            or claim.get("local_structural_and_timing_diagnostics_only") is not True
+            or claim.get("generated_or_corpus_code_executed_by_this_static_validator") is not False
+            or claim.get("completed_v4_final_all_public_training_lineage_bound") is not True
+            or claim.get("diagnostic_rows_are_training_overlap") is not True
+            or claim.get("qwen25_qwen2_contract_bound") is not True
+            or claim.get("conversion_v6_calibration_v3_bound") is not True
+            or claim.get("conversion_runtime_receipt_content_bound") is not True
+            or claim.get("converter_interpreter_portable_receipt_content_bound") is not True
+            or claim.get("executed_interpreter_attested") is not False
+            or claim.get("hermetic_conversion_attested") is not False
+            or claim.get("conversion_runtime_execution_verified") is not False
+            or claim.get("signed_release_v032_mechanism_v030_bound") is not True
+            or claim.get("execution_pass_at_1_claimed") is not False
+            or claim.get("quality_or_rank_claimed") is not False
+            or claim.get("promotion_authorized") is not False
+        ):
+            raise LaunchRefused("current94 validation claim changed")
     if (
         report.get("schema") != contract.validation_schema
         or report.get("status") != expected_status
@@ -1821,6 +2472,10 @@ def _launch_receipt_claim(contract: LaunchContract) -> dict[str, Any]:
     }
     if contract.protocol == "normalized-v7":
         claim["artifact_use_policy"] = dict(contract.artifact_use_policy)
+    if contract.protocol == "current94-v8":
+        claim["artifact_use_policy"] = dict(contract.artifact_use_policy)
+        claim["live_launch_supported"] = False
+        claim["live_launch_blocker"] = CURRENT94_LIVE_BLOCKER
     return claim
 
 
@@ -2255,8 +2910,7 @@ def _validate_prior_preflight(contract: LaunchContract, value: Any) -> None:
             "entrypoint_bytes": contract.artifact_entrypoint_bytes,
             "entrypoint_sha256": contract.artifact_entrypoint_digest,
         }
-        or preflight.get("checks")
-        != (PREFLIGHT_CHECKS if contract.protocol == "v6" else NORMALIZED_PREFLIGHT_CHECKS)
+        or preflight.get("checks") != _preflight_checks(contract)
         or preflight.get("model_engine_constructed") is not False
         or scan.get("schema") != "microtensor.code.python-process-escape-scan.v1"
         or scan.get("status") != "passed"
@@ -3544,6 +4198,8 @@ def _launch_repeat(
 ) -> dict[str, Any]:
     if repeat not in REPEATS:
         raise LaunchRefused(f"repeat must be one of {REPEATS}; no r4 exists")
+    if contract.protocol == "current94-v8":
+        raise LaunchRefused(CURRENT94_LIVE_BLOCKER)
     _validate_launcher_boundary_ready()
     _ensure_report_root(contract.report_root, REPORT_BASE)
     prior_bindings = _validate_namespace_state(contract, repeat)
@@ -3737,6 +4393,8 @@ def _launch_repeat(
 def launch_diagnostic(addendum: Path, repeat: str) -> dict[str, Any]:
     """Load the immutable contract and run exactly one eligible repeat."""
 
+    if _is_current94_live_request_lexically(addendum):
+        _refuse_current94_live()
     contract = _load_contract(addendum)
     return _launch_repeat(contract, repeat)
 

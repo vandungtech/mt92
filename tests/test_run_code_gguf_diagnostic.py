@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +53,56 @@ def _v7_public_files(spec_raw: bytes) -> dict[str, dict[str, object]]:
         launcher.LAUNCHER_RELATIVE: {"bytes": 10, "sha256": "sha256:" + "a" * 64},
         launcher.VALIDATOR_RELATIVE: {"bytes": 20, "sha256": "sha256:" + "b" * 64},
         launcher.NORMALIZED_SPEC_RELATIVE: _identity(spec_raw),
+    }
+
+
+def _current94_spec_raw(*, status: str = "final") -> bytes:
+    commit = "c" * 40
+    payload = diagnostic_validator.current94_v8_spec_payload(
+        source_root=Path("/tmp") / f"mt92-current94-diagnostic-{commit[:7]}",
+        source_commit=commit,
+        source_files={
+            relative: {"bytes": 1, "digest": "sha256:" + "1" * 64}
+            for relative in diagnostic_validator.CURRENT94_REQUIRED_SOURCE_FILES
+        },
+        training_receipt={"bytes": 2, "digest": "sha256:" + "2" * 64},
+        training_metrics={"bytes": 3, "digest": "sha256:" + "3" * 64},
+        merged_tree_digest="sha256:" + "4" * 64,
+        conversion_receipt={"bytes": 5, "digest": "sha256:" + "5" * 64},
+        calibration_receipt={"bytes": 6, "digest": "sha256:" + "6" * 64},
+        load_spec={"bytes": 7, "digest": "sha256:" + "7" * 64},
+        artifact={
+            "tree_digest": "sha256:" + "8" * 64,
+            "entrypoint_bytes": 42,
+            "entrypoint_digest": "sha256:" + "9" * 64,
+        },
+        conversion_runtime={
+            "converter_interpreter": {
+                "container_path": (
+                    "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11"
+                ),
+                "bytes": 21_333_768,
+                "digest": (
+                    "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e"
+                ),
+                "mode": "0o755",
+            },
+            "llama_cpp_runtime_closure": {
+                "bytes": 10,
+                "digest": "sha256:" + "a" * 64,
+            },
+        },
+        runtime_identity={"bytes": 11, "digest": "sha256:" + "b" * 64},
+    )
+    payload["status"] = status
+    return launcher._pretty_json_bytes(payload)
+
+
+def _current94_public_files(spec_raw: bytes) -> dict[str, dict[str, object]]:
+    return {
+        launcher.LAUNCHER_RELATIVE: {"bytes": 10, "sha256": "sha256:" + "a" * 64},
+        launcher.VALIDATOR_RELATIVE: {"bytes": 20, "sha256": "sha256:" + "b" * 64},
+        launcher.CURRENT94_SPEC_RELATIVE: _identity(spec_raw),
     }
 
 
@@ -743,6 +793,259 @@ class ExactContractTests(unittest.TestCase):
             self.assertRaisesRegex(launcher.LaunchRefused, "HEAD ancestry"),
         ):
             launcher._validate_public_git_binding(Path("/synthetic"), commit, declared)
+
+
+class Current94StaticLauncherTests(unittest.TestCase):
+    def test_static_addendum_is_deterministic_exact_and_non_executable(self) -> None:
+        spec_raw = _current94_spec_raw()
+        files = _current94_public_files(spec_raw)
+        first = launcher.current94_v8_static_addendum_payload(
+            experiment_spec_raw=spec_raw,
+            public_commit="d" * 40,
+            public_files=files,
+        )
+        second = launcher.current94_v8_static_addendum_payload(
+            experiment_spec_raw=spec_raw,
+            public_commit="d" * 40,
+            public_files=copy.deepcopy(files),
+        )
+        self.assertEqual(
+            launcher._canonical_json_bytes(first), launcher._canonical_json_bytes(second)
+        )
+        self.assertEqual(first["schema"], launcher.CURRENT94_ADDENDUM_SCHEMA)
+        self.assertEqual(first["status"], "blocked")
+        self.assertEqual(first["blocker"], launcher.CURRENT94_LIVE_BLOCKER)
+        policy = first["artifact_use_policy"]
+        self.assertTrue(policy["conversion_runtime_receipt_content_bound"])
+        self.assertTrue(policy["converter_interpreter_portable_receipt_content_bound"])
+        self.assertFalse(policy["executed_interpreter_attested"])
+        self.assertFalse(policy["hermetic_conversion_attested"])
+        self.assertFalse(policy["conversion_runtime_execution_verified"])
+        self.assertEqual(
+            first["public_source"]["identity_scope"],
+            "declared_content_identities_for_offline_static_inspection_only",
+        )
+        self.assertIn(
+            "conversion_runtime_receipt_content_binding", first["static_preflight"]
+        )
+        preflight = first["static_preflight"]
+        self.assertFalse(preflight["live_launch_permitted"])
+        self.assertFalse(preflight["model_engine_construction_permitted"])
+        self.assertIn("reviewed_hermetic_live_containment", preflight["required_checks"])
+        invocations = first["planned_invocations"]
+        self.assertEqual([item["repeat"] for item in invocations], ["r1", "r2", "r3"])
+        for record, root in zip(invocations, launcher.CURRENT94_OUTPUT_ROOTS, strict=True):
+            argv = record["argv"]
+            self.assertEqual(argv.count("--dataset"), 1)
+            self.assertIn(str(launcher.CURRENT94_BUNDLE_ROOT / "artifact"), argv)
+            self.assertIn(str(launcher.CURRENT94_TRAINING_RUN), argv)
+            self.assertEqual(argv[-1], str(root))
+        with self.assertRaisesRegex(launcher.LaunchRefused, "not final"):
+            launcher.current94_v8_static_addendum_payload(
+                experiment_spec_raw=_current94_spec_raw(status="prospective"),
+                public_commit="d" * 40,
+                public_files=files,
+            )
+        for label, mutation, message in (
+            (
+                "conversion",
+                lambda item: item["conversion"].update(
+                    schema="microtensor.code.gguf-conversion.v5"
+                ),
+                "conversion-v6",
+            ),
+            (
+                "calibration",
+                lambda item: item["conversion"].update(
+                    calibration_schema="microtensor.code.imatrix-calibration.v2"
+                ),
+                "calibration-v3",
+            ),
+            (
+                "release",
+                lambda item: item["runtime"].update(release_version="0.3.0"),
+                "release/mechanism",
+            ),
+            (
+                "overlap",
+                lambda item: item["diagnostic"].update(
+                    relationship_to_training="holdout"
+                ),
+                "training-overlap",
+            ),
+        ):
+            changed = json.loads(spec_raw)
+            mutation(changed)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                launcher.LaunchRefused, message
+            ):
+                launcher._current94_spec_values(launcher._pretty_json_bytes(changed))
+
+    def test_explicit_offline_static_inspector_verifies_local_declared_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_raw = _current94_spec_raw()
+            sources = {
+                launcher.LAUNCHER_RELATIVE: b"current launcher\n",
+                launcher.VALIDATOR_RELATIVE: b"current validator\n",
+                launcher.CURRENT94_SPEC_RELATIVE: spec_raw,
+            }
+            for relative, raw in sources.items():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+            public_files = {relative: _identity(raw) for relative, raw in sources.items()}
+            payload = launcher.current94_v8_static_addendum_payload(
+                experiment_spec_raw=spec_raw,
+                public_commit="d" * 40,
+                public_files=public_files,
+            )
+            declaration = root / launcher.CURRENT94_ADDENDUM_RELATIVE
+            declaration.parent.mkdir(parents=True, exist_ok=True)
+            declaration.write_bytes(launcher._pretty_json_bytes(payload))
+            with (
+                mock.patch.object(launcher, "_repository_root", return_value=root),
+                mock.patch.object(
+                    launcher,
+                    "_validate_public_git_binding",
+                    return_value=_public_git("d" * 40),
+                ) as public_git,
+            ):
+                inspection = launcher.inspect_current94_static_declaration_offline(declaration)
+            public_git.assert_called_once()
+            self.assertEqual(inspection["status"], "verified_offline_static_only")
+            self.assertFalse(inspection["live_launch_permitted"])
+            self.assertTrue(inspection["local_declared_file_content_verified"])
+
+    def test_exact_current94_live_request_refuses_before_any_io_or_state(self) -> None:
+        probes = (
+            "_repository_root",
+            "_stable_regular_bytes",
+            "_validate_public_git_binding",
+            "inspect_current94_static_declaration_offline",
+            "_validate_launcher_boundary_ready",
+            "_ensure_report_root",
+            "_attempt_payload",
+            "_atomic_publish_noreplace",
+            "_run_traced_process",
+        )
+        with ExitStack() as stack:
+            touched = {
+                name: stack.enter_context(mock.patch.object(launcher, name))
+                for name in probes
+            }
+            resolve = stack.enter_context(mock.patch.object(Path, "resolve"))
+            load_contract = stack.enter_context(mock.patch.object(launcher, "_load_contract"))
+            with self.assertRaisesRegex(launcher.LaunchRefused, "live launch is disabled"):
+                launcher.launch_diagnostic(Path(launcher.CURRENT94_ADDENDUM_RELATIVE), "r1")
+        resolve.assert_not_called()
+        load_contract.assert_not_called()
+        for probe in touched.values():
+            probe.assert_not_called()
+
+    def test_current94_alias_refuses_after_resolution_before_reads_or_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "declared-current94-addendum.json"
+            target.write_bytes(b"never read")
+            alias = root / "alias.json"
+            alias.symlink_to(target)
+            probes = (
+                "_repository_root",
+                "_stable_regular_bytes",
+                "_validate_public_git_binding",
+                "inspect_current94_static_declaration_offline",
+            )
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(launcher, "CURRENT94_DECLARATION_LEXICAL_PATH", target)
+                )
+                touched = {
+                    name: stack.enter_context(mock.patch.object(launcher, name))
+                    for name in probes
+                }
+                with self.assertRaisesRegex(launcher.LaunchRefused, "live launch is disabled"):
+                    launcher._load_contract(alias)
+            for probe in touched.values():
+                probe.assert_not_called()
+
+    def test_direct_current94_launch_refuses_before_boundary_state_or_fork(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = replace(
+                _synthetic_contract(root),
+                protocol="current94-v8",
+                validation_schema=launcher.CURRENT94_VALIDATION_SCHEMA,
+                artifact_use_policy=tuple(sorted(launcher._current94_artifact_use_policy().items())),
+            )
+            with (
+                mock.patch.object(launcher, "_validate_launcher_boundary_ready") as boundary,
+                mock.patch.object(launcher, "_ensure_report_root") as ensure_root,
+                mock.patch.object(launcher, "_run_traced_process") as process,
+                self.assertRaisesRegex(launcher.LaunchRefused, "live launch is disabled"),
+            ):
+                launcher._launch_repeat(contract, "r1")
+            boundary.assert_not_called()
+            ensure_root.assert_not_called()
+            process.assert_not_called()
+            self.assertFalse(contract.report_root.exists())
+
+    def test_static_validator_dispatch_checks_current_claim_shape(self) -> None:
+        policy = launcher._current94_artifact_use_policy()
+        claim = {
+            "local_structural_and_timing_diagnostics_only": True,
+            "generated_or_corpus_code_executed_by_this_static_validator": False,
+            "completed_v4_final_all_public_training_lineage_bound": True,
+            "diagnostic_rows_are_training_overlap": True,
+            "qwen25_qwen2_contract_bound": True,
+            "conversion_v6_calibration_v3_bound": True,
+            "conversion_runtime_receipt_content_bound": True,
+            "converter_interpreter_portable_receipt_content_bound": True,
+            "executed_interpreter_attested": False,
+            "hermetic_conversion_attested": False,
+            "conversion_runtime_execution_verified": False,
+            "signed_release_v032_mechanism_v030_bound": True,
+            "artifact_use_policy": copy.deepcopy(policy),
+            "execution_pass_at_1_claimed": False,
+            "quality_or_rank_claimed": False,
+            "promotion_authorized": False,
+            "remaining_local_repeats": ["r2", "r3"],
+            "remaining_external_gates": [
+                (
+                    "a live launch remains blocked until a reviewed hermetic containment "
+                    "boundary exists"
+                ),
+                "official validator measurement and settled rank remain external",
+            ],
+        }
+        report = {
+            "schema": launcher.CURRENT94_VALIDATION_SCHEMA,
+            "status": "partially_validated",
+            "through": "r1",
+            "aggregate": {
+                "validated_repeat_hard_gates_passed": True,
+                "all_declared_local_gates_passed": False,
+            },
+            "claim": claim,
+        }
+        contract = SimpleNamespace(
+            protocol="current94-v8",
+            validation_schema=launcher.CURRENT94_VALIDATION_SCHEMA,
+            experiment_spec=Path("spec.json"),
+            artifact_use_policy=tuple(sorted(policy.items())),
+        )
+        fake_validator = SimpleNamespace(
+            validate_current94_v8_diagnostic=mock.Mock(return_value=report),
+            _canonical_json_bytes=launcher._canonical_json_bytes,
+        )
+        launcher._validate_through(fake_validator, contract, "r1")
+        fake_validator.validate_current94_v8_diagnostic.assert_called_once_with(
+            Path("spec.json"), "r1"
+        )
+        self.assertEqual(launcher._preflight_checks(contract), launcher.CURRENT94_PREFLIGHT_CHECKS)
+        claim["conversion_runtime_execution_verified"] = True
+        with self.assertRaisesRegex(launcher.LaunchRefused, "current94 validation claim"):
+            launcher._validate_through(fake_validator, contract, "r1")
 
 
 class OnceOnlyStateMachineTests(unittest.TestCase):
