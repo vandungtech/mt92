@@ -227,7 +227,7 @@ class StateStore:
         preserve: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         timestamp = time.time() if now is None else now
-        previous = dict(preserve or self.read_status())
+        previous = dict(self.read_status() if preserve is None else preserve)
         reserved = {
             "schema_version",
             "updated_at",

@@ -8,23 +8,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import ConfigError
+from .upstream_gate import DEFAULT_MAX_AGE_SECONDS, MIN_MAX_AGE_SECONDS
 
 UPSTREAM_COMMIT = "d0e002f887d038bf3ea4af65b499137a755620d7"
 UPSTREAM_RELEASE = "0.1.14"
-SIGNED_V030_RELEASE = "0.3.0"
+SIGNED_V030_RELEASE = "0.3.2"
 SIGNED_V030_MECHANISM_VERSION = "0.3.0"
-SIGNED_V030_WHEEL_SHA256 = "742a25240a4a95f272c2894f5176a4f084b4b4eb5fb2af24dc8f7b464c2d0133"
+SIGNED_V030_WHEEL_SHA256 = "3629a48b248365070bf5bf190c1584498019c4e1e5ced7c3d175472ff0749e71"
+SIGNED_V030_INSTALLED_TREE_SCHEMA = "microtensor.signed-wheel-tree.v1"
+SIGNED_V030_INSTALLED_TREE_FILES = 137
+SIGNED_V030_INSTALLED_TREE_BYTES = 901_899
+SIGNED_V030_INSTALLED_TREE_SHA256 = (
+    "f93d75ef1bc4d2fc9ffbb5e7cd63b37a00bc1a57e6cdee158219a5d6983b8c92"
+)
 SIGNED_V030_RELEASE_SIGNING_KEY = (
     "0x3d8ea239db66637d762ffedf71ad6c0c487c7bc73d5a50d9dd86a0fbc22bdb16"
 )
+SIGNED_V030_PROVENANCE_REQUIRED = False
 SIGNED_V030_CONFIG_VERSION = 1
 SIGNED_V030_CORPUS_VERSION = "2026.1"
 SIGNED_V030_TRACK = "code"
 SIGNED_V030_HARDWARE_CLASS = "mt-3g"
 SIGNED_V030_METRIC = "execution_pass_rate"
 SIGNED_V030_EMISSION_SHARE = 1.0
-SIGNED_V030_SUBMISSION_BLOCKS = 7_200
-SIGNED_V030_EVALUATION_BLOCKS = 7_200
 SIGNED_V030_COORDINATOR_URL = "https://coordinator.microtensor.cloud"
 BITTENSOR_VERSION = "10.5.0"
 BITTENSOR_WALLET_VERSION = "4.1.1"
@@ -58,7 +64,14 @@ def _text(env: Mapping[str, str], key: str, default: str = "", *, required: bool
     return value
 
 
-def _integer(env: Mapping[str, str], key: str, default: int, *, minimum: int | None = None) -> int:
+def _integer(
+    env: Mapping[str, str],
+    key: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
     raw = env.get(key, str(default)).strip()
     try:
         value = int(raw)
@@ -66,6 +79,8 @@ def _integer(env: Mapping[str, str], key: str, default: int, *, minimum: int | N
         raise ConfigError(f"{key} must be an integer, not {raw!r}") from exc
     if minimum is not None and value < minimum:
         raise ConfigError(f"{key} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{key} must be at most {maximum}")
     return value
 
 
@@ -132,6 +147,8 @@ class ControllerConfig:
     expected_uid: int
     upstream_home: Path
     state_dir: Path
+    upstream_observer_status_path: Path
+    upstream_observer_max_age_seconds: int
     artifact_dir: Path
     selfcheck_path: Path
     selfcheck_binding_path: Path
@@ -170,6 +187,7 @@ class ControllerConfig:
         signed_v030 = v030_activation_block is not None
         upstream_home = _path(source, "MT_HOME", "/var/lib/microtensor-miner/upstream")
         state_dir = _path(source, "MMC_STATE_DIR", "/var/lib/microtensor-miner/controller")
+        observer_status_default = str(state_dir.parent / "upstream-observer" / "status.json")
         artifact_dir = _path(source, "MMC_ARTIFACT_DIR", "", required=True)
         selfcheck_default = str(upstream_home / "selfcheck.json")
         binding_default = str(upstream_home / "selfcheck.binding.json")
@@ -186,6 +204,18 @@ class ControllerConfig:
             expected_uid=_integer(source, "MMC_EXPECTED_UID", 32, minimum=0),
             upstream_home=upstream_home,
             state_dir=state_dir,
+            upstream_observer_status_path=_path(
+                source,
+                "MMC_UPSTREAM_OBSERVER_STATUS_PATH",
+                observer_status_default,
+            ),
+            upstream_observer_max_age_seconds=_integer(
+                source,
+                "MMC_UPSTREAM_OBSERVER_MAX_AGE_SECONDS",
+                DEFAULT_MAX_AGE_SECONDS,
+                minimum=MIN_MAX_AGE_SECONDS,
+                maximum=DEFAULT_MAX_AGE_SECONDS,
+            ),
             artifact_dir=artifact_dir,
             selfcheck_path=_path(source, "MMC_SELFCHECK_PATH", selfcheck_default),
             selfcheck_binding_path=_path(source, "MMC_SELFCHECK_BINDING_PATH", binding_default),
@@ -364,6 +394,10 @@ class ControllerConfig:
     @property
     def upstream_release(self) -> str:
         return SIGNED_V030_RELEASE if self.uses_signed_v030 else UPSTREAM_RELEASE
+
+    @property
+    def provenance_required(self) -> bool:
+        return SIGNED_V030_PROVENANCE_REQUIRED if self.uses_signed_v030 else True
 
     @staticmethod
     def github_release_coordinates(source: str) -> tuple[str, str, str] | None:

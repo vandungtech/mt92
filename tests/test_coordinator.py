@@ -80,15 +80,31 @@ class CoordinatorTests(unittest.TestCase):
                 chain_head=7_400,
             )
 
-    def test_v030_requires_exact_7200_block_phase_windows(self) -> None:
-        for close, end in ((7_299, 14_499), (7_301, 14_501), (7_300, 14_499)):
+    def test_v032_accepts_control_plane_phase_split(self) -> None:
+        found = _validate_v030(
+            v030_coordinator_payload(start=100, close=8_990, end=14_500),
+            chain_head=150,
+        )
+        self.assertEqual(found.close_block - found.start_block, 8_890)
+        self.assertEqual(found.end_block - found.close_block, 5_510)
+
+    def test_v032_requires_two_positive_phase_windows(self) -> None:
+        for start, close, end, phase, head in (
+            (100, 100, 14_500, "evaluation", 100),
+            (100, 14_500, 14_500, "submissions", 150),
+        ):
             with (
-                self.subTest(close=close, end=end),
-                self.assertRaisesRegex(RoundRefused, "exact 7200-block"),
+                self.subTest(start=start, close=close, end=end),
+                self.assertRaisesRegex(RoundRefused, "invalid round bounds"),
             ):
                 _validate_v030(
-                    v030_coordinator_payload(close=close, end=end),
-                    chain_head=150,
+                    v030_coordinator_payload(
+                        start=start,
+                        close=close,
+                        end=end,
+                        phase=phase,
+                    ),
+                    chain_head=head,
                 )
 
     def test_v030_same_round_transition_is_monotonic_and_identity_bound(self) -> None:

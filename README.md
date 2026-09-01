@@ -2,17 +2,18 @@
 
 This repository supervises one registered Microtensor hotkey safely across round
 boundaries. It targets netuid 92 on Finney, wallet `you-cold/you-hot1`, expected UID
-32, and `code/mt-3g` under the signed Microtensor v0.3.0 mechanism. The install pin is
-the official v0.3.0 release wheel; preflight independently requires its exact SHA-256
-`742a25240a4a95f272c2894f5176a4f084b4b4eb5fb2af24dc8f7b464c2d0133`, signed
-runtime constants, and activation block `8966795` before accepting a round.
+32, and `code/mt-3g` under Microtensor mechanism 0.3.0. The install pin is the official
+signed v0.3.2 patch-release wheel; preflight independently requires its exact SHA-256
+`3629a48b248365070bf5bf190c1584498019c4e1e5ced7c3d175472ff0749e71`, signed
+runtime constants, release policy, and activation block `8966795` before accepting a round.
 
 The controller remains fail-closed unless the coordinator publishes a coherent,
 chain-anchored v0.3 round. A release version string by itself is never treated as
 identity proof.
 
 It does **not** train a model or turn an empty wallet into a miner. A valid artifact,
-self-check, public training provenance, and upload destination must exist first. The
+self-check, and upload destination must exist first. Public training provenance is also
+required whenever the exact signed upstream release enables that admission gate. The
 controller defaults to dry-run and reports unhealthy until it proves a real submission.
 
 ## Why this controller exists
@@ -28,7 +29,7 @@ the complete transition for each newly opened round:
 4. sign a fresh, explicitly unsealed manifest for that round;
 5. upload the exact manifest assets to a unique immutable public GitHub Release;
 6. download and hash the complete remote artifact;
-7. verify W&B provenance against the artifact digest;
+7. satisfy the exact upstream provenance gate (v0.3.2 temporarily disables it);
 8. publish only while safely before the close block; and
 9. read the exact source/round/digest commitment back from chain.
 
@@ -64,7 +65,7 @@ deployment must prepare these runtime inputs, which remain Git-ignored:
 - a valid upstream self-check JSON containing positive `size_bytes`,
   `peak_rss_bytes`, and `p95_latency_ms`;
 - a base model locator pinned as `<org>/<repo>@<7-40 hex commit>`;
-- a W&B run named by the hotkey SS58 address in
+- when required by the signed release, a W&B run named by the hotkey SS58 address in
   `microtensor/training-runs`, with the required competition/base-model fields and
   the artifact digest;
 - an initialized public GitHub repository with a compact owner/repository name; and
@@ -77,7 +78,7 @@ dummy model or invented provenance would only create an invalid on-chain submiss
 ## Installation
 
 Python 3.10 or newer and Git are required. The dependency declaration installs the
-official signed v0.3.0 wheel. Runtime preflight verifies its PEP 610 archive identity
+official signed v0.3.2 wheel. Runtime preflight verifies its PEP 610 archive identity
 and the exact digest above.
 
 ```bash
@@ -171,7 +172,7 @@ Live mode is supported only for the immutable GitHub source. Before setting
 
 - the compact repository exists, is initialized, and is publicly readable;
 - the protected token file passes preflight and has the permissions described above;
-- the exact artifact digest has admissible public W&B provenance; and
+- any provenance gate enabled by the exact signed release is satisfied; and
 - the coordinator reports a coherent, anchored submissions phase with enough blocks left.
 
 The authorization identifier does not relax any check and is not permission to spend
@@ -208,27 +209,31 @@ Only after the one-shot reaches verified health should continuous submission be 
 
 ## Supervisord
 
-`deploy/supervisord.conf` is a template. It assumes:
+`deploy/supervisord.conf` is a combined workspace template. It starts the upstream
+observer before the miner and assumes:
 
-- repository and virtualenv at `/opt/microtensor-miner`;
-- environment at `/etc/microtensor-miner/miner.env`;
+- miner repository and virtualenv at `/workspace/microtensor-miner`;
+- audited subnet checkout at `/workspace/microtensor-subnet`;
+- environment at `/workspace/microtensor-miner/runtime/miner.env`;
 - service user `microtensor`; and
-- writable state below `/var/lib/microtensor-miner`.
+- writable state below `/workspace/microtensor-miner/runtime`.
 
-Change `user=` to the wallet-owning OS account before enabling it. Supervisor retries
-unexpected exits three times, forwards SIGTERM to the process group, and sends logs to
-stdout. The controller itself handles transient coordinator/chain failures without ever
-turning an unverified state green.
+Change `user=` on both programs to the same wallet-owning OS account before enabling
+it. The observer's 0600 status must be owned by the miner's effective user. Supervisor
+retries unexpected exits three times, forwards SIGTERM to the process groups, and sends
+logs to stdout. The controller itself handles transient coordinator/chain failures
+without ever turning an unverified state green.
 
 No inbound network port is required. The process uses outbound HTTPS/WSS for Finney,
-the coordinator, W&B, the GitHub API, and public release downloads.
+the coordinator, the GitHub API, public release downloads, and W&B only when the signed
+release requires provenance verification.
 
-This workspace deployment also includes `deploy/supervisor-host.conf`, which points at
-the actual `/workspace/microtensor-miner` paths and the protected runtime environment.
-Installing that file under `/etc/supervisor/conf.d/` makes the controller part of the
-host supervisor instead of depending on an interactive shell. It runs as root only
-because this host's registered hotkey file is root-owned and mode 0600; do not copy or
-relax the wallet permissions to run it under another account.
+This workspace deployment also includes `deploy/supervisor-host.conf` and
+`deploy/supervisor-upstream.conf`, which point at the actual workspace paths and the
+protected runtime environment. Install both files under `/etc/supervisor/conf.d/`;
+the signed-v0.3 controller intentionally refuses to start without the observer. Both run
+as root only because this host's registered hotkey file is root-owned and mode 0600; do
+not copy or relax the wallet permissions to run them under another account.
 
 ## Status and health
 
@@ -306,6 +311,26 @@ The host deployment also runs a credential-free observer for the target
 `code/mt-3g` board, independently of any legacy or waiting submission profile. Its
 latest snapshot is written to `runtime/code-rank/rank.json`; this observer can only
 perform public HTTPS reads and local state writes.
+
+## Upstream release observer
+
+`deploy/supervisor-upstream.conf` runs a separate credential-free check every five
+minutes. It validates that `origin` is the public Microtensor repository, reads its
+advertised `main` commit without prompts, and fetches only that remote-tracking ref when
+it changes. It never merges, checks out, imports, or executes upstream files.
+
+The observer compares origin to the exact commit last audited into this miner and writes
+`runtime/upstream-observer/status.json` atomically with mode 0600. Any new commit, history
+rewrite, release/mechanism policy change, or miner/evaluator-sensitive path sets `ok: false`
+and `review_required: true`; the miner pin is never advanced automatically. Signed-v0.3
+preflight and every controller cycle require this exact status to be current and no more
+than 15 minutes old, so a stopped watcher or unreviewed upstream change fails closed.
+
+```bash
+supervisorctl status microtensor-upstream
+jq '{ok,origin_head,audited_origin_head,review_required,changed_files}' \
+  runtime/upstream-observer/status.json
+```
 
 ## Round and restart behavior
 

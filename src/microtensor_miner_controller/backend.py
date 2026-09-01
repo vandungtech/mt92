@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -25,7 +26,12 @@ from .config import (
     FINNEY_RUNTIME_CODE_HASH,
     FINNEY_RUNTIME_SPEC_VERSION,
     FINNEY_TRANSACTION_VERSION,
+    SIGNED_V030_INSTALLED_TREE_BYTES,
+    SIGNED_V030_INSTALLED_TREE_FILES,
+    SIGNED_V030_INSTALLED_TREE_SCHEMA,
+    SIGNED_V030_INSTALLED_TREE_SHA256,
     SIGNED_V030_MECHANISM_VERSION,
+    SIGNED_V030_PROVENANCE_REQUIRED,
     SIGNED_V030_RELEASE,
     SIGNED_V030_RELEASE_SIGNING_KEY,
     SIGNED_V030_WHEEL_SHA256,
@@ -42,6 +48,7 @@ from .models import (
     PublishReceipt,
     RoundWindow,
 )
+from .upstream_gate import UpstreamGateError, verify_upstream_observer_status
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +61,15 @@ _AUTHORIZED_MAX_DEPOSIT_RAO = 0
 _AUTHORIZED_SIGNATURE_VERSION = 1
 _RUNTIME_CODE_STORAGE_KEY = "0x3a636f6465"
 _HASH = re.compile(r"^0x[0-9a-f]{64}$")
+_SIGNED_DIST_INFO = "microtensor_subnet-0.3.2.dist-info"
+_INSTALLER_ADDITIONS = frozenset(
+    {
+        f"{_SIGNED_DIST_INFO}/INSTALLER",
+        f"{_SIGNED_DIST_INFO}/RECORD",
+        f"{_SIGNED_DIST_INFO}/REQUESTED",
+        f"{_SIGNED_DIST_INFO}/direct_url.json",
+    }
+)
 
 
 def _strict_json_object(raw: str) -> dict[str, Any]:
@@ -72,6 +88,136 @@ def _strict_json_object(raw: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("JSON value is not an object")
     return value
+
+
+def _signed_installation_tree(root: Path) -> tuple[int, int, str]:
+    """Hash the complete static file closure installed by the signed wheel.
+
+    Pip legitimately adds four installer-owned dist-info files and may otherwise
+    compile bytecode. Bytecode and every other unexpected namespace file are not
+    ignored: live preflight requires a no-compile install so Python cannot choose
+    an unattested cache over the signed source.
+    """
+
+    roots = (
+        root / "microtensor",
+        root / "neurons",
+        root / _SIGNED_DIST_INFO,
+    )
+    entries: list[tuple[str, Path]] = []
+    for tree in roots:
+        try:
+            metadata = tree.lstat()
+        except OSError as exc:
+            raise PreflightError(f"signed runtime tree is unavailable: {tree}: {exc}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise PreflightError(f"signed runtime tree is not a real directory: {tree}")
+        for directory, names, filenames in os.walk(tree, topdown=True, followlinks=False):
+            directory_path = Path(directory)
+            try:
+                directory_metadata = directory_path.lstat()
+            except OSError as exc:
+                raise PreflightError(
+                    f"signed runtime directory cannot be inspected: {directory_path}: {exc}"
+                ) from exc
+            if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(
+                directory_metadata.st_mode
+            ):
+                raise PreflightError(
+                    f"signed runtime contains a non-directory or symlink: {directory_path}"
+                )
+            for name in names:
+                child = directory_path / name
+                try:
+                    child_metadata = child.lstat()
+                except OSError as exc:
+                    raise PreflightError(
+                        f"signed runtime directory cannot be inspected: {child}: {exc}"
+                    ) from exc
+                if stat.S_ISLNK(child_metadata.st_mode) or not stat.S_ISDIR(
+                    child_metadata.st_mode
+                ):
+                    raise PreflightError(
+                        f"signed runtime contains a non-directory or symlink: {child}"
+                    )
+            for name in filenames:
+                path = directory_path / name
+                relative = path.relative_to(root).as_posix()
+                try:
+                    file_metadata = path.lstat()
+                except OSError as exc:
+                    raise PreflightError(
+                        f"signed runtime file cannot be inspected: {relative}: {exc}"
+                    ) from exc
+                if (
+                    stat.S_ISLNK(file_metadata.st_mode)
+                    or not stat.S_ISREG(file_metadata.st_mode)
+                    or file_metadata.st_nlink != 1
+                ):
+                    raise PreflightError(
+                        f"signed runtime file is not a singly linked regular file: {relative}"
+                    )
+                if relative in _INSTALLER_ADDITIONS:
+                    continue
+                entries.append((relative, path))
+
+    digest = hashlib.sha256((SIGNED_V030_INSTALLED_TREE_SCHEMA + "\0").encode())
+    total = 0
+    for relative, path in sorted(entries):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = -1
+        try:
+            descriptor = os.open(path, flags)
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise PreflightError(
+                    f"signed runtime file is not a singly linked regular file: {relative}"
+                )
+            file_digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 8 * 1024 * 1024:
+                    raise PreflightError(f"signed runtime file exceeds 8 MiB: {relative}")
+                file_digest.update(chunk)
+            after = os.fstat(descriptor)
+        except PreflightError:
+            raise
+        except OSError as exc:
+            raise PreflightError(f"signed runtime file cannot be read: {relative}: {exc}") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if identity_before != identity_after or size != before.st_size:
+            raise PreflightError(f"signed runtime file changed while read: {relative}")
+        relative_bytes = relative.encode("utf-8")
+        total += size
+        digest.update(len(relative_bytes).to_bytes(4, "big"))
+        digest.update(relative_bytes)
+        digest.update(size.to_bytes(8, "big"))
+        digest.update(file_digest.digest())
+    return len(entries), total, digest.hexdigest()
 
 
 def _publishable_files(manifest: Any) -> tuple[str, ...]:
@@ -134,6 +280,11 @@ class MicrotensorBackend:
         return self._hotkey
 
     def preflight(self) -> PreflightSnapshot:
+        if self.config.uses_signed_v030:
+            try:
+                self._verify_upstream_observer_status()
+            except UpstreamGateError as exc:
+                raise PreflightError(f"upstream observer gate failed: {exc}") from exc
         self._verify_transaction_dependencies()
         commit, version = self._verify_upstream()
         self._validate_artifact_config()
@@ -186,6 +337,12 @@ class MicrotensorBackend:
             chain_head=head,
             upstream_version=version,
             upstream_commit=commit,
+        )
+
+    def _verify_upstream_observer_status(self) -> None:
+        verify_upstream_observer_status(
+            self.config.upstream_observer_status_path,
+            max_age_seconds=self.config.upstream_observer_max_age_seconds,
         )
 
     @staticmethod
@@ -273,9 +430,32 @@ class MicrotensorBackend:
             )
 
         try:
+            installation_root = Path(distribution.locate_file(""))
+            root_metadata = installation_root.lstat()
+        except (AttributeError, OSError, TypeError) as exc:
+            raise PreflightError("signed v0.3 installation root is unavailable") from exc
+        if (
+            not installation_root.is_absolute()
+            or stat.S_ISLNK(root_metadata.st_mode)
+            or not stat.S_ISDIR(root_metadata.st_mode)
+        ):
+            raise PreflightError("signed v0.3 installation root is not a real absolute directory")
+        tree_identity = _signed_installation_tree(installation_root)
+        expected_tree = (
+            SIGNED_V030_INSTALLED_TREE_FILES,
+            SIGNED_V030_INSTALLED_TREE_BYTES,
+            SIGNED_V030_INSTALLED_TREE_SHA256,
+        )
+        if tree_identity != expected_tree:
+            raise PreflightError(
+                "installed signed v0.3 runtime tree differs from the verified release wheel"
+            )
+
+        try:
             constants = importlib.import_module("microtensor.core.constants")
             release = constants.RELEASE_VERSION
             mechanism = constants.MECHANISM_VERSION
+            provenance_required = constants.PROVENANCE_REQUIRED
             signing_key = constants.RELEASE_SIGNING_KEY
         except (AttributeError, ImportError) as exc:
             raise PreflightError("signed v0.3 runtime identity constants are unavailable") from exc
@@ -287,6 +467,10 @@ class MicrotensorBackend:
             raise PreflightError(
                 f"runtime mechanism identity is {mechanism!r}, expected "
                 f"{SIGNED_V030_MECHANISM_VERSION!r}"
+            )
+        if provenance_required is not SIGNED_V030_PROVENANCE_REQUIRED:
+            raise PreflightError(
+                "runtime provenance gate differs from the audited signed release"
             )
         if signing_key != SIGNED_V030_RELEASE_SIGNING_KEY:
             raise PreflightError("runtime release signing key differs from the audited v0.3 key")
@@ -593,6 +777,11 @@ class MicrotensorBackend:
             )
 
     def assert_registered(self) -> None:
+        if self.config.uses_signed_v030:
+            try:
+                self._verify_upstream_observer_status()
+            except UpstreamGateError as exc:
+                raise VerificationError(f"upstream observer gate failed: {exc}") from exc
         if self._client is None:
             raise PreflightError("chain client has not passed preflight")
         try:
@@ -762,6 +951,11 @@ class MicrotensorBackend:
 
     def _assert_live_transaction_policy(self) -> None:
         config = self.config
+        if config.uses_signed_v030:
+            try:
+                self._verify_upstream_observer_status()
+            except UpstreamGateError as exc:
+                raise AuthorizationRefused(f"upstream observer gate failed: {exc}") from exc
         if config.dry_run:
             raise AuthorizationRefused("chain submission is forbidden while MMC_DRY_RUN=true")
         if config.transaction_authorization != TRANSACTION_AUTHORIZATION:
@@ -1152,6 +1346,11 @@ class MicrotensorBackend:
             raise VerificationError(
                 "live upload requires an immutable GitHub HTTPS release; S3/R2 are refused"
             )
+        if self.config.uses_signed_v030:
+            try:
+                self._verify_upstream_observer_status()
+            except UpstreamGateError as exc:
+                raise VerificationError(f"upstream observer gate failed: {exc}") from exc
         self._upload_github(packaged)
 
     def _upload_github(self, packaged: PackagedArtifact) -> None:
@@ -1167,12 +1366,15 @@ class MicrotensorBackend:
             if not names or len(names) != len(set(names)):
                 raise VerificationError("publishable artifact file set is invalid")
             assets = {name: self.config.artifact_dir / name for name in names}
-            result = GitHubReleasePublisher(
+            publisher = GitHubReleasePublisher(
                 owner=owner,
                 repo=repo,
                 tag=tag,
                 token=token,
-            ).publish(assets)
+            )
+            if self.config.uses_signed_v030:
+                self._verify_upstream_observer_status()
+            result = publisher.publish(assets)
             published_names = tuple(asset.name for asset in result.assets)
             if (
                 result.source != packaged.source
@@ -1231,6 +1433,14 @@ class MicrotensorBackend:
             raise VerificationError(f"remote {kind} verification failed: {exc}") from exc
 
     def verify_provenance(self, packaged: PackagedArtifact, block: int) -> None:
+        # v0.3.2 temporarily disables this admission gate while the public run
+        # store is unable to accept outside hotkeys. Keep the call in the
+        # controller so a future audited release can re-enable it, but do not
+        # contact W&B or manufacture a verdict when the exact pinned release
+        # explicitly declares the gate inactive.
+        if self.config.uses_signed_v030 and not SIGNED_V030_PROVENANCE_REQUIRED:
+            log.info("public provenance is not required by signed Microtensor v0.3.2")
+            return
         try:
             from microtensor.provenance.record import best_verdict
             from microtensor.provenance.wandb_store import WandbStore

@@ -12,17 +12,18 @@ dependencies = [
   "async-substrate-interface==2.2.1",
   "bittensor==10.5.0",
   "bittensor-wallet==4.1.1",
-  "microtensor-subnet[provenance,s3] @ https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.0/microtensor_subnet-0.3.0-py3-none-any.whl",
+  "microtensor-subnet[provenance] @ https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.2/microtensor_subnet-0.3.2-py3-none-any.whl#sha256=3629a48b248365070bf5bf190c1584498019c4e1e5ced7c3d175472ff0749e71",
 ]
 
 [project.optional-dependencies]
 selfcheck = [
-  "microtensor-subnet[validator,gguf] @ https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.0/microtensor_subnet-0.3.0-py3-none-any.whl",
+  "microtensor-subnet[validator,gguf] @ https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.2/microtensor_subnet-0.3.2-py3-none-any.whl#sha256=3629a48b248365070bf5bf190c1584498019c4e1e5ced7c3d175472ff0749e71",
 ]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 microtensor-miner-controller = "microtensor_miner_controller.cli:main"
+microtensor-upstream-observer = "microtensor_miner_controller.upstream_observer:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

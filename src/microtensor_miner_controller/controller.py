@@ -371,7 +371,7 @@ class Controller:
             common,
             source_full=True,
             message=(
-                "pending submission reconciled read-only; source, provenance, "
+                "pending submission reconciled read-only; source, provenance policy, "
                 "and exact on-chain commitment verified"
             ),
         )
@@ -424,7 +424,7 @@ class Controller:
         self.state.write(
             "verifying_provenance",
             ok=False,
-            message="checking public training candidates against the artifact digest",
+            message="checking the signed upstream provenance policy",
             details={**artifact_details, "chain_head": provenance_block},
         )
         self.backend.verify_provenance(packaged, provenance_block)
@@ -545,7 +545,7 @@ class Controller:
             payload,
             common,
             source_full=True,
-            message="source, provenance, and exact on-chain commitment verified",
+            message="source, provenance policy, and exact on-chain commitment verified",
         )
 
     def _reverify(
@@ -562,7 +562,7 @@ class Controller:
         self.state.write(
             "reverifying",
             ok=False,
-            message="refreshing remote manifest, provenance, and on-chain proof",
+            message="refreshing remote manifest, provenance policy, and on-chain proof",
             details=artifact_details,
         )
         self.backend.verify_source(packaged, full=True)
@@ -574,7 +574,7 @@ class Controller:
             payload,
             common,
             source_full=True,
-            message="periodic source, provenance, and on-chain verification passed",
+            message="periodic source, provenance policy, and on-chain verification passed",
         )
 
     def _verified(
@@ -788,6 +788,8 @@ class Controller:
             "protocol_profile": (
                 "signed-v0.3" if self.config.uses_signed_v030 else "legacy-v0.1.14"
             ),
+            "upstream_release": self.config.upstream_release,
+            "provenance_required": self.config.provenance_required,
             "v030_activation_block": self.config.v030_activation_block,
             "source": None,
             "source_template": self.config.source_template,
@@ -809,7 +811,7 @@ class Controller:
             "package unsealed round-specific manifest",
             "upload artifact and manifest",
             "download and hash full remote artifact",
-            "verify W&B provenance",
+            "satisfy the signed upstream provenance policy",
             "estimate 0-rao fee and confirm 0-rao commitment deposits",
             "publish one direct Commitments.set_commitment with the hotkey",
             "read exact commitment back from chain",

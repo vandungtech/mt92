@@ -34,6 +34,28 @@ class StateTests(unittest.TestCase):
             self.assertTrue(health["ok"])
             self.assertEqual(os.stat(store.status_path).st_mode & 0o777, 0o600)
 
+    def test_explicit_empty_preserve_discards_prior_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = StateStore(Path(temporary))
+            store.write(
+                "current",
+                ok=True,
+                message="observed",
+                details={"origin_head": "a" * 40, "review_required": False},
+                now=100.0,
+            )
+            payload = store.write(
+                "check_error",
+                ok=False,
+                message="failed",
+                details={"observation_succeeded": False},
+                preserve={},
+                now=101.0,
+            )
+            self.assertNotIn("origin_head", payload)
+            self.assertNotIn("review_required", payload)
+            self.assertFalse(payload["observation_succeeded"])
+
     def test_stale_health_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = StateStore(Path(temporary))

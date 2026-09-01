@@ -12,10 +12,8 @@ from .config import (
     SIGNED_V030_CONFIG_VERSION,
     SIGNED_V030_CORPUS_VERSION,
     SIGNED_V030_EMISSION_SHARE,
-    SIGNED_V030_EVALUATION_BLOCKS,
     SIGNED_V030_MECHANISM_VERSION,
     SIGNED_V030_METRIC,
-    SIGNED_V030_SUBMISSION_BLOCKS,
 )
 from .errors import RoundNotOpen, RoundRefused
 from .models import RoundWindow
@@ -237,7 +235,7 @@ def validate_served_round(
     close = _strict_int(payload, "close_block")
     end = _strict_int(payload, "end_block")
     phase = str(phase_value or "")
-    if index < 0 or not (start <= close < end):
+    if index < 0 or not (start < close < end):
         raise RoundRefused("coordinator returned invalid round bounds")
     if chain_head < start:
         raise RoundNotOpen(
@@ -254,14 +252,6 @@ def validate_served_round(
         raise RoundRefused("coordinator says submissions while the chain is at/after close")
     if phase == "evaluation" and chain_head < close:
         raise RoundRefused("coordinator says evaluation before the close block")
-    if strict_v030 and (
-        close - start != SIGNED_V030_SUBMISSION_BLOCKS
-        or end - close != SIGNED_V030_EVALUATION_BLOCKS
-    ):
-        raise RoundRefused(
-            "signed v0.3 round must have exact 7200-block submission and evaluation windows"
-        )
-
     anchored = payload.get("anchored") is True
     if require_anchored and not anchored:
         raise RoundRefused("coordinator round is not anchored on chain")

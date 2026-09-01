@@ -31,14 +31,42 @@ class ConfigTests(unittest.TestCase):
 
     def test_signed_v030_identity_and_explicit_activation_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = ControllerConfig.from_env(v030_env(Path(temporary)))
+            root = Path(temporary)
+            config = ControllerConfig.from_env(v030_env(root))
         self.assertTrue(config.uses_signed_v030)
         self.assertEqual(config.v030_activation_block, 100)
         self.assertEqual(config.upstream_release, SIGNED_V030_RELEASE)
+        self.assertFalse(config.provenance_required)
         self.assertEqual(SIGNED_V030_MECHANISM_VERSION, "0.3.0")
         self.assertEqual(len(SIGNED_V030_WHEEL_SHA256), 64)
         self.assertEqual(len(SIGNED_V030_RELEASE_SIGNING_KEY), 66)
         self.assertEqual((config.track, config.hardware_class), ("code", "mt-3g"))
+        self.assertEqual(
+            config.upstream_observer_status_path,
+            root / "upstream-observer" / "status.json",
+        )
+        self.assertEqual(config.upstream_observer_max_age_seconds, 900)
+
+    def test_upstream_observer_gate_path_and_age_are_configurable_but_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = v030_env(root)
+            env["MMC_UPSTREAM_OBSERVER_STATUS_PATH"] = str(root / "observer" / "verdict.json")
+            env["MMC_UPSTREAM_OBSERVER_MAX_AGE_SECONDS"] = "600"
+            config = ControllerConfig.from_env(env)
+            self.assertEqual(
+                config.upstream_observer_status_path,
+                root / "observer" / "verdict.json",
+            )
+            self.assertEqual(config.upstream_observer_max_age_seconds, 600)
+
+            env["MMC_UPSTREAM_OBSERVER_MAX_AGE_SECONDS"] = "599"
+            with self.assertRaisesRegex(ConfigError, "at least 600"):
+                ControllerConfig.from_env(env)
+
+            env["MMC_UPSTREAM_OBSERVER_MAX_AGE_SECONDS"] = "901"
+            with self.assertRaisesRegex(ConfigError, "at most 900"):
+                ControllerConfig.from_env(env)
 
     def test_code_profile_without_activation_block_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

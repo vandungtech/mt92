@@ -9,8 +9,11 @@ from unittest import mock
 
 from helpers import v030_env
 
-from microtensor_miner_controller.backend import MicrotensorBackend
+from microtensor_miner_controller.backend import MicrotensorBackend, _signed_installation_tree
 from microtensor_miner_controller.config import (
+    SIGNED_V030_INSTALLED_TREE_BYTES,
+    SIGNED_V030_INSTALLED_TREE_FILES,
+    SIGNED_V030_INSTALLED_TREE_SHA256,
     SIGNED_V030_MECHANISM_VERSION,
     SIGNED_V030_RELEASE,
     SIGNED_V030_RELEASE_SIGNING_KEY,
@@ -18,7 +21,7 @@ from microtensor_miner_controller.config import (
     ControllerConfig,
 )
 from microtensor_miner_controller.errors import PreflightError, VerificationError
-from microtensor_miner_controller.models import RoundWindow
+from microtensor_miner_controller.models import PackagedArtifact, RoundWindow
 
 
 class FakeDistribution:
@@ -31,10 +34,14 @@ class FakeDistribution:
             return None
         return json.dumps(self.direct)
 
+    def locate_file(self, path: str) -> Path:
+        del path
+        return Path("/")
+
 
 def _direct(digest: str = SIGNED_V030_WHEEL_SHA256) -> dict[str, object]:
     return {
-        "url": "file:///verified/microtensor_subnet-0.3.0-py3-none-any.whl",
+        "url": "file:///verified/microtensor_subnet-0.3.2-py3-none-any.whl",
         "archive_info": {
             "hash": f"sha256={digest}",
             "hashes": {"sha256": digest},
@@ -42,10 +49,11 @@ def _direct(digest: str = SIGNED_V030_WHEEL_SHA256) -> dict[str, object]:
     }
 
 
-def _constants(**overrides: str) -> SimpleNamespace:
+def _constants(**overrides: object) -> SimpleNamespace:
     values = {
         "RELEASE_VERSION": SIGNED_V030_RELEASE,
         "MECHANISM_VERSION": SIGNED_V030_MECHANISM_VERSION,
+        "PROVENANCE_REQUIRED": False,
         "RELEASE_SIGNING_KEY": SIGNED_V030_RELEASE_SIGNING_KEY,
     }
     values.update(overrides)
@@ -60,6 +68,14 @@ class BackendIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             backend = self._backend(Path(temporary))
             with (
+                mock.patch(
+                    "microtensor_miner_controller.backend._signed_installation_tree",
+                    return_value=(
+                        SIGNED_V030_INSTALLED_TREE_FILES,
+                        SIGNED_V030_INSTALLED_TREE_BYTES,
+                        SIGNED_V030_INSTALLED_TREE_SHA256,
+                    ),
+                ),
                 mock.patch(
                     "microtensor_miner_controller.backend.importlib.metadata.distribution",
                     return_value=FakeDistribution(_direct()),
@@ -145,6 +161,7 @@ class BackendIdentityTests(unittest.TestCase):
     def test_refuses_mechanism_or_release_signing_key_mismatch(self) -> None:
         cases = (
             (_constants(MECHANISM_VERSION="0.3.1"), "mechanism identity"),
+            (_constants(PROVENANCE_REQUIRED=True), "provenance gate"),
             (_constants(RELEASE_SIGNING_KEY="0x" + "00" * 32), "signing key"),
             (_constants(RELEASE_VERSION="0.3.1"), "release identity"),
         )
@@ -152,6 +169,14 @@ class BackendIdentityTests(unittest.TestCase):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
                 backend = self._backend(Path(temporary))
                 with (
+                    mock.patch(
+                        "microtensor_miner_controller.backend._signed_installation_tree",
+                        return_value=(
+                            SIGNED_V030_INSTALLED_TREE_FILES,
+                            SIGNED_V030_INSTALLED_TREE_BYTES,
+                            SIGNED_V030_INSTALLED_TREE_SHA256,
+                        ),
+                    ),
                     mock.patch(
                         "microtensor_miner_controller.backend.importlib.metadata.distribution",
                         return_value=FakeDistribution(_direct()),
@@ -163,6 +188,48 @@ class BackendIdentityTests(unittest.TestCase):
                     self.assertRaisesRegex(PreflightError, message),
                 ):
                     backend._verify_upstream()
+
+    def test_signed_installation_tree_detects_extra_files_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for directory in (
+                root / "microtensor",
+                root / "neurons",
+                root / "microtensor_subnet-0.3.2.dist-info",
+            ):
+                directory.mkdir()
+            (root / "microtensor" / "module.py").write_text("value = 1\n", encoding="utf-8")
+            (root / "neurons" / "miner.py").write_text("value = 2\n", encoding="utf-8")
+            (root / "microtensor_subnet-0.3.2.dist-info" / "METADATA").write_text(
+                "Version: 0.3.2\n", encoding="utf-8"
+            )
+            original = _signed_installation_tree(root)
+            (root / "microtensor" / "unexpected.py").write_text(
+                "value = 3\n", encoding="utf-8"
+            )
+            changed = _signed_installation_tree(root)
+            self.assertNotEqual(original, changed)
+            (root / "microtensor" / "link.py").symlink_to("module.py")
+            with self.assertRaisesRegex(PreflightError, "regular file"):
+                _signed_installation_tree(root)
+
+    def test_v032_disabled_provenance_gate_never_imports_or_contacts_wandb(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = self._backend(Path(temporary))
+            packaged = PackagedArtifact(
+                round_index=7,
+                source="https://github.com/example/repository/releases/download/round-7/artifact",
+                hotkey="5Hotkey",
+                manifest_digest="sha256:" + "1" * 64,
+                artifact_digest="sha256:" + "2" * 64,
+                file_count=1,
+                total_bytes=1,
+            )
+            with mock.patch(
+                "builtins.__import__",
+                side_effect=AssertionError("unexpected import or network client load"),
+            ):
+                backend.verify_provenance(packaged, 100)
 
 
 if __name__ == "__main__":
