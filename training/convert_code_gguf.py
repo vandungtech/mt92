@@ -6,10 +6,12 @@ llama.cpp checkout are accepted.  Conversion happens in a unique directory on
 ``/dev/shm``.  The final bundle is published with Linux ``RENAME_NOREPLACE``
 only after every source, tool, and output identity has been replayed.
 
-This module is offline and never performs model inference.  Its only child
-processes are the exact reviewed converter, quantizer, and read-only Git
-identity checks.  Child processes receive a deliberately small environment
-without credentials, wallet paths, or user configuration.
+This module never executes corpus or generated code.  Calibrated conversion
+does run offline model forward passes through the exact reviewed
+``llama-imatrix`` binary; its other children are the reviewed converter,
+quantizer, and read-only Git identity checks.  Child processes receive a
+deliberately small environment without credentials, wallet paths, or user
+configuration.
 """
 
 from __future__ import annotations
@@ -19,38 +21,69 @@ import ctypes
 import errno
 import hashlib
 import json
+import math
 import os
+import selectors
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
 import time
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Final
 
 try:
     from training import code_candidate as candidate
     from training import evaluate_code_gguf as gguf
+    from training import historical_code_candidate as historical_candidate
     from training import publish_code_provenance as provenance
 except ModuleNotFoundError as exc:
     if exc.name != "training":
         raise
     import code_candidate as candidate  # type: ignore[no-redef]
     import evaluate_code_gguf as gguf  # type: ignore[no-redef]
+    import historical_code_candidate as historical_candidate  # type: ignore[no-redef]
     import publish_code_provenance as provenance  # type: ignore[no-redef]
 
 
 SCHEMA: Final[str] = provenance.CONVERSION_SCHEMA
+CALIBRATED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v2"
+CALIBRATION_SCHEMA: Final[str] = "microtensor.code.imatrix-calibration.v1"
+CALIBRATION_PROFILE: Final[str] = "code-public-imatrix128-v1"
 LLAMA_CPP_REVISION: Final[str] = "c589f0ed10c643678c4707dd160c21ac7633ebc0"
 ENTRYPOINT: Final[str] = "model.gguf"
 LOAD_SPEC_NAME: Final[str] = "load-spec.json"
 RECEIPT_NAME: Final[str] = "conversion-receipt.json"
+CALIBRATION_RECEIPT_NAME: Final[str] = "calibration-receipt.json"
 ARTIFACT_NAME: Final[str] = "artifact"
 F16_NAME: Final[str] = "model-f16.gguf"
+CALIBRATION_CORPUS_NAME: Final[str] = "calibration.txt"
+IMATRIX_NAME: Final[str] = "calibration.imatrix.gguf"
 SUPPORTED_QUANTIZATIONS: Final[frozenset[str]] = frozenset({"Q8_0", "Q5_K_M", "Q4_K_M"})
+CALIBRATION_SEED: Final[int] = 92
+CALIBRATION_CURRENT_ROWS: Final[int] = 78
+CALIBRATION_DIAGNOSTIC_ROWS: Final[int] = 16
+CALIBRATION_HISTORICAL_ROWS: Final[int] = 434
+CALIBRATION_TOTAL_ROWS: Final[int] = 512
+CALIBRATION_CHUNKS: Final[int] = 128
+CALIBRATION_CONTEXT_TOKENS: Final[int] = 512
+CALIBRATION_EOS_TOKEN: Final[str] = "<|im_end|>"  # noqa: S105 - tokenizer token, not a secret
+CALIBRATION_EOS_TOKEN_ID: Final[int] = 151645
+CALIBRATION_RENDER_SCHEMA: Final[str] = "prompt-completion-im-end-utf8-v1"
+CALIBRATION_SELECTION_ALGORITHM: Final[str] = "sha256-seed-ref-ascending-v1"
+CALIBRATION_MAX_BYTES: Final[int] = 16 * 1024 * 1024
+CALIBRATION_MIN_FREE_BYTES: Final[int] = 6 * 1024**3
+MAX_CAPTURED_LOG_BYTES: Final[int] = 1 * 1024 * 1024
+_GGUF_MAX_HEADER_BYTES: Final[int] = 256 * 1024 * 1024
+_GGUF_MAX_TENSORS: Final[int] = 100_000
+_GGUF_MAX_METADATA: Final[int] = 100_000
+_GGUF_MAX_ARRAY_ITEMS: Final[int] = 2_000_000
+_GGUF_MAX_STRING_BYTES: Final[int] = 16 * 1024 * 1024
 _AT_FDCWD: Final[int] = -100
 _RENAME_NOREPLACE: Final[int] = 1
 _STAGING_MARKER: Final[str] = ".microtensor-code-gguf-"
@@ -76,6 +109,10 @@ class ConversionRequest:
     output_bundle: Path
     quantization: str
     max_input_tokens: int
+    calibration_profile: str | None = None
+    calibration_current_dataset: Path | None = None
+    calibration_current_source_corpus: Path | None = None
+    imatrix_tool: Path | None = None
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -186,17 +223,19 @@ def _regular_executable(path: Path, label: str) -> tuple[Path, dict[str, Any]]:
         raise ConversionRefused(f"{label} must be a regular file")
     if before.st_mode & 0o111 == 0:
         raise ConversionRefused(f"{label} must have an executable mode bit")
+    if before.st_mode & 0o022:
+        raise ConversionRefused(f"{label} must not be group/world writable")
     identity = gguf.file_identity(resolved, label)
     return resolved, identity
 
 
-def _small_child_environment() -> dict[str, str]:
+def _small_child_environment(*, single_thread: bool = False) -> dict[str, str]:
     """Return an offline child environment with no inherited secret values."""
 
     path = os.environ.get("PATH")
     if not path:
         raise ConversionRefused("PATH is required to resolve the converter's Python shebang")
-    return {
+    environment = {
         "PATH": path,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -207,6 +246,29 @@ def _small_child_environment() -> dict[str, str]:
         "WANDB_MODE": "offline",
         "CUDA_VISIBLE_DEVICES": "",
     }
+    if single_thread:
+        environment.update(
+            {
+                "OMP_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "NUMEXPR_NUM_THREADS": "1",
+                "VECLIB_MAXIMUM_THREADS": "1",
+            }
+        )
+    return environment
+
+
+def _calibration_requested(request: ConversionRequest) -> bool:
+    return any(
+        value is not None
+        for value in (
+            request.calibration_profile,
+            request.calibration_current_dataset,
+            request.calibration_current_source_corpus,
+            request.imatrix_tool,
+        )
+    )
 
 
 def _read_only_command(argv: Sequence[str], *, cwd: Path) -> bytes:
@@ -229,12 +291,20 @@ def _toolchain_identity(request: ConversionRequest) -> dict[str, Any]:
     root = _regular_directory(request.llama_cpp, "llama.cpp checkout")
     converter, converter_identity = _regular_executable(request.converter, "GGUF converter")
     quantizer, quantizer_identity = _regular_executable(request.quantizer, "GGUF quantizer")
+    imatrix_identity: dict[str, Any] | None = None
     expected_converter = (root / "convert_hf_to_gguf.py").resolve(strict=True)
     expected_quantizer = (root / "build" / "bin" / "llama-quantize").resolve(strict=True)
     if converter != expected_converter:
         raise ConversionRefused("converter is not the pinned checkout's exact converter path")
     if quantizer != expected_quantizer:
         raise ConversionRefused("quantizer is not the pinned checkout's exact quantizer path")
+    if _calibration_requested(request):
+        if request.imatrix_tool is None:
+            raise ConversionRefused("calibrated Q4 requires the exact llama-imatrix tool")
+        imatrix, imatrix_identity = _regular_executable(request.imatrix_tool, "llama-imatrix")
+        expected_imatrix = (root / "build" / "bin" / "llama-imatrix").resolve(strict=True)
+        if imatrix != expected_imatrix:
+            raise ConversionRefused("imatrix tool is not the pinned checkout's exact binary path")
     git = shutil.which("git", path=os.environ.get("PATH"))
     if git is None:
         raise ConversionRefused("git is required to validate the pinned llama.cpp checkout")
@@ -267,12 +337,15 @@ def _toolchain_identity(request: ConversionRequest) -> dict[str, Any]:
         )
     if dirty:
         raise ConversionRefused("llama.cpp tracked tree is dirty")
-    return {
+    result = {
         "root": str(root),
         "revision": revision,
         "converter": converter_identity,
         "quantizer": quantizer_identity,
     }
+    if imatrix_identity is not None:
+        result["imatrix"] = imatrix_identity
+    return result
 
 
 def _load_lineage(request: ConversionRequest) -> dict[str, Any]:
@@ -335,6 +408,772 @@ def _conversion_command(
     return record
 
 
+def _write_all(descriptor: int, raw: bytes, label: str) -> None:
+    view = memoryview(raw)
+    while view:
+        written = os.write(descriptor, view)
+        if written < 1:
+            raise ConversionRefused(f"short write while capturing {label}")
+        view = view[written:]
+
+
+def _bounded_conversion_command(
+    name: str,
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    log_root: Path,
+    cwd_role: str = "private_staging",
+) -> dict[str, Any]:
+    """Run one calibrated command with bounded file-backed stdout/stderr capture."""
+
+    exact_argv = [str(item) for item in argv]
+    if not exact_argv or any(not item for item in exact_argv):
+        raise ConversionRefused(f"{name} argv is malformed")
+    if not name.replace("_", "").isalnum():
+        raise ConversionRefused("calibrated command name is malformed")
+    if cwd_role not in {"private_staging", "determinism_replay"}:
+        raise ConversionRefused("calibrated command cwd role is malformed")
+    environment = _small_child_environment(single_thread=True)
+    descriptors: dict[str, int] = {}
+    paths: dict[str, Path] = {}
+    try:
+        for stream_name in ("stdout", "stderr"):
+            path = log_root / f"{name}.{stream_name}"
+            descriptors[stream_name] = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            paths[stream_name] = path
+    except OSError as exc:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        raise ConversionRefused(f"could not create bounded {name} logs: {exc}") from exc
+
+    hashers = {stream_name: hashlib.sha256() for stream_name in descriptors}
+    captured_hashers = {stream_name: hashlib.sha256() for stream_name in descriptors}
+    totals = {stream_name: 0 for stream_name in descriptors}
+    captured = {stream_name: 0 for stream_name in descriptors}
+    stderr_tail = bytearray()
+    process: subprocess.Popen[bytes] | None = None
+    selector = selectors.DefaultSelector()
+    started = time.time_ns()
+    try:
+        process = subprocess.Popen(
+            exact_argv,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+        if process.stdout is None or process.stderr is None:
+            raise ConversionRefused(f"{name} did not expose output pipes")
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            for key, _mask in selector.select():
+                stream_name = str(key.data)
+                chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                hashers[stream_name].update(chunk)
+                totals[stream_name] += len(chunk)
+                remaining = MAX_CAPTURED_LOG_BYTES - captured[stream_name]
+                if remaining > 0:
+                    prefix = chunk[:remaining]
+                    _write_all(descriptors[stream_name], prefix, f"{name} {stream_name}")
+                    captured_hashers[stream_name].update(prefix)
+                    captured[stream_name] += len(prefix)
+                if stream_name == "stderr":
+                    stderr_tail.extend(chunk)
+                    if len(stderr_tail) > _MAX_ERROR_TEXT_BYTES:
+                        del stderr_tail[:-_MAX_ERROR_TEXT_BYTES]
+        returncode = process.wait()
+        for descriptor in descriptors.values():
+            os.fsync(descriptor)
+    except OSError as exc:
+        raise ConversionRefused(f"{name} could not run with bounded logs: {exc}") from exc
+    finally:
+        finished = time.time_ns()
+        selector.close()
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+
+    record: dict[str, Any] = {
+        "name": name,
+        "argv": exact_argv,
+        "cwd_role": cwd_role,
+        "environment": environment,
+        "returncode": returncode,
+        "started_at_unix_ns": started,
+        "finished_at_unix_ns": finished,
+    }
+    for stream_name in ("stdout", "stderr"):
+        record[stream_name] = {
+            "bytes": totals[stream_name],
+            "captured_bytes": captured[stream_name],
+            "captured_digest": "sha256:" + captured_hashers[stream_name].hexdigest(),
+            "digest": "sha256:" + hashers[stream_name].hexdigest(),
+            "truncated": totals[stream_name] > captured[stream_name],
+        }
+    if returncode != 0:
+        error = bytes(stderr_tail).decode("utf-8", "replace")
+        raise ConversionRefused(f"{name} failed with return code {returncode}: {error}")
+    for stream_name, path in paths.items():
+        identity = gguf.file_identity(path, f"bounded {name} {stream_name} log")
+        if identity["bytes"] != captured[stream_name]:
+            raise ConversionRefused(f"bounded {name} {stream_name} log changed")
+    return record
+
+
+def _content_identity(path: Path, label: str) -> dict[str, Any]:
+    identity = gguf.file_identity(path, label)
+    return {"bytes": identity["bytes"], "digest": identity["digest"]}
+
+
+def _dataset_identity(root: Path, manifest: Mapping[str, Any], label: str) -> dict[str, Any]:
+    expected_files = frozenset({"manifest.json", "train.jsonl", "holdout.jsonl"})
+    if _bundle_file_set(root) != expected_files:
+        raise ConversionRefused(f"{label} contains unexpected files")
+    strict_manifest = _strict_json_file(root / "manifest.json", f"{label} manifest")
+    if strict_manifest != dict(manifest):
+        raise ConversionRefused(f"{label} manifest changed under strict replay")
+    return {
+        "tree_digest": _official_tree_digest(root),
+        "manifest": strict_manifest,
+        "manifest_file": _content_identity(root / "manifest.json", f"{label} manifest"),
+        "train_file": _content_identity(root / "train.jsonl", f"{label} train rows"),
+        "holdout_file": _content_identity(root / "holdout.jsonl", f"{label} holdout rows"),
+    }
+
+
+def _strict_current_jsonl_matches(
+    path: Path,
+    expected: Sequence[Mapping[str, Any]],
+    label: str,
+) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ConversionRefused(f"{label} must be a regular non-symlink file")
+    raw = path.read_bytes()
+    if len(raw) > 32 * 1024 * 1024:
+        raise ConversionRefused(f"{label} exceeds the reviewed byte ceiling")
+    if not raw.endswith(b"\n") or b"\r" in raw:
+        raise ConversionRefused(f"{label} must be canonical LF-terminated JSONL")
+    lines = raw[:-1].split(b"\n")
+    if not lines or any(not line for line in lines):
+        raise ConversionRefused(f"{label} contains a blank row")
+    rows: list[dict[str, Any]] = []
+    try:
+        for number, line in enumerate(lines, 1):
+            value = candidate._strict_json(line, f"{label} row {number}")
+            row = dict(_mapping(value, f"{label} row {number}"))
+            _exact_keys(row, candidate.PREPARED_ROW_KEYS, f"{label} row {number}")
+            rows.append(row)
+    except candidate.CandidateError as exc:
+        raise ConversionRefused(f"{label} failed strict replay: {exc}") from exc
+    if rows != [dict(row) for row in expected]:
+        raise ConversionRefused(f"{label} differs from the validated prepared rows")
+
+
+def _refs_digest(rows: Sequence[Mapping[str, Any]]) -> str:
+    return candidate._refs_digest([str(row["ref"]) for row in rows])
+
+
+def _load_calibration_material(
+    request: ConversionRequest,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Replay both pinned public corpora and select only non-diagnostic rows."""
+
+    if request.calibration_current_dataset is None:
+        raise ConversionRefused("calibration current dataset is missing")
+    if request.calibration_current_source_corpus is None:
+        raise ConversionRefused("calibration current source corpus is missing")
+    current_root = candidate.assert_tmpfs_path(
+        request.calibration_current_dataset,
+        must_exist=True,
+    )
+    current_source = candidate.assert_tmpfs_path(
+        request.calibration_current_source_corpus,
+        must_exist=True,
+    )
+    historical_root = candidate.assert_tmpfs_path(request.training_dataset, must_exist=True)
+    historical_source = candidate.assert_tmpfs_path(request.source_corpus, must_exist=True)
+    try:
+        payload, current_validation = candidate.load_public_corpus(current_source)
+        current_rows, current_manifest = candidate.load_prepared_dataset(current_root)
+        current_holdout = candidate._load_prepared_rows(
+            current_root / "holdout.jsonl",
+            "current holdout.jsonl",
+        )
+        expected_train, expected_holdout = gguf._replay_current94(payload, current_manifest)
+        if current_rows != expected_train or current_holdout != expected_holdout:
+            raise ConversionRefused("current prepared dataset is not an exact source replay")
+        _strict_current_jsonl_matches(
+            current_root / "train.jsonl",
+            current_rows,
+            "current train JSONL",
+        )
+        _strict_current_jsonl_matches(
+            current_root / "holdout.jsonl",
+            current_holdout,
+            "current holdout JSONL",
+        )
+        historical_rows, historical_manifest = historical_candidate.load_prepared_dataset(
+            historical_root,
+            historical_source,
+        )
+    except ConversionRefused:
+        raise
+    except (OSError, UnicodeError, KeyError, TypeError, ValueError) as exc:
+        raise ConversionRefused(f"public calibration lineage was refused: {exc}") from exc
+
+    if (
+        current_manifest.get("seed"),
+        current_manifest.get("train_examples"),
+        current_manifest.get("holdout_examples"),
+    ) != (CALIBRATION_SEED, CALIBRATION_CURRENT_ROWS, CALIBRATION_DIAGNOSTIC_ROWS):
+        raise ConversionRefused("current calibration split is not the exact seed-92 78/16 split")
+    if (
+        historical_manifest.get("seed"),
+        historical_manifest.get("train_examples"),
+        historical_manifest.get("holdout_examples"),
+    ) != (CALIBRATION_SEED, historical_candidate.EXPECTED_COUNTS["train"], 0):
+        raise ConversionRefused("historical calibration pool is not the final 8000-row split")
+    if (
+        current_manifest.get("source_file_digest")
+        != _content_identity(
+            current_source,
+            "current public source corpus",
+        )["digest"]
+    ):
+        raise ConversionRefused("current prepared dataset does not bind the source bytes")
+
+    current_refs = [str(row["ref"]) for row in current_rows]
+    holdout_refs = [str(row["ref"]) for row in current_holdout]
+    historical_refs = [str(row["ref"]) for row in historical_rows]
+    if len(current_rows) != CALIBRATION_CURRENT_ROWS:
+        raise ConversionRefused("current calibration training row count changed")
+    if len(current_holdout) != CALIBRATION_DIAGNOSTIC_ROWS:
+        raise ConversionRefused("current diagnostic holdout row count changed")
+    if len(set(current_refs)) != len(current_refs):
+        raise ConversionRefused("current calibration refs are duplicated")
+    if len(set(holdout_refs)) != len(holdout_refs):
+        raise ConversionRefused("current diagnostic refs are duplicated")
+    if set(current_refs) & set(holdout_refs):
+        raise ConversionRefused("current diagnostic rows leaked into calibration training rows")
+    if len(historical_rows) != historical_candidate.EXPECTED_COUNTS["train"]:
+        raise ConversionRefused("historical calibration pool row count changed")
+    if len(set(historical_refs)) != len(historical_refs):
+        raise ConversionRefused("historical calibration refs are duplicated")
+
+    ranked_historical = sorted(
+        historical_rows,
+        key=lambda row: (
+            hashlib.sha256(f"{CALIBRATION_SEED}:{row['ref']}".encode()).hexdigest(),
+            str(row["ref"]),
+        ),
+    )
+    selected_historical = ranked_historical[:CALIBRATION_HISTORICAL_ROWS]
+    ordered_current = sorted(current_rows, key=lambda row: str(row["ref"]))
+    ordered_rows = [dict(row) for row in (*ordered_current, *selected_historical)]
+    if len(ordered_rows) != CALIBRATION_TOTAL_ROWS:
+        raise ConversionRefused("calibration selection did not produce exactly 512 rows")
+
+    control_markers = ("<|im_start|>", CALIBRATION_EOS_TOKEN, "<|endoftext|>")
+    for row in ordered_rows:
+        _exact_keys(row, candidate.PREPARED_ROW_KEYS, "calibration row")
+        for field in ("prompt", "completion"):
+            text = row.get(field)
+            if not isinstance(text, str) or not text:
+                raise ConversionRefused(f"calibration row {field} is not a non-empty string")
+            if any(marker in text for marker in control_markers):
+                raise ConversionRefused("calibration source contains a reserved Qwen control token")
+
+    current_source_identity = _content_identity(current_source, "current public source corpus")
+    snapshot = {
+        "profile": CALIBRATION_PROFILE,
+        "source": {
+            "current": {
+                "corpus": {
+                    **current_source_identity,
+                    "canonical_bytes": current_validation.canonical_bytes,
+                    "canonical_digest": current_validation.canonical_digest,
+                    "task_count": current_validation.task_count,
+                    "refs_digest": current_validation.refs_digest,
+                },
+                "prepared_dataset": _dataset_identity(
+                    current_root,
+                    current_manifest,
+                    "current prepared dataset",
+                ),
+            },
+            "historical": {
+                "corpus": historical_candidate.source_corpus_identity(),
+                "prepared_dataset": _dataset_identity(
+                    historical_root,
+                    historical_manifest,
+                    "historical prepared dataset",
+                ),
+            },
+        },
+        "selection": {
+            "algorithm": CALIBRATION_SELECTION_ALGORITHM,
+            "seed": CALIBRATION_SEED,
+            "current_rows": len(ordered_current),
+            "current_refs_digest": _refs_digest(ordered_current),
+            "diagnostic_rows_excluded": len(current_holdout),
+            "diagnostic_refs_digest": _refs_digest(current_holdout),
+            "historical_pool_rows": len(historical_rows),
+            "historical_selected_rows": len(selected_historical),
+            "historical_selected_refs_digest": _refs_digest(selected_historical),
+            "total_rows": len(ordered_rows),
+        },
+    }
+    return ordered_rows, snapshot
+
+
+def _write_calibration_corpus(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    descriptor = -1
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        for row in rows:
+            raw = (
+                str(row["prompt"]) + str(row["completion"]) + CALIBRATION_EOS_TOKEN + "\n"
+            ).encode("utf-8")
+            if total + len(raw) > CALIBRATION_MAX_BYTES:
+                raise ConversionRefused("rendered calibration corpus exceeds 16 MiB")
+            _write_all(descriptor, raw, "calibration corpus")
+            digest.update(raw)
+            total += len(raw)
+        if len(rows) != CALIBRATION_TOTAL_ROWS or total < 1:
+            raise ConversionRefused("rendered calibration corpus has an invalid row count or size")
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise ConversionRefused(f"could not write private calibration corpus: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return {
+        "name": CALIBRATION_CORPUS_NAME,
+        "bytes": total,
+        "digest": "sha256:" + digest.hexdigest(),
+    }
+
+
+_GGUF_SCALAR_FORMAT: Final[dict[int, str]] = {
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
+}
+_GGUF_STRING_TYPE: Final[int] = 8
+_GGUF_ARRAY_TYPE: Final[int] = 9
+
+
+def _gguf_exact(handle: Any, size: int, file_size: int, label: str) -> bytes:
+    if size < 0 or handle.tell() + size > file_size:
+        raise ConversionRefused(f"GGUF ends inside {label}")
+    if handle.tell() + size > _GGUF_MAX_HEADER_BYTES:
+        raise ConversionRefused("GGUF metadata/tensor header exceeds the reviewed byte ceiling")
+    raw = handle.read(size)
+    if len(raw) != size:
+        raise ConversionRefused(f"GGUF ends inside {label}")
+    return raw
+
+
+def _gguf_skip(handle: Any, size: int, file_size: int, label: str) -> None:
+    if size < 0 or handle.tell() + size > file_size:
+        raise ConversionRefused(f"GGUF {label} extends beyond the file")
+    if handle.tell() + size > _GGUF_MAX_HEADER_BYTES:
+        raise ConversionRefused("GGUF metadata/tensor header exceeds the reviewed byte ceiling")
+    handle.seek(size, os.SEEK_CUR)
+
+
+def _gguf_u32(handle: Any, file_size: int, label: str) -> int:
+    return int(struct.unpack("<I", _gguf_exact(handle, 4, file_size, label))[0])
+
+
+def _gguf_u64(handle: Any, file_size: int, label: str) -> int:
+    return int(struct.unpack("<Q", _gguf_exact(handle, 8, file_size, label))[0])
+
+
+def _gguf_string(
+    handle: Any,
+    file_size: int,
+    label: str,
+    *,
+    capture: bool,
+) -> str | None:
+    size = _gguf_u64(handle, file_size, f"{label} length")
+    if size > _GGUF_MAX_STRING_BYTES:
+        raise ConversionRefused(f"GGUF {label} exceeds the reviewed string ceiling")
+    if not capture:
+        _gguf_skip(handle, size, file_size, label)
+        return None
+    try:
+        return _gguf_exact(handle, size, file_size, label).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConversionRefused(f"GGUF {label} is not UTF-8") from exc
+
+
+def _gguf_scalar(handle: Any, kind: int, file_size: int, label: str) -> Any:
+    format_string = _GGUF_SCALAR_FORMAT.get(kind)
+    if format_string is None:
+        raise ConversionRefused(f"GGUF {label} has unknown scalar type {kind}")
+    width = struct.calcsize(format_string)
+    return struct.unpack(format_string, _gguf_exact(handle, width, file_size, label))[0]
+
+
+def _gguf_value(
+    handle: Any,
+    kind: int,
+    file_size: int,
+    label: str,
+    *,
+    capture: bool,
+) -> tuple[Any, int | None]:
+    if kind in _GGUF_SCALAR_FORMAT:
+        if capture:
+            return _gguf_scalar(handle, kind, file_size, label), None
+        _gguf_skip(handle, struct.calcsize(_GGUF_SCALAR_FORMAT[kind]), file_size, label)
+        return None, None
+    if kind == _GGUF_STRING_TYPE:
+        return _gguf_string(handle, file_size, label, capture=capture), None
+    if kind != _GGUF_ARRAY_TYPE:
+        raise ConversionRefused(f"GGUF {label} has unknown value type {kind}")
+    element_kind = _gguf_u32(handle, file_size, f"{label} array type")
+    count = _gguf_u64(handle, file_size, f"{label} array count")
+    if count > _GGUF_MAX_ARRAY_ITEMS or element_kind == _GGUF_ARRAY_TYPE:
+        raise ConversionRefused(f"GGUF {label} has an unsupported array")
+    if element_kind in _GGUF_SCALAR_FORMAT and not capture:
+        _gguf_skip(
+            handle,
+            count * struct.calcsize(_GGUF_SCALAR_FORMAT[element_kind]),
+            file_size,
+            label,
+        )
+        return None, element_kind
+    values: list[Any] | None = [] if capture else None
+    for index in range(count):
+        if element_kind == _GGUF_STRING_TYPE:
+            item = _gguf_string(
+                handle,
+                file_size,
+                f"{label}[{index}]",
+                capture=capture,
+            )
+        elif element_kind in _GGUF_SCALAR_FORMAT:
+            item = _gguf_scalar(handle, element_kind, file_size, f"{label}[{index}]")
+        else:
+            raise ConversionRefused(f"GGUF {label} has unknown array type {element_kind}")
+        if values is not None:
+            values.append(item)
+    return values, element_kind
+
+
+def _parse_gguf_contract(
+    path: Path,
+    *,
+    wanted_metadata: frozenset[str],
+    include_tensor_details: bool,
+) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ConversionRefused("GGUF contract input must be a regular non-symlink file")
+    file_size = path.stat().st_size
+    metadata: dict[str, dict[str, Any]] = {}
+    metadata_keys: set[str] = set()
+    tensor_details: list[dict[str, Any]] = []
+    tensor_offsets: list[int] = []
+    with path.open("rb") as handle:
+        if _gguf_exact(handle, 4, file_size, "magic") != b"GGUF":
+            raise ConversionRefused("calibration output is not a GGUF file")
+        version = _gguf_u32(handle, file_size, "version")
+        if version not in {2, 3}:
+            raise ConversionRefused(f"GGUF version {version} is unsupported")
+        tensor_count = _gguf_u64(handle, file_size, "tensor count")
+        metadata_count = _gguf_u64(handle, file_size, "metadata count")
+        if tensor_count > _GGUF_MAX_TENSORS:
+            raise ConversionRefused("GGUF declares too many tensors")
+        if metadata_count > _GGUF_MAX_METADATA:
+            raise ConversionRefused("GGUF declares too many metadata fields")
+        for index in range(metadata_count):
+            key = _gguf_string(
+                handle,
+                file_size,
+                f"metadata key {index}",
+                capture=True,
+            )
+            if key is None or key in metadata_keys:
+                raise ConversionRefused(f"GGUF repeats metadata key {key!r}")
+            metadata_keys.add(key)
+            kind = _gguf_u32(handle, file_size, f"metadata type for {key!r}")
+            value, element_kind = _gguf_value(
+                handle,
+                kind,
+                file_size,
+                key,
+                capture=key in wanted_metadata or key == "general.alignment",
+            )
+            if key in wanted_metadata or key == "general.alignment":
+                metadata[key] = {
+                    "type": kind,
+                    "array_type": element_kind,
+                    "value": value,
+                }
+
+        seen_tensors: set[str] = set()
+        for index in range(tensor_count):
+            name = _gguf_string(
+                handle,
+                file_size,
+                f"tensor {index} name",
+                capture=True,
+            )
+            if name is None or not name or name in seen_tensors:
+                raise ConversionRefused(f"GGUF tensor name is empty or duplicated: {name!r}")
+            seen_tensors.add(name)
+            dimensions_count = _gguf_u32(handle, file_size, f"tensor {name!r} dimensions")
+            if not 1 <= dimensions_count <= 4:
+                raise ConversionRefused(f"GGUF tensor {name!r} has invalid dimensions")
+            dimensions = tuple(
+                _gguf_u64(handle, file_size, f"tensor {name!r} dimension {axis}")
+                for axis in range(dimensions_count)
+            )
+            if any(value < 1 for value in dimensions):
+                raise ConversionRefused(f"GGUF tensor {name!r} has an empty dimension")
+            tensor_type = _gguf_u32(handle, file_size, f"tensor {name!r} type")
+            offset = _gguf_u64(handle, file_size, f"tensor {name!r} offset")
+            tensor_offsets.append(offset)
+            if include_tensor_details:
+                tensor_details.append(
+                    {
+                        "name": name,
+                        "dimensions": dimensions,
+                        "type": tensor_type,
+                        "offset": offset,
+                    }
+                )
+        header_end = handle.tell()
+
+    alignment_entry = metadata.get("general.alignment")
+    alignment = 32
+    if alignment_entry is not None:
+        if alignment_entry != {"type": 4, "array_type": None, "value": alignment_entry["value"]}:
+            raise ConversionRefused("GGUF general.alignment is not a UINT32")
+        alignment = int(alignment_entry["value"])
+        if alignment < 1 or alignment > 4096 or alignment & (alignment - 1):
+            raise ConversionRefused("GGUF general.alignment is invalid")
+    data_start = (header_end + alignment - 1) // alignment * alignment
+    if data_start > file_size:
+        raise ConversionRefused("GGUF tensor data begins beyond end of file")
+    if any(offset % alignment or data_start + offset >= file_size for offset in tensor_offsets):
+        raise ConversionRefused("GGUF tensor offset is unaligned or beyond end of file")
+    return {
+        "version": version,
+        "file_bytes": file_size,
+        "tensor_count": tensor_count,
+        "metadata_count": metadata_count,
+        "metadata_keys": frozenset(metadata_keys),
+        "metadata": metadata,
+        "tensors": tensor_details,
+        "alignment": alignment,
+        "data_start": data_start,
+    }
+
+
+def _required_metadata(
+    parsed: Mapping[str, Any],
+    key: str,
+    *,
+    kind: int,
+    value: Any,
+    array_kind: int | None = None,
+) -> None:
+    metadata = _mapping(parsed.get("metadata"), "GGUF selected metadata")
+    found = metadata.get(key)
+    expected = {"type": kind, "array_type": array_kind, "value": value}
+    if found != expected:
+        raise ConversionRefused(f"GGUF metadata {key!r} changed")
+
+
+def _validate_imatrix_gguf(path: Path) -> dict[str, Any]:
+    wanted = frozenset(
+        {
+            "general.type",
+            "imatrix.datasets",
+            "imatrix.chunk_count",
+            "imatrix.chunk_size",
+        }
+    )
+    parsed = _parse_gguf_contract(
+        path,
+        wanted_metadata=wanted,
+        include_tensor_details=True,
+    )
+    if parsed["metadata_keys"] != wanted:
+        raise ConversionRefused("imatrix GGUF metadata fields changed")
+    _required_metadata(parsed, "general.type", kind=8, value="imatrix")
+    _required_metadata(
+        parsed,
+        "imatrix.datasets",
+        kind=9,
+        array_kind=8,
+        value=[CALIBRATION_CORPUS_NAME],
+    )
+    _required_metadata(parsed, "imatrix.chunk_count", kind=4, value=CALIBRATION_CHUNKS)
+    _required_metadata(
+        parsed,
+        "imatrix.chunk_size",
+        kind=4,
+        value=CALIBRATION_CONTEXT_TOKENS,
+    )
+    tensors = list(parsed["tensors"])
+    if not tensors or len(tensors) % 2:
+        raise ConversionRefused("imatrix GGUF has no complete tensor pairs")
+    pairs: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for tensor in tensors:
+        name = str(tensor["name"])
+        suffix = next(
+            (
+                candidate_suffix
+                for candidate_suffix in (".in_sum2", ".counts")
+                if name.endswith(candidate_suffix)
+            ),
+            None,
+        )
+        if suffix is None:
+            raise ConversionRefused("imatrix GGUF contains an unexpected tensor name")
+        base_name = name[: -len(suffix)]
+        pairs.setdefault(base_name, {})[suffix] = tensor
+    if any(frozenset(pair) != frozenset({".in_sum2", ".counts"}) for pair in pairs.values()):
+        raise ConversionRefused("imatrix GGUF has an unmatched tensor pair")
+    tensor_ranges: list[tuple[int, int]] = []
+    for pair in pairs.values():
+        sums = pair[".in_sum2"]
+        counts = pair[".counts"]
+        if sums["type"] != 0 or counts["type"] != 0:
+            raise ConversionRefused("imatrix GGUF tensor pairs must be F32")
+        sums_dimensions = tuple(sums["dimensions"])
+        counts_dimensions = tuple(counts["dimensions"])
+        if (
+            len(sums_dimensions) != 2
+            or len(counts_dimensions) != 2
+            or counts_dimensions[0] != 1
+            or sums_dimensions[1] != counts_dimensions[1]
+        ):
+            raise ConversionRefused("imatrix GGUF tensor pair dimensions changed")
+        for tensor in (sums, counts):
+            elements = 1
+            for dimension in tensor["dimensions"]:
+                elements *= int(dimension)
+            offset = int(tensor["offset"])
+            if offset % int(parsed["alignment"]):
+                raise ConversionRefused("imatrix GGUF tensor offset is not aligned")
+            if int(parsed["data_start"]) + offset + elements * 4 > int(parsed["file_bytes"]):
+                raise ConversionRefused("imatrix GGUF tensor data extends beyond end of file")
+            start = int(parsed["data_start"]) + offset
+            tensor_ranges.append((start, start + elements * 4))
+            with path.open("rb") as handle:
+                handle.seek(start)
+                raw = handle.read(elements * 4)
+            values = (value[0] for value in struct.iter_unpack("<f", raw))
+            if tensor is sums:
+                if any(not math.isfinite(value) or value < 0 for value in values):
+                    raise ConversionRefused("imatrix GGUF contains an invalid sum-of-squares value")
+            elif any(
+                not math.isfinite(value) or value <= 0 or not value.is_integer() for value in values
+            ):
+                raise ConversionRefused("imatrix GGUF contains an invalid count value")
+    ordered_ranges = sorted(tensor_ranges)
+    if any(left[1] > right[0] for left, right in pairwise(ordered_ranges)):
+        raise ConversionRefused("imatrix GGUF tensor data overlaps")
+    identity = _content_identity(path, "importance matrix GGUF")
+    return {
+        **identity,
+        "version": parsed["version"],
+        "tensor_count": parsed["tensor_count"],
+        "entries_count": len(pairs),
+        "datasets": [CALIBRATION_CORPUS_NAME],
+        "chunk_count": CALIBRATION_CHUNKS,
+        "chunk_size": CALIBRATION_CONTEXT_TOKENS,
+    }
+
+
+def _validate_calibrated_model_metadata(path: Path) -> dict[str, Any]:
+    wanted = frozenset(
+        {
+            "general.architecture",
+            "general.file_type",
+            "quantize.imatrix.file",
+            "quantize.imatrix.dataset",
+            "quantize.imatrix.entries_count",
+            "quantize.imatrix.chunks_count",
+        }
+    )
+    parsed = _parse_gguf_contract(
+        path,
+        wanted_metadata=wanted,
+        include_tensor_details=False,
+    )
+    if int(parsed["tensor_count"]) < 1:
+        raise ConversionRefused("calibrated model GGUF declares no tensors")
+    _required_metadata(parsed, "general.architecture", kind=8, value="qwen3")
+    _required_metadata(parsed, "general.file_type", kind=4, value=15)
+    _required_metadata(parsed, "quantize.imatrix.file", kind=8, value=IMATRIX_NAME)
+    _required_metadata(
+        parsed,
+        "quantize.imatrix.dataset",
+        kind=8,
+        value=CALIBRATION_CORPUS_NAME,
+    )
+    _required_metadata(
+        parsed,
+        "quantize.imatrix.chunks_count",
+        kind=4,
+        value=CALIBRATION_CHUNKS,
+    )
+    metadata = _mapping(parsed["metadata"], "calibrated model metadata")
+    entries = _mapping(
+        metadata.get("quantize.imatrix.entries_count"),
+        "calibrated model entries metadata",
+    )
+    if entries.get("type") != 4 or entries.get("array_type") is not None:
+        raise ConversionRefused("calibrated model imatrix entry count is not UINT32")
+    entry_count = entries.get("value")
+    if isinstance(entry_count, bool) or not isinstance(entry_count, int) or entry_count < 1:
+        raise ConversionRefused("calibrated model imatrix entry count is not positive")
+    return {
+        "imatrix_file": IMATRIX_NAME,
+        "imatrix_dataset": CALIBRATION_CORPUS_NAME,
+        "imatrix_entries_count": entry_count,
+        "imatrix_chunks_count": CALIBRATION_CHUNKS,
+    }
+
+
 def _official_tree_digest(root: Path) -> str:
     artifact_root = _regular_directory(root, "staged artifact")
     entries: list[tuple[str, str]] = []
@@ -369,6 +1208,20 @@ def _official_tree_digest(root: Path) -> str:
 def _validate_request(request: ConversionRequest) -> ConversionRequest:
     if request.quantization not in SUPPORTED_QUANTIZATIONS:
         raise ConversionRefused("quantization must be exactly Q8_0, Q5_K_M, or Q4_K_M")
+    calibration_values = (
+        request.calibration_profile,
+        request.calibration_current_dataset,
+        request.calibration_current_source_corpus,
+        request.imatrix_tool,
+    )
+    provided = tuple(value is not None for value in calibration_values)
+    if any(provided) and not all(provided):
+        raise ConversionRefused("calibrated Q4 arguments must be supplied all-or-nothing")
+    calibrated = all(provided)
+    if calibrated and request.calibration_profile != CALIBRATION_PROFILE:
+        raise ConversionRefused(f"calibration profile must be exactly {CALIBRATION_PROFILE}")
+    if calibrated and request.quantization != "Q4_K_M":
+        raise ConversionRefused("importance-matrix calibration is supported only for Q4_K_M")
     tokens = request.max_input_tokens
     if isinstance(tokens, bool) or not isinstance(tokens, int):
         raise ConversionRefused("max-input-tokens must be an integer")
@@ -377,12 +1230,27 @@ def _validate_request(request: ConversionRequest) -> ConversionRequest:
             f"max-input-tokens must be in [{gguf.MIN_CONTEXT_TOKENS}, {gguf.MAX_CONTEXT_TOKENS}]"
         )
     output = _fresh_output_bundle(request.output_bundle)
-    for source, label in (
+    protected_inputs: list[tuple[Path, str]] = [
         (request.training_run, "training run"),
         (request.training_dataset, "training dataset"),
+        (request.source_corpus, "historical source corpus"),
         (request.base, "base snapshot"),
         (request.llama_cpp, "llama.cpp checkout"),
-    ):
+    ]
+    if calibrated:
+        current_dataset = request.calibration_current_dataset
+        current_source = request.calibration_current_source_corpus
+        if current_dataset is None or current_source is None:
+            raise ConversionRefused("calibrated Q4 inputs disappeared during validation")
+        protected_inputs.extend(
+            (
+                (current_dataset, "current calibration dataset"),
+                (current_source, "current calibration source corpus"),
+            )
+        )
+        if shutil.disk_usage(output.parent).free < CALIBRATION_MIN_FREE_BYTES:
+            raise ConversionRefused("calibrated Q4 requires at least 6 GiB free below /dev/shm")
+    for source, label in protected_inputs:
         try:
             protected = Path(source).resolve(strict=True)
         except OSError as exc:
@@ -442,6 +1310,298 @@ def _receipt(
         "load_manifest": dict(load_manifest),
         "calibration_receipt_digest": None,
     }
+
+
+def _calibration_receipt(
+    *,
+    material: Mapping[str, Any],
+    toolchain: Mapping[str, Any],
+    commands: Sequence[Mapping[str, Any]],
+    corpus: Mapping[str, Any],
+    f16: Mapping[str, Any],
+    imatrix: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+    model_metadata: Mapping[str, Any],
+    load_manifest: Mapping[str, Any],
+    determinism_replay: Mapping[str, Any],
+) -> dict[str, Any]:
+    converter_identity = _mapping(toolchain["converter"], "converter identity")
+    imatrix_tool_identity = _mapping(toolchain["imatrix"], "imatrix tool identity")
+    quantizer_identity = _mapping(toolchain["quantizer"], "quantizer identity")
+    entrypoint = _mapping(artifact["entrypoint"], "artifact entrypoint")
+    return {
+        "schema": CALIBRATION_SCHEMA,
+        "status": "complete",
+        "profile": CALIBRATION_PROFILE,
+        "track": provenance.TRACK,
+        "hardware_class": provenance.HARDWARE_CLASS,
+        "base_model": provenance.BASE_MODEL,
+        "llama_cpp_revision": LLAMA_CPP_REVISION,
+        "source": dict(_mapping(material["source"], "calibration source identity")),
+        "selection": dict(_mapping(material["selection"], "calibration selection")),
+        "rendering": {
+            "schema": CALIBRATION_RENDER_SCHEMA,
+            "encoding": "UTF-8",
+            "expression": "prompt + completion + <|im_end|> + LF",
+            "eos_token": CALIBRATION_EOS_TOKEN,
+            "eos_token_id": CALIBRATION_EOS_TOKEN_ID,
+            "rows": CALIBRATION_TOTAL_ROWS,
+            "corpus": dict(corpus),
+        },
+        "toolchain": {
+            "converter_digest": converter_identity["digest"],
+            "imatrix_digest": imatrix_tool_identity["digest"],
+            "quantizer_digest": quantizer_identity["digest"],
+        },
+        "commands": [dict(command) for command in commands],
+        "determinism_replay": dict(determinism_replay),
+        "intermediate": {
+            "f16": {**dict(f16), "file_type": 1},
+            "imatrix": dict(imatrix),
+        },
+        "artifact": {
+            "tree_digest": artifact["tree_digest"],
+            "entrypoint_digest": entrypoint["digest"],
+            "entrypoint_bytes": entrypoint["bytes"],
+            "quantization": "Q4_K_M",
+            "calibration_metadata": dict(model_metadata),
+        },
+        "load_manifest": dict(load_manifest),
+    }
+
+
+def _calibrated_conversion_receipt(
+    *,
+    lineage: Mapping[str, Any],
+    toolchain: Mapping[str, Any],
+    commands: Sequence[Mapping[str, Any]],
+    artifact: Mapping[str, Any],
+    load_manifest: Mapping[str, Any],
+    calibration_digest: str,
+    determinism_replay: Mapping[str, Any],
+) -> dict[str, Any]:
+    receipt_identity = _mapping(lineage["receipt"], "training receipt identity")
+    run = _mapping(lineage["run"], "training run identity")
+    merged = _mapping(run["merged"], "merged tree identity")
+    converter_identity = _mapping(toolchain["converter"], "converter identity")
+    imatrix_identity = _mapping(toolchain["imatrix"], "imatrix tool identity")
+    quantizer_identity = _mapping(toolchain["quantizer"], "quantizer identity")
+    entrypoint = _mapping(artifact["entrypoint"], "artifact entrypoint")
+    return {
+        "schema": CALIBRATED_CONVERSION_SCHEMA,
+        "status": "complete",
+        "track": provenance.TRACK,
+        "hardware_class": provenance.HARDWARE_CLASS,
+        "base_model": provenance.BASE_MODEL,
+        "llama_cpp_revision": LLAMA_CPP_REVISION,
+        "source": {
+            "training_metadata_digest": receipt_identity["digest"],
+            "merged_tree_digest": merged["digest"],
+        },
+        "conversion": {
+            "converter_digest": converter_identity["digest"],
+            "imatrix_digest": imatrix_identity["digest"],
+            "quantizer_digest": quantizer_identity["digest"],
+            "commands": [dict(command) for command in commands],
+            "determinism_replay": dict(determinism_replay),
+        },
+        "artifact": {
+            "tree_digest": artifact["tree_digest"],
+            "entrypoint_digest": entrypoint["digest"],
+            "entrypoint_bytes": entrypoint["bytes"],
+            "quantization": "Q4_K_M",
+        },
+        "load_manifest": dict(load_manifest),
+        "calibration_receipt_digest": calibration_digest,
+    }
+
+
+def _valid_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def _validate_calibrated_command(
+    command: Mapping[str, Any],
+    *,
+    name: str,
+    argv: Sequence[str],
+    cwd_role: str,
+) -> None:
+    _exact_keys(
+        command,
+        frozenset(
+            {
+                "name",
+                "argv",
+                "cwd_role",
+                "environment",
+                "returncode",
+                "started_at_unix_ns",
+                "finished_at_unix_ns",
+                "stdout",
+                "stderr",
+            }
+        ),
+        f"{name} command",
+    )
+    if command.get("name") != name or command.get("argv") != [str(item) for item in argv]:
+        raise ConversionRefused(f"{name} command argv changed")
+    if command.get("cwd_role") != cwd_role:
+        raise ConversionRefused(f"{name} command cwd role changed")
+    if command.get("environment") != _small_child_environment(single_thread=True):
+        raise ConversionRefused(f"{name} command environment changed")
+    started = command.get("started_at_unix_ns")
+    finished = command.get("finished_at_unix_ns")
+    if (
+        isinstance(started, bool)
+        or not isinstance(started, int)
+        or isinstance(finished, bool)
+        or not isinstance(finished, int)
+        or started < 1
+        or finished < started
+        or command.get("returncode") != 0
+    ):
+        raise ConversionRefused(f"{name} command timing or return code changed")
+    for stream_name in ("stdout", "stderr"):
+        stream = _mapping(command.get(stream_name), f"{name} {stream_name} identity")
+        _exact_keys(
+            stream,
+            frozenset({"bytes", "captured_bytes", "captured_digest", "digest", "truncated"}),
+            f"{name} {stream_name} identity",
+        )
+        total = stream.get("bytes")
+        captured = stream.get("captured_bytes")
+        if (
+            isinstance(total, bool)
+            or not isinstance(total, int)
+            or total < 0
+            or isinstance(captured, bool)
+            or not isinstance(captured, int)
+            or captured != min(total, MAX_CAPTURED_LOG_BYTES)
+            or stream.get("truncated") is not (total > captured)
+            or not _valid_digest(stream.get("digest"))
+            or not _valid_digest(stream.get("captured_digest"))
+        ):
+            raise ConversionRefused(f"{name} {stream_name} log identity changed")
+
+
+def _validate_captured_logs(
+    log_root: Path,
+    commands: Sequence[Mapping[str, Any]],
+) -> None:
+    expected_files = {
+        f"{command['name']}.{stream_name}"
+        for command in commands
+        for stream_name in ("stdout", "stderr")
+    }
+    if _bundle_file_set(log_root) != frozenset(expected_files):
+        raise ConversionRefused("bounded command log set changed")
+    for command in commands:
+        for stream_name in ("stdout", "stderr"):
+            stream = _mapping(command[stream_name], f"{command['name']} {stream_name} log")
+            identity = _content_identity(
+                log_root / f"{command['name']}.{stream_name}",
+                f"bounded {command['name']} {stream_name} log",
+            )
+            if identity != {
+                "bytes": stream["captured_bytes"],
+                "digest": stream["captured_digest"],
+            }:
+                raise ConversionRefused("bounded command log bytes changed")
+
+
+def _validate_calibrated_receipts(
+    *,
+    calibration_receipt: Mapping[str, Any],
+    conversion_receipt: Mapping[str, Any],
+    calibration_digest: str,
+    expected_calibration: Mapping[str, Any],
+    expected_conversion: Mapping[str, Any],
+    command_argv: Sequence[tuple[str, Sequence[str]]],
+    replay_command_argv: Sequence[tuple[str, Sequence[str]]],
+) -> None:
+    if dict(calibration_receipt) != dict(expected_calibration):
+        raise ConversionRefused("calibration-v1 receipt fields changed")
+    if dict(conversion_receipt) != dict(expected_conversion):
+        raise ConversionRefused("conversion-v2 receipt fields changed")
+    if calibration_receipt.get("schema") != CALIBRATION_SCHEMA:
+        raise ConversionRefused("calibration receipt schema changed")
+    if conversion_receipt.get("schema") != CALIBRATED_CONVERSION_SCHEMA:
+        raise ConversionRefused("calibrated conversion receipt schema changed")
+    if conversion_receipt.get("calibration_receipt_digest") != calibration_digest:
+        raise ConversionRefused("conversion receipt does not bind the calibration receipt")
+    calibration_commands = calibration_receipt.get("commands")
+    conversion = _mapping(conversion_receipt.get("conversion"), "calibrated conversion")
+    conversion_commands = conversion.get("commands")
+    if not isinstance(calibration_commands, list) or calibration_commands != conversion_commands:
+        raise ConversionRefused("calibrated receipts do not bind the same commands")
+    if len(calibration_commands) != len(command_argv):
+        raise ConversionRefused("calibrated receipts do not contain exactly three commands")
+    for command, (name, argv) in zip(calibration_commands, command_argv, strict=True):
+        _validate_calibrated_command(
+            _mapping(command, f"{name} command"),
+            name=name,
+            argv=argv,
+            cwd_role="private_staging",
+        )
+    calibration_replay = _mapping(
+        calibration_receipt.get("determinism_replay"),
+        "calibration determinism replay",
+    )
+    conversion_replay = _mapping(
+        conversion.get("determinism_replay"),
+        "conversion determinism replay",
+    )
+    if dict(calibration_replay) != dict(conversion_replay):
+        raise ConversionRefused("calibrated receipts bind different determinism replays")
+    _exact_keys(
+        calibration_replay,
+        frozenset(
+            {
+                "schema",
+                "commands",
+                "f16_digest",
+                "imatrix_digest",
+                "entrypoint_digest",
+                "entrypoint_bytes",
+                "artifact_tree_digest",
+                "matches_primary",
+            }
+        ),
+        "determinism replay proof",
+    )
+    if calibration_replay.get("schema") != "microtensor.code.gguf-determinism-replay.v1":
+        raise ConversionRefused("determinism replay schema changed")
+    for digest_field in (
+        "f16_digest",
+        "imatrix_digest",
+        "entrypoint_digest",
+        "artifact_tree_digest",
+    ):
+        if not _valid_digest(calibration_replay.get(digest_field)):
+            raise ConversionRefused(f"determinism replay {digest_field} is malformed")
+    replay_bytes = calibration_replay.get("entrypoint_bytes")
+    if isinstance(replay_bytes, bool) or not isinstance(replay_bytes, int) or replay_bytes < 1:
+        raise ConversionRefused("determinism replay entrypoint byte count is invalid")
+    replay_commands = calibration_replay.get("commands")
+    if (
+        calibration_replay.get("matches_primary") is not True
+        or not isinstance(replay_commands, list)
+        or len(replay_commands) != len(replay_command_argv)
+    ):
+        raise ConversionRefused("determinism replay proof is incomplete")
+    for command, (name, argv) in zip(replay_commands, replay_command_argv, strict=True):
+        _validate_calibrated_command(
+            _mapping(command, f"replay {name} command"),
+            name=name,
+            argv=argv,
+            cwd_role="determinism_replay",
+        )
 
 
 def _fsync_path(path: Path, *, directory: bool = False) -> None:
@@ -509,10 +1669,529 @@ def _same_artifact_identity(left: Mapping[str, Any], right: Mapping[str, Any], l
     _same_identity(left_content, right_content, label)
 
 
+def _validate_f16_gguf(path: Path) -> dict[str, Any]:
+    try:
+        header = gguf.read_gguf_identity(path)
+    except Exception as exc:
+        raise ConversionRefused(f"temporary F16 GGUF was refused: {exc}") from exc
+    if (
+        header.get("architecture") != "qwen3"
+        or header.get("file_type") != 1
+        or int(header.get("tensor_count", 0)) < 1
+    ):
+        raise ConversionRefused("converter output is not a non-empty qwen3 F16 GGUF")
+    return _content_identity(path, "temporary F16 GGUF")
+
+
+def _convert_calibrated(request: ConversionRequest) -> dict[str, Any]:
+    initial_lineage = _load_lineage(request)
+    initial_tools = _toolchain_identity(request)
+    _mapping(initial_tools.get("imatrix"), "imatrix tool identity")
+    _rows, initial_material = _load_calibration_material(request)
+    merged_root = Path(request.training_run).resolve(strict=True) / "merged"
+    _regular_directory(merged_root, "validated merged HF tree")
+
+    output = request.output_bundle
+    staging = Path(tempfile.mkdtemp(prefix=_STAGING_MARKER, dir=output.parent)).resolve(strict=True)
+    staging_stat = staging.stat()
+    published = False
+    try:
+        os.chmod(staging, 0o700)
+        staging_stat = staging.stat()
+        if stat.S_IMODE(staging_stat.st_mode) != 0o700:
+            raise ConversionRefused("private calibrated staging directory mode changed")
+        artifact_root = staging / ARTIFACT_NAME
+        artifact_root.mkdir(mode=0o700)
+        log_root = staging / ".conversion-logs"
+        log_root.mkdir(mode=0o700)
+        f16_path = staging / F16_NAME
+        corpus_path = staging / CALIBRATION_CORPUS_NAME
+        imatrix_path = staging / IMATRIX_NAME
+        model_path = artifact_root / ENTRYPOINT
+        converter_path = Path(str(initial_tools["converter"]["path"]))
+        imatrix_tool = Path(str(initial_tools["imatrix"]["path"]))
+        quantizer_path = Path(str(initial_tools["quantizer"]["path"]))
+
+        rows, replayed_material = _load_calibration_material(request)
+        _same_identity(initial_material, replayed_material, "calibration source lineage")
+        corpus = _write_calibration_corpus(corpus_path, rows)
+        if stat.S_IMODE(corpus_path.stat().st_mode) != 0o600:
+            raise ConversionRefused("private calibration corpus mode changed")
+        if _content_identity(corpus_path, "private calibration corpus") != {
+            "bytes": corpus["bytes"],
+            "digest": corpus["digest"],
+        }:
+            raise ConversionRefused("private calibration corpus bytes changed")
+
+        convert_argv = (
+            str(converter_path),
+            str(merged_root),
+            "--outfile",
+            F16_NAME,
+            "--outtype",
+            "f16",
+        )
+        commands = [
+            _bounded_conversion_command(
+                "convert_f16",
+                convert_argv,
+                cwd=staging,
+                log_root=log_root,
+            )
+        ]
+        _fsync_path(f16_path)
+        f16 = _validate_f16_gguf(f16_path)
+
+        imatrix_argv = (
+            str(imatrix_tool),
+            "--offline",
+            "--model",
+            F16_NAME,
+            "--file",
+            CALIBRATION_CORPUS_NAME,
+            "--output",
+            IMATRIX_NAME,
+            "--output-format",
+            "gguf",
+            "--ctx-size",
+            str(CALIBRATION_CONTEXT_TOKENS),
+            "--chunks",
+            str(CALIBRATION_CHUNKS),
+            "--batch-size",
+            "512",
+            "--ubatch-size",
+            "512",
+            "--threads",
+            "1",
+            "--threads-batch",
+            "1",
+            "--device",
+            "none",
+            "--gpu-layers",
+            "0",
+            "--fit",
+            "off",
+            "--flash-attn",
+            "off",
+            "--no-ppl",
+            "--parse-special",
+            "--output-frequency",
+            str(CALIBRATION_CHUNKS + 1),
+            "--save-frequency",
+            "0",
+        )
+        commands.append(
+            _bounded_conversion_command(
+                "calibrate_imatrix",
+                imatrix_argv,
+                cwd=staging,
+                log_root=log_root,
+            )
+        )
+        _fsync_path(imatrix_path)
+        imatrix = _validate_imatrix_gguf(imatrix_path)
+        _same_identity(f16, _validate_f16_gguf(f16_path), "temporary F16 GGUF")
+        if _content_identity(corpus_path, "private calibration corpus") != {
+            "bytes": corpus["bytes"],
+            "digest": corpus["digest"],
+        }:
+            raise ConversionRefused("private calibration corpus changed during imatrix")
+
+        quantize_argv = (
+            str(quantizer_path),
+            "--imatrix",
+            IMATRIX_NAME,
+            F16_NAME,
+            f"{ARTIFACT_NAME}/{ENTRYPOINT}",
+            "Q4_K_M",
+            "1",
+        )
+        commands.append(
+            _bounded_conversion_command(
+                "quantize",
+                quantize_argv,
+                cwd=staging,
+                log_root=log_root,
+            )
+        )
+        _fsync_path(model_path)
+        model_metadata = _validate_calibrated_model_metadata(model_path)
+        if model_metadata["imatrix_entries_count"] != imatrix["entries_count"]:
+            raise ConversionRefused(
+                "calibrated model importance-matrix entry count differs from its input"
+            )
+        _same_identity(f16, _validate_f16_gguf(f16_path), "temporary F16 GGUF")
+        _same_identity(imatrix, _validate_imatrix_gguf(imatrix_path), "importance matrix GGUF")
+        if _content_identity(corpus_path, "private calibration corpus") != {
+            "bytes": corpus["bytes"],
+            "digest": corpus["digest"],
+        }:
+            raise ConversionRefused("private calibration corpus changed during quantization")
+
+        tree_digest = _official_tree_digest(artifact_root)
+        try:
+            artifact = gguf.artifact_identity(
+                artifact_root,
+                entrypoint=ENTRYPOINT,
+                expected_digest=tree_digest,
+                quantization="Q4_K_M",
+            )
+        except Exception as exc:
+            raise ConversionRefused(f"calibrated model artifact was refused: {exc}") from exc
+
+        replay_root = staging / "determinism-replay"
+        replay_root.mkdir(mode=0o700)
+        replay_artifact_root = replay_root / ARTIFACT_NAME
+        replay_artifact_root.mkdir(mode=0o700)
+        replay_log_root = replay_root / ".conversion-logs"
+        replay_log_root.mkdir(mode=0o700)
+        replay_f16_path = replay_root / F16_NAME
+        replay_corpus_path = replay_root / CALIBRATION_CORPUS_NAME
+        replay_imatrix_path = replay_root / IMATRIX_NAME
+        replay_model_path = replay_artifact_root / ENTRYPOINT
+        replay_rows, replay_material = _load_calibration_material(request)
+        _same_identity(initial_material, replay_material, "determinism replay source lineage")
+        replay_corpus = _write_calibration_corpus(replay_corpus_path, replay_rows)
+        _same_identity(corpus, replay_corpus, "rendered calibration corpus")
+        if stat.S_IMODE(replay_corpus_path.stat().st_mode) != 0o600:
+            raise ConversionRefused("private replay calibration corpus mode changed")
+        replay_commands = [
+            _bounded_conversion_command(
+                "convert_f16",
+                convert_argv,
+                cwd=replay_root,
+                log_root=replay_log_root,
+                cwd_role="determinism_replay",
+            )
+        ]
+        _fsync_path(replay_f16_path)
+        replay_f16 = _validate_f16_gguf(replay_f16_path)
+        _same_identity(f16, replay_f16, "determinism replay F16 GGUF")
+        replay_commands.append(
+            _bounded_conversion_command(
+                "calibrate_imatrix",
+                imatrix_argv,
+                cwd=replay_root,
+                log_root=replay_log_root,
+                cwd_role="determinism_replay",
+            )
+        )
+        _fsync_path(replay_imatrix_path)
+        replay_imatrix = _validate_imatrix_gguf(replay_imatrix_path)
+        _same_identity(imatrix, replay_imatrix, "determinism replay importance matrix")
+        replay_commands.append(
+            _bounded_conversion_command(
+                "quantize",
+                quantize_argv,
+                cwd=replay_root,
+                log_root=replay_log_root,
+                cwd_role="determinism_replay",
+            )
+        )
+        _fsync_path(replay_model_path)
+        replay_model_metadata = _validate_calibrated_model_metadata(replay_model_path)
+        if replay_model_metadata["imatrix_entries_count"] != replay_imatrix["entries_count"]:
+            raise ConversionRefused(
+                "determinism replay model importance-matrix entry count differs from its input"
+            )
+        if replay_model_metadata != model_metadata:
+            raise ConversionRefused("determinism replay model metadata differs")
+        replay_tree_digest = _official_tree_digest(replay_artifact_root)
+        replay_artifact = gguf.artifact_identity(
+            replay_artifact_root,
+            entrypoint=ENTRYPOINT,
+            expected_digest=replay_tree_digest,
+            quantization="Q4_K_M",
+        )
+        _same_artifact_identity(artifact, replay_artifact, "determinism replay artifact")
+        primary_model_identity = _content_identity(model_path, "primary calibrated model")
+        replay_model_identity = _content_identity(replay_model_path, "replay calibrated model")
+        _same_identity(
+            primary_model_identity,
+            replay_model_identity,
+            "determinism replay model bytes",
+        )
+        determinism_replay = {
+            "schema": "microtensor.code.gguf-determinism-replay.v1",
+            "commands": [dict(command) for command in replay_commands],
+            "f16_digest": replay_f16["digest"],
+            "imatrix_digest": replay_imatrix["digest"],
+            "entrypoint_digest": replay_model_identity["digest"],
+            "entrypoint_bytes": replay_model_identity["bytes"],
+            "artifact_tree_digest": replay_tree_digest,
+            "matches_primary": True,
+        }
+        load_manifest = _load_manifest("Q4_K_M", request.max_input_tokens)
+        provenance._validate_load_manifest(load_manifest, artifact)
+        calibration_receipt = _calibration_receipt(
+            material=initial_material,
+            toolchain=initial_tools,
+            commands=commands,
+            corpus=corpus,
+            f16=f16,
+            imatrix=imatrix,
+            artifact=artifact,
+            model_metadata=model_metadata,
+            load_manifest=load_manifest,
+            determinism_replay=determinism_replay,
+        )
+        load_raw = _atomic_json_in_staging(staging / LOAD_SPEC_NAME, load_manifest)
+        calibration_raw = _atomic_json_in_staging(
+            staging / CALIBRATION_RECEIPT_NAME,
+            calibration_receipt,
+        )
+        calibration_digest = candidate.digest_bytes(calibration_raw)
+        conversion_receipt = _calibrated_conversion_receipt(
+            lineage=initial_lineage,
+            toolchain=initial_tools,
+            commands=commands,
+            artifact=artifact,
+            load_manifest=load_manifest,
+            calibration_digest=calibration_digest,
+            determinism_replay=determinism_replay,
+        )
+        conversion_raw = _atomic_json_in_staging(staging / RECEIPT_NAME, conversion_receipt)
+        parsed_calibration = _strict_json_file(
+            staging / CALIBRATION_RECEIPT_NAME,
+            "staged calibration receipt",
+        )
+        parsed_conversion = _strict_json_file(
+            staging / RECEIPT_NAME,
+            "staged calibrated conversion receipt",
+        )
+        command_argv = (
+            ("convert_f16", convert_argv),
+            ("calibrate_imatrix", imatrix_argv),
+            ("quantize", quantize_argv),
+        )
+        _validate_calibrated_receipts(
+            calibration_receipt=parsed_calibration,
+            conversion_receipt=parsed_conversion,
+            calibration_digest=calibration_digest,
+            expected_calibration=calibration_receipt,
+            expected_conversion=conversion_receipt,
+            command_argv=command_argv,
+            replay_command_argv=command_argv,
+        )
+        _validate_captured_logs(log_root, commands)
+        _validate_captured_logs(replay_log_root, replay_commands)
+
+        final_lineage = _load_lineage(request)
+        final_tools = _toolchain_identity(request)
+        _final_rows, final_material = _load_calibration_material(request)
+        _same_identity(initial_lineage, final_lineage, "training lineage")
+        _same_identity(initial_tools, final_tools, "llama.cpp toolchain")
+        _same_identity(initial_material, final_material, "calibration source lineage")
+        _same_identity(f16, _validate_f16_gguf(f16_path), "temporary F16 GGUF")
+        _same_identity(imatrix, _validate_imatrix_gguf(imatrix_path), "importance matrix GGUF")
+        _same_identity(
+            replay_f16,
+            _validate_f16_gguf(replay_f16_path),
+            "determinism replay F16 GGUF",
+        )
+        _same_identity(
+            replay_imatrix,
+            _validate_imatrix_gguf(replay_imatrix_path),
+            "determinism replay importance matrix",
+        )
+        if model_metadata != _validate_calibrated_model_metadata(model_path):
+            raise ConversionRefused("calibrated model metadata changed")
+        if replay_model_metadata != _validate_calibrated_model_metadata(replay_model_path):
+            raise ConversionRefused("determinism replay model metadata changed")
+        staged_artifact = gguf.artifact_identity(
+            artifact_root,
+            entrypoint=ENTRYPOINT,
+            expected_digest=tree_digest,
+            quantization="Q4_K_M",
+        )
+        _same_artifact_identity(artifact, staged_artifact, "staged artifact")
+        final_replay_artifact = gguf.artifact_identity(
+            replay_artifact_root,
+            entrypoint=ENTRYPOINT,
+            expected_digest=replay_tree_digest,
+            quantization="Q4_K_M",
+        )
+        _same_artifact_identity(
+            replay_artifact,
+            final_replay_artifact,
+            "staged determinism replay artifact",
+        )
+        _same_identity(
+            primary_model_identity,
+            _content_identity(model_path, "primary calibrated model"),
+            "primary calibrated model bytes",
+        )
+        _same_identity(
+            replay_model_identity,
+            _content_identity(replay_model_path, "replay calibrated model"),
+            "replay calibrated model bytes",
+        )
+        if _content_identity(replay_corpus_path, "replay calibration corpus") != {
+            "bytes": replay_corpus["bytes"],
+            "digest": replay_corpus["digest"],
+        }:
+            raise ConversionRefused("replay calibration corpus changed during conversion")
+        _same_identity(
+            primary_model_identity,
+            replay_model_identity,
+            "determinism replay model bytes",
+        )
+        _validate_captured_logs(log_root, commands)
+        _validate_captured_logs(replay_log_root, replay_commands)
+        if (staging / LOAD_SPEC_NAME).read_bytes() != load_raw:
+            raise ConversionRefused("staged load specification changed")
+        if (staging / CALIBRATION_RECEIPT_NAME).read_bytes() != calibration_raw:
+            raise ConversionRefused("staged calibration receipt changed")
+        if (staging / RECEIPT_NAME).read_bytes() != conversion_raw:
+            raise ConversionRefused("staged calibrated conversion receipt changed")
+
+        transient_files = {
+            f"{ARTIFACT_NAME}/{ENTRYPOINT}",
+            F16_NAME,
+            CALIBRATION_CORPUS_NAME,
+            IMATRIX_NAME,
+            LOAD_SPEC_NAME,
+            CALIBRATION_RECEIPT_NAME,
+            RECEIPT_NAME,
+        }
+        transient_files.update(
+            f".conversion-logs/{command['name']}.{stream_name}"
+            for command in commands
+            for stream_name in ("stdout", "stderr")
+        )
+        transient_files.update(
+            {
+                f"determinism-replay/{F16_NAME}",
+                f"determinism-replay/{CALIBRATION_CORPUS_NAME}",
+                f"determinism-replay/{IMATRIX_NAME}",
+                f"determinism-replay/{ARTIFACT_NAME}/{ENTRYPOINT}",
+            }
+        )
+        transient_files.update(
+            f"determinism-replay/.conversion-logs/{command['name']}.{stream_name}"
+            for command in replay_commands
+            for stream_name in ("stdout", "stderr")
+        )
+        if _bundle_file_set(staging) != frozenset(transient_files):
+            raise ConversionRefused("calibrated staging contains unexpected files")
+        for private_path in (f16_path, corpus_path, imatrix_path):
+            if private_path.is_symlink() or not private_path.is_file():
+                raise ConversionRefused("private calibrated intermediate changed before cleanup")
+            private_path.unlink()
+        for log_path in sorted(log_root.iterdir()):
+            if log_path.is_symlink() or not log_path.is_file():
+                raise ConversionRefused("bounded command log changed before cleanup")
+            log_path.unlink()
+        log_root.rmdir()
+        for private_path in (
+            replay_f16_path,
+            replay_corpus_path,
+            replay_imatrix_path,
+            replay_model_path,
+        ):
+            if private_path.is_symlink() or not private_path.is_file():
+                raise ConversionRefused("determinism replay intermediate changed before cleanup")
+            private_path.unlink()
+        for log_path in sorted(replay_log_root.iterdir()):
+            if log_path.is_symlink() or not log_path.is_file():
+                raise ConversionRefused("determinism replay log changed before cleanup")
+            log_path.unlink()
+        replay_log_root.rmdir()
+        replay_artifact_root.rmdir()
+        replay_root.rmdir()
+        _fsync_path(artifact_root, directory=True)
+        _fsync_path(staging, directory=True)
+
+        expected_files = frozenset(
+            {
+                f"{ARTIFACT_NAME}/{ENTRYPOINT}",
+                LOAD_SPEC_NAME,
+                CALIBRATION_RECEIPT_NAME,
+                RECEIPT_NAME,
+            }
+        )
+        if _bundle_file_set(staging) != expected_files:
+            raise ConversionRefused("calibrated output bundle contains unexpected files")
+        _publish_directory_noreplace(staging, output)
+        published = True
+        _fsync_path(output.parent, directory=True)
+
+        final_artifact = gguf.artifact_identity(
+            output / ARTIFACT_NAME,
+            entrypoint=ENTRYPOINT,
+            expected_digest=tree_digest,
+            quantization="Q4_K_M",
+        )
+        _same_artifact_identity(artifact, final_artifact, "published artifact")
+        if model_metadata != _validate_calibrated_model_metadata(
+            output / ARTIFACT_NAME / ENTRYPOINT
+        ):
+            raise ConversionRefused("published calibrated model metadata changed")
+        if (output / LOAD_SPEC_NAME).read_bytes() != load_raw:
+            raise ConversionRefused("published load specification bytes changed")
+        if (output / CALIBRATION_RECEIPT_NAME).read_bytes() != calibration_raw:
+            raise ConversionRefused("published calibration receipt bytes changed")
+        if (output / RECEIPT_NAME).read_bytes() != conversion_raw:
+            raise ConversionRefused("published calibrated conversion receipt bytes changed")
+        published_load = _strict_json_file(output / LOAD_SPEC_NAME, "published load specification")
+        published_calibration = _strict_json_file(
+            output / CALIBRATION_RECEIPT_NAME,
+            "published calibration receipt",
+        )
+        published_conversion = _strict_json_file(
+            output / RECEIPT_NAME,
+            "published calibrated conversion receipt",
+        )
+        if published_load != load_manifest:
+            raise ConversionRefused("published load specification changed")
+        _validate_calibrated_receipts(
+            calibration_receipt=published_calibration,
+            conversion_receipt=published_conversion,
+            calibration_digest=calibration_digest,
+            expected_calibration=calibration_receipt,
+            expected_conversion=conversion_receipt,
+            command_argv=command_argv,
+            replay_command_argv=command_argv,
+        )
+        if _bundle_file_set(output) != expected_files:
+            raise ConversionRefused("published calibrated output bundle contains unexpected files")
+        return {
+            "output_bundle": str(output),
+            "artifact": str(output / ARTIFACT_NAME),
+            "artifact_digest": tree_digest,
+            "entrypoint": str(output / ARTIFACT_NAME / ENTRYPOINT),
+            "entrypoint_bytes": artifact["entrypoint"]["bytes"],
+            "quantization": "Q4_K_M",
+            "calibration_profile": CALIBRATION_PROFILE,
+            "max_input_tokens": request.max_input_tokens,
+            "load_spec": str(output / LOAD_SPEC_NAME),
+            "calibration_receipt": str(output / CALIBRATION_RECEIPT_NAME),
+            "conversion_receipt": str(output / RECEIPT_NAME),
+        }
+    finally:
+        if not published and os.path.lexists(staging):
+            try:
+                current = staging.lstat()
+                same_staging = (
+                    stat.S_ISDIR(current.st_mode)
+                    and not staging.is_symlink()
+                    and current.st_dev == staging_stat.st_dev
+                    and current.st_ino == staging_stat.st_ino
+                    and staging.name.startswith(_STAGING_MARKER)
+                    and staging.parent == output.parent
+                )
+            except OSError:
+                same_staging = False
+            if same_staging:
+                shutil.rmtree(staging)
+
+
 def convert(request: ConversionRequest) -> dict[str, Any]:
     """Run conversion and atomically publish a fully replayed output bundle."""
 
     request = _validate_request(request)
+    if _calibration_requested(request):
+        return _convert_calibrated(request)
     initial_lineage = _load_lineage(request)
     initial_tools = _toolchain_identity(request)
     merged_root = Path(request.training_run).resolve(strict=True) / "merged"
@@ -662,6 +2341,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-bundle", type=Path, required=True)
     parser.add_argument("--quantization", choices=sorted(SUPPORTED_QUANTIZATIONS), required=True)
     parser.add_argument("--max-input-tokens", type=int, required=True)
+    parser.add_argument("--calibration-profile", choices=(CALIBRATION_PROFILE,))
+    parser.add_argument("--calibration-current-dataset", type=Path)
+    parser.add_argument("--calibration-current-source-corpus", type=Path)
+    parser.add_argument("--imatrix-tool", type=Path)
     return parser
 
 
@@ -679,6 +2362,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_bundle=args.output_bundle,
             quantization=args.quantization,
             max_input_tokens=args.max_input_tokens,
+            calibration_profile=args.calibration_profile,
+            calibration_current_dataset=args.calibration_current_dataset,
+            calibration_current_source_corpus=args.calibration_current_source_corpus,
+            imatrix_tool=args.imatrix_tool,
         )
     )
     print(json.dumps(result, indent=2, sort_keys=True), flush=True)
