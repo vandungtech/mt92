@@ -1,0 +1,166 @@
+{
+  "artifact_use_policy": {
+    "conversion_runtime_closure_attested": false,
+    "historical_conversion_environment": "not_recorded",
+    "historical_conversion_path": "not_recorded",
+    "historical_converter_dependencies": "not_recorded",
+    "historical_converter_interpreter": "not_recorded",
+    "historical_quantizer_library_closure": "not_recorded",
+    "intended_use": "local_quality_isolation_only",
+    "limitation": "generic v4 conversion does not record its historical environment, PATH, Python interpreter, converter dependencies, or quantizer library closure; this artifact is permanently publication- and submission-ineligible",
+    "publication_authorized": false,
+    "publication_eligible": false,
+    "submission_authorized": false,
+    "submission_eligible": false
+  },
+  "candidate": {
+    "base_model": "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca",
+    "bundle": "/dev/shm/microtensor-code/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7-q4-m541-py311-bundle",
+    "entrypoint": "model.gguf",
+    "id": "qwen3-06b-historical7730-normalized-v7-q4-m541-py311",
+    "max_input_tokens": 541,
+    "quantization": "Q4_K_M",
+    "tokenizer_json": {
+      "bytes": 11422654,
+      "digest": "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    }
+  },
+  "conversion": {
+    "artifact": {
+      "entrypoint_bytes": 396704448,
+      "entrypoint_digest": "sha256:dd30372a9c844cc7924682557e003b0bd5473998f05a47bdeb243d15c4ffbb7f",
+      "tree_digest": "sha256:e8c58f7b6174316224941d50ae26565b674cb7f74b39b9ab60974dd32c5fb83e"
+    },
+    "calibration_receipt": null,
+    "load_spec": {
+      "bytes": 257,
+      "digest": "sha256:bbd5d02a6cb8dfc0ac9f045e86d9bf827a8bbb02eacfade684fdaff4fa77eeef"
+    },
+    "receipt": {
+      "bytes": 2651,
+      "digest": "sha256:4d129db0884873abdbd87f008b85caa90fbe52429fed522082b598679b8be0bf"
+    },
+    "schema": "microtensor.code.gguf-conversion.v4"
+  },
+  "diagnostic": {
+    "dataset": "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+    "diagnostic_jsonl": "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl",
+    "examples": 16,
+    "holdout": {
+      "bytes": 23390,
+      "digest": "sha256:8b07f781c6d160f752963b3a42f343c18d53a785d7b7cd09f472fdddbd2d7993"
+    },
+    "manifest": {
+      "bytes": 1070,
+      "digest": "sha256:6af4fe8952293339773e133a867d78e817d759a83138bc7400af98e2e04898ff"
+    },
+    "output_roots": [
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r1",
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r2",
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r3"
+    ],
+    "refs_digest": "sha256:73edc2a7674e0c718ea4ef7ea67c638b1a2c431320789b632aad5909309e01ee",
+    "source": {
+      "bytes": 152605,
+      "digest": "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5"
+    },
+    "source_corpus": "/dev/shm/microtensor-code/public-code-corpus-v1.json"
+  },
+  "gates": {
+    "failed_generations_maximum": 0,
+    "maximum_request_latency_ms": 31200,
+    "maximum_stream_pieces_per_request": 373,
+    "p95_ttft_ms_maximum": 5256,
+    "p95_ttft_ms_preferred": 4700,
+    "peak_rss_bytes_maximum": 1073741824,
+    "scorer_extracted_parseable_python_minimum": 16,
+    "scorer_extracted_residual_fences_maximum": 0,
+    "scorer_extracted_top_level_task_func_minimum": 16,
+    "successful_generations_minimum": 16
+  },
+  "runtime": {
+    "identity": {
+      "bytes": 21598,
+      "digest": "sha256:410a67afde79bf915e61e83c468d32331e2e14b3567eb77a33d4bddc3e8d4262"
+    },
+    "interpreter": {
+      "bytes": 8016832,
+      "digest": "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb",
+      "path": "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+      "resolved_path": "/usr/bin/python3.12"
+    }
+  },
+  "schema": "microtensor.code.gguf-diagnostic-experiment.v2",
+  "source": {
+    "commit": "e1df0222196401291c6488996cabbce6e9ff16a7",
+    "files": {
+      "training/code_candidate.py": {
+        "bytes": 41583,
+        "digest": "sha256:220e27023ee9c01560c0810d587dc417a70c92a314cb6874b97954b6ba8e5e0c"
+      },
+      "training/convert_code_gguf.py": {
+        "bytes": 155704,
+        "digest": "sha256:c6eed945e39ac0c2cc1009b1718612b11e5f1e5eedbabbd0cb764344e485ce9e"
+      },
+      "training/evaluate_code.py": {
+        "bytes": 51409,
+        "digest": "sha256:33cfc842b2c64ee6af4275752ff53317785012398f0c7a98402b3c0bc876d1b4"
+      },
+      "training/evaluate_code_gguf.py": {
+        "bytes": 75643,
+        "digest": "sha256:04a522b231a5d36373a7f6987ba1e7e133b5f95fb73b747cc0ceed41552d685b"
+      },
+      "training/historical_code_candidate.py": {
+        "bytes": 21984,
+        "digest": "sha256:2e8540486e53f6ae348c8d471fdce97284c1fef0c6a4254b67e35db8f141d00a"
+      },
+      "training/normalized_historical_code_candidate.py": {
+        "bytes": 35806,
+        "digest": "sha256:dcfc2e4d6ffd4a362b360392b5452e4dc8339e99a63053b7262f16aa28da75b1"
+      },
+      "training/train_code.py": {
+        "bytes": 54031,
+        "digest": "sha256:9d7d2837e0dccd1d8172652a4796d0ffa983cfcfa7a247f3c252fb59cc1ad37b"
+      }
+    },
+    "root": "/tmp/mt92-normalized-diagnostic-e1df022"
+  },
+  "status": "final",
+  "training_lineage": {
+    "base": "/dev/shm/microtensor-code/base-qwen3-06b",
+    "corpus_profile": "historical7730-normalized-v1",
+    "dataset_files": {
+      "excluded_refs": {
+        "bytes": 3184,
+        "digest": "sha256:03859ad7b36efe69a3a202ad203697490c50de810a2ff51e00d2abb32d96f35d"
+      },
+      "holdout": {
+        "bytes": 0,
+        "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "manifest": {
+        "bytes": 3209,
+        "digest": "sha256:6496d2b3e8aa125f430227061255f430d92fd667f07f2fa62c1e1c83de51ed5f"
+      },
+      "train": {
+        "bytes": 15681824,
+        "digest": "sha256:10fd0cc986802fc78e5ac39384fab1f109401a95fcec1af5e2ce9c3f0efa4e03"
+      }
+    },
+    "dataset_schema": "microtensor.code.prepared.historical-normalized.v1",
+    "merged_tree_digest": "sha256:e744aed3524ac7f10f9fc94c68caf38a5b56329f56c2962a679a882756bc0e5a",
+    "receipt": {
+      "bytes": 12184,
+      "digest": "sha256:961de88b82e1e54e574ee865f49dc33974914bda58a699a0cc38c3924d10578b"
+    },
+    "schema": "microtensor.code.training.v6",
+    "source_corpus": "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+    "source_identity": {
+      "bytes": 19023989,
+      "canonical_digest": "sha256:18fad3468cdd409b39a4786a982c098e1378445083e913e9a215669f0acbebdc",
+      "digest": "sha256:eb76adcaabdd11c9ce0005c22e50a8530397c32127515a4461b1340e77e2d4b5"
+    },
+    "training_dataset": "/dev/shm/microtensor-code/dataset-historical7730-normalized-seed92-h0-v7",
+    "training_run": "/dev/shm/microtensor-code/runs/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7"
+  }
+}
