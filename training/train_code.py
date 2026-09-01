@@ -25,11 +25,13 @@ from typing import Any, Final
 try:
     from training import code_candidate as candidate
     from training import historical_code_candidate as historical_candidate
+    from training import normalized_historical_code_candidate as normalized_historical_candidate
 except ModuleNotFoundError as exc:
     if exc.name != "training":
         raise
     import code_candidate as candidate  # type: ignore[no-redef]
     import historical_code_candidate as historical_candidate  # type: ignore[no-redef]
+    import normalized_historical_code_candidate as normalized_historical_candidate  # type: ignore[no-redef]
 
 
 LEGACY_SCHEMA: Final[str] = "microtensor.code.training.v1"
@@ -37,9 +39,11 @@ PREVIOUS_SCHEMA: Final[str] = "microtensor.code.training.v2"
 BEST_HOLDOUT_SCHEMA: Final[str] = "microtensor.code.training.v3"
 SCHEMA: Final[str] = "microtensor.code.training.v4"
 HISTORICAL_SCHEMA: Final[str] = "microtensor.code.training.v5"
+NORMALIZED_HISTORICAL_SCHEMA: Final[str] = "microtensor.code.training.v6"
 HOTKEY: Final[str] = "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
 DEFAULT_CORPUS_PROFILE: Final[str] = "bigcodebench94"
 HISTORICAL_CORPUS_PROFILE: Final[str] = historical_candidate.CORPUS_PROFILE
+NORMALIZED_HISTORICAL_CORPUS_PROFILE: Final[str] = normalized_historical_candidate.CORPUS_PROFILE
 DEVELOPMENT_RUN_KIND: Final[str] = "development_holdout"
 FINAL_ALL_PUBLIC_RUN_KIND: Final[str] = "final_all_public"
 DEVELOPMENT_QUALITY_CLAIM: Final[str] = (
@@ -125,11 +129,18 @@ def validate_run_kind(
         expected_total = candidate.EXPECTED_COUNTS["train"]
     elif corpus_profile == HISTORICAL_CORPUS_PROFILE:
         expected_total = historical_candidate.EXPECTED_COUNTS["train"]
+    elif corpus_profile == NORMALIZED_HISTORICAL_CORPUS_PROFILE:
+        expected_total = normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES
     else:
         raise TrainingRefused(f"unsupported training corpus profile {corpus_profile!r}")
     total = declared["train_examples"] + declared["holdout_examples"]
     if total != expected_total:
         raise TrainingRefused(f"prepared split must contain all {expected_total} public examples")
+    if corpus_profile == NORMALIZED_HISTORICAL_CORPUS_PROFILE and not final_all_public:
+        raise TrainingRefused(
+            f"{NORMALIZED_HISTORICAL_CORPUS_PROFILE} is approved only for the explicit "
+            f"{expected_total}/0 --final-all-public split"
+        )
     if final_all_public:
         if declared != {"train_examples": expected_total, "holdout_examples": 0}:
             raise TrainingRefused(
@@ -153,6 +164,8 @@ def no_holdout_diagnostics(
         claim = FINAL_ALL_PUBLIC_HOLDOUT_CLAIM
     elif corpus_profile == HISTORICAL_CORPUS_PROFILE:
         claim = historical_candidate.FINAL_ALL_PUBLIC_HOLDOUT_CLAIM
+    elif corpus_profile == NORMALIZED_HISTORICAL_CORPUS_PROFILE:
+        claim = normalized_historical_candidate.FINAL_ALL_PUBLIC_HOLDOUT_CLAIM
     else:
         raise TrainingRefused(f"unsupported training corpus profile {corpus_profile!r}")
     return {
@@ -487,7 +500,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument(
         "--dataset-profile",
-        choices=(DEFAULT_CORPUS_PROFILE, HISTORICAL_CORPUS_PROFILE),
+        choices=(
+            DEFAULT_CORPUS_PROFILE,
+            HISTORICAL_CORPUS_PROFILE,
+            NORMALIZED_HISTORICAL_CORPUS_PROFILE,
+        ),
         default=DEFAULT_CORPUS_PROFILE,
         help="explicit prepared-corpus contract; BigCodeBench-94 remains the default",
     )
@@ -495,7 +512,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--source-corpus",
         type=Path,
         default=None,
-        help="exact raw public response; required and replayed for historical8000",
+        help="exact raw public response; required and replayed for either historical profile",
     )
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument(
@@ -621,10 +638,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             ref_pattern = historical_candidate.REF_PATTERN
             receipt_schema = HISTORICAL_SCHEMA
             target_construction = historical_candidate.TRAINING_TARGET_CONSTRUCTION
+        elif args.dataset_profile == NORMALIZED_HISTORICAL_CORPUS_PROFILE:
+            if args.source_corpus is None:
+                raise TrainingRefused(
+                    f"{NORMALIZED_HISTORICAL_CORPUS_PROFILE} requires --source-corpus for exact "
+                    "normalization replay before training"
+                )
+            source_root = candidate.assert_tmpfs_path(args.source_corpus, must_exist=True)
+            train_rows, dataset_manifest = normalized_historical_candidate.load_prepared_dataset(
+                dataset_root,
+                source_root,
+            )
+            holdout_rows = normalized_historical_candidate.load_prepared_rows(
+                dataset_root / "holdout.jsonl", "holdout.jsonl"
+            )
+            source_corpus_identity = normalized_historical_candidate.source_corpus_identity()
+            corpus_version = normalized_historical_candidate.CORPUS_VERSION
+            ref_pattern = normalized_historical_candidate.REF_PATTERN
+            receipt_schema = NORMALIZED_HISTORICAL_SCHEMA
+            target_construction = normalized_historical_candidate.TRAINING_TARGET_CONSTRUCTION
         else:
             if args.source_corpus is not None:
                 raise TrainingRefused(
-                    "--source-corpus is reserved for the explicit historical8000 profile"
+                    "--source-corpus is reserved for the explicit historical profiles"
                 )
             train_rows, dataset_manifest = candidate.load_prepared_dataset(dataset_root)
             holdout_rows = candidate._load_prepared_rows(
@@ -656,6 +692,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if base_contract.model != candidate.QWEN3_BASE_MODEL:
                 raise TrainingRefused(
                     "historical8000 final training requires the pinned Qwen3-0.6B base"
+                )
+        elif args.dataset_profile == NORMALIZED_HISTORICAL_CORPUS_PROFILE:
+            if run_kind != FINAL_ALL_PUBLIC_RUN_KIND:
+                raise TrainingRefused(
+                    f"{NORMALIZED_HISTORICAL_CORPUS_PROFILE} training is approved only for the "
+                    f"exact {normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES}/0 final split"
+                )
+            if base_contract.model != candidate.QWEN3_BASE_MODEL:
+                raise TrainingRefused(
+                    f"{NORMALIZED_HISTORICAL_CORPUS_PROFILE} final training requires the pinned "
+                    "Qwen3-0.6B base"
                 )
         LoraConfig, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict = (
             peft_runtime
@@ -725,6 +772,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if run_kind == FINAL_ALL_PUBLIC_RUN_KIND
             else historical_candidate.DEVELOPMENT_QUALITY_CLAIM
         )
+    elif args.dataset_profile == NORMALIZED_HISTORICAL_CORPUS_PROFILE:
+        quality_claim = normalized_historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
     else:
         quality_claim = (
             FINAL_ALL_PUBLIC_QUALITY_CLAIM
@@ -746,7 +795,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "manifest_digest": candidate.digest_file(dataset_root / "manifest.json"),
             **(
                 {"source_corpus": source_corpus_identity}
-                if args.dataset_profile == HISTORICAL_CORPUS_PROFILE
+                if args.dataset_profile
+                in {
+                    HISTORICAL_CORPUS_PROFILE,
+                    NORMALIZED_HISTORICAL_CORPUS_PROFILE,
+                }
                 else {}
             ),
         },

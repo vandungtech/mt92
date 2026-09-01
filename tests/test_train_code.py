@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from training import code_candidate as candidate
 from training import historical_code_candidate as historical_candidate
+from training import normalized_historical_code_candidate as normalized_historical_candidate
 from training import train_code
 
 
@@ -150,6 +151,25 @@ class TrainCodeContractTests(unittest.TestCase):
         )
         self.assertEqual(historical_args.dataset_profile, "historical8000")
         self.assertEqual(historical_args.source_corpus, candidate.TMPFS_MOUNT / "historical.json")
+        normalized_args = train_code._parse_args(
+            [
+                "--dataset",
+                str(candidate.TMPFS_MOUNT / "historical-normalized"),
+                "--dataset-profile",
+                train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE,
+                "--source-corpus",
+                str(candidate.TMPFS_MOUNT / "historical.json"),
+                "--base",
+                str(candidate.TMPFS_MOUNT / "base"),
+                "--out",
+                str(candidate.TMPFS_MOUNT / "out"),
+            ]
+        )
+        self.assertEqual(
+            normalized_args.dataset_profile,
+            normalized_historical_candidate.CORPUS_PROFILE,
+        )
+        self.assertEqual(normalized_args.source_corpus, candidate.TMPFS_MOUNT / "historical.json")
 
     def test_run_kind_requires_explicit_exact_all_public_split(self) -> None:
         development_manifest = {"train_examples": 78, "holdout_examples": 16}
@@ -213,6 +233,52 @@ class TrainCodeContractTests(unittest.TestCase):
             train_code.no_holdout_diagnostics(train_code.HISTORICAL_CORPUS_PROFILE)["claim"],
             historical_candidate.FINAL_ALL_PUBLIC_HOLDOUT_CLAIM,
         )
+        normalized_manifest = {
+            "train_examples": normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_historical_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+        }
+        normalized_rows = [{}] * normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES
+        self.assertEqual(
+            train_code.validate_run_kind(
+                final_all_public=True,
+                dataset_manifest=normalized_manifest,
+                train_rows=normalized_rows,
+                holdout_rows=[],
+                corpus_profile=train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE,
+            ),
+            train_code.FINAL_ALL_PUBLIC_RUN_KIND,
+        )
+        self.assertEqual(
+            train_code.no_holdout_diagnostics(train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE)[
+                "claim"
+            ],
+            normalized_historical_candidate.FINAL_ALL_PUBLIC_HOLDOUT_CLAIM,
+        )
+        with self.assertRaisesRegex(train_code.TrainingRefused, "approved only"):
+            train_code.validate_run_kind(
+                final_all_public=False,
+                dataset_manifest={
+                    "train_examples": normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES - 1,
+                    "holdout_examples": 1,
+                },
+                train_rows=normalized_rows[:-1],
+                holdout_rows=[{}],
+                corpus_profile=train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE,
+            )
+        with self.assertRaisesRegex(
+            train_code.TrainingRefused,
+            str(normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES),
+        ):
+            train_code.validate_run_kind(
+                final_all_public=True,
+                dataset_manifest={
+                    "train_examples": len(normalized_rows) - 1,
+                    "holdout_examples": 0,
+                },
+                train_rows=normalized_rows[:-1],
+                holdout_rows=[],
+                corpus_profile=train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE,
+            )
 
     def test_requested_step_plan_is_exactly_sixty_updates(self) -> None:
         self.assertEqual(
@@ -343,6 +409,11 @@ class TrainCodeContractTests(unittest.TestCase):
         self.assertEqual(train_code.PREVIOUS_SCHEMA, "microtensor.code.training.v2")
         self.assertEqual(train_code.BEST_HOLDOUT_SCHEMA, "microtensor.code.training.v3")
         self.assertEqual(train_code.SCHEMA, "microtensor.code.training.v4")
+        self.assertEqual(train_code.HISTORICAL_SCHEMA, "microtensor.code.training.v5")
+        self.assertEqual(
+            train_code.NORMALIZED_HISTORICAL_SCHEMA,
+            "microtensor.code.training.v6",
+        )
 
     def test_tree_identity_binds_exact_regular_files(self) -> None:
         with tempfile.TemporaryDirectory(dir=candidate.TMPFS_MOUNT) as temporary:
