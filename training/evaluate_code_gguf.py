@@ -52,13 +52,34 @@ except ModuleNotFoundError as exc:
 
 
 SCHEMA: Final[str] = "microtensor.code.gguf-structural-evaluation.v1"
+SCHEMA_V2: Final[str] = "microtensor.code.gguf-structural-evaluation.v2"
+TRAINING_SCHEMA_V4: Final[str] = "microtensor.code.training.v4"
 TRAINING_SCHEMA_V5: Final[str] = "microtensor.code.training.v5"
 TRAINING_SCHEMA_V6: Final[str] = "microtensor.code.training.v6"
-SIGNED_RELEASE_VERSION: Final[str] = "0.3.0"
+SIGNED_RELEASE_VERSION: Final[str] = "0.3.2"
 SIGNED_MECHANISM_VERSION: Final[str] = "0.3.0"
 ENGINE_ADAPTER_VERSION: Final[str] = "0.2.0"
 LLAMA_CPP_VERSION: Final[str] = "0.3.35"
 BASE_MODEL: Final[str] = candidate.QWEN3_BASE_MODEL
+QWEN25_BASE_MODELS: Final[frozenset[str]] = frozenset(
+    {
+        candidate.RECOMMENDED_BASE_MODEL,
+        candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+    }
+)
+GGUF_ARCHITECTURE_BY_BASE_MODEL: Final[dict[str, str]] = {
+    candidate.RECOMMENDED_BASE_MODEL: "qwen2",
+    candidate.QWEN25_CODER_1_5B_BASE_MODEL: "qwen2",
+    candidate.QWEN3_BASE_MODEL: "qwen3",
+}
+CURRENT94_PUBLIC_CORPUS_BYTES: Final[int] = 152_605
+CURRENT94_PUBLIC_CORPUS_RAW_DIGEST: Final[str] = (
+    "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5"
+)
+CURRENT94_FINAL_TRAINING_QUALITY_CLAIM: Final[str] = (
+    "none: all 94 public examples were used for training; public code tests are withheld; "
+    "no holdout or execution pass@1 was measured"
+)
 THREADS: Final[int] = 1
 GPU_LAYERS: Final[int] = 0
 SEED: Final[int] = 0
@@ -86,6 +107,11 @@ NORMALIZED_LINEAGE_CLAIM: Final[str] = (
     "the exact current94 public holdout is a diagnostic lineage separate from optional "
     "normalized historical all-public training; no execution pass@1 is claimed"
 )
+CURRENT_OVERLAP_LINEAGE_CLAIM: Final[str] = (
+    "the exact current94 public diagnostic rows are a subset of the exact current94 94/0 "
+    "all-public training lineage; they are training-overlap structural and timing diagnostics "
+    "only, not holdout evidence or execution pass@1"
+)
 NO_TRAINING_LINEAGE_CLAIM: Final[str] = (
     "no training receipt was supplied; this evaluation binds GGUF bytes and public "
     "diagnostic inputs only"
@@ -98,7 +124,7 @@ SUPPORTED_QUANTIZATIONS: Final[dict[str, int]] = {
 }
 PINNED_RUNTIME_SOURCE_DIGESTS: Final[dict[str, str]] = {
     "microtensor.core.constants": (
-        "sha256:30152fef0685a8858148c13eb09c2691f4f05f1040af3b38458edafce32bfa80"
+        "sha256:42b653f317667b9d264c38dc42448a04c4a3244081fe80117077e574ecd0e87b"
     ),
     "microtensor.core.hashing": (
         "sha256:59951fc1f7063b2e0b538d8eb02917d91e09e821b9a6573ffa9214cb39c66afb"
@@ -467,9 +493,17 @@ def _skip_gguf_value(handle: Any, kind: int, file_size: int, label: str) -> None
     raise EvaluationRefused(f"GGUF {label} has unknown value type {kind}")
 
 
-def read_gguf_identity(path: Path) -> dict[str, Any]:
+def read_gguf_identity(
+    path: Path,
+    *,
+    expected_architecture: str = "qwen3",
+) -> dict[str, Any]:
     """Read only bounded GGUF metadata required to bind architecture/quantization."""
 
+    if expected_architecture not in frozenset(GGUF_ARCHITECTURE_BY_BASE_MODEL.values()):
+        raise EvaluationRefused(
+            f"unsupported expected GGUF architecture {expected_architecture!r}"
+        )
     source = _regular_file(path, "GGUF entrypoint")
     file_size = source.stat().st_size
     with source.open("rb") as handle:
@@ -507,8 +541,12 @@ def read_gguf_identity(path: Path) -> dict[str, Any]:
                     raise EvaluationRefused("GGUF general.file_type is not an integer")
             else:
                 _skip_gguf_value(handle, kind, file_size, key)
-    if found.get("general.architecture") != "qwen3":
-        raise EvaluationRefused("GGUF architecture is not the pinned qwen3 base architecture")
+    if found.get("general.architecture") != expected_architecture:
+        raise EvaluationRefused(
+            "GGUF architecture does not match the lineage-derived base architecture: "
+            f"expected {expected_architecture!r}, got "
+            f"{found.get('general.architecture')!r}"
+        )
     if "general.file_type" not in found:
         raise EvaluationRefused("GGUF declares no general.file_type")
     return {
@@ -538,6 +576,7 @@ def artifact_identity(
     entrypoint: str,
     expected_digest: str,
     quantization: str,
+    expected_architecture: str = "qwen3",
 ) -> dict[str, Any]:
     """Return the official tree digest plus every file identity."""
 
@@ -592,7 +631,10 @@ def artifact_identity(
     model = file_identity(model_path, "GGUF entrypoint")
     if model["bytes"] > candidate.MAX_SELECTED_ARTIFACT_BYTES:
         raise EvaluationRefused("GGUF exceeds the local selected-artifact byte ceiling")
-    header = read_gguf_identity(model_path)
+    header = read_gguf_identity(
+        model_path,
+        expected_architecture=expected_architecture,
+    )
     expected_file_type = SUPPORTED_QUANTIZATIONS[quantization]
     if header["file_type"] != expected_file_type:
         raise EvaluationRefused(
@@ -669,15 +711,23 @@ def validate_explicit_diagnostic_rows(
     return rows
 
 
-def _replay_current94(
+def _project_current94(
     payload: Mapping[str, Any],
-    manifest: Mapping[str, Any],
+    *,
+    seed: int,
+    holdout_examples: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project the pinned public tasks without executing their code."""
+
     tasks = list(_sequence(payload.get("tasks"), "public corpus tasks"))
-    seed = manifest.get("seed")
-    holdout_examples = manifest.get("holdout_examples")
-    if seed != DIAGNOSTIC_SEED or holdout_examples != DIAGNOSTIC_HOLDOUT_EXAMPLES:
-        raise EvaluationRefused("diagnostic split is not the exact seed-92 78/16 split")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise EvaluationRefused("current94 projection seed must be an integer")
+    if (
+        isinstance(holdout_examples, bool)
+        or not isinstance(holdout_examples, int)
+        or not 0 <= holdout_examples < candidate.EXPECTED_COUNTS["train"]
+    ):
+        raise EvaluationRefused("current94 projection holdout count is invalid")
     ranked = sorted(
         tasks,
         key=lambda row: (
@@ -698,6 +748,21 @@ def _replay_current94(
         }
         (expected_holdout if task["ref"] in heldout_refs else expected_train).append(record)
     return expected_train, expected_holdout
+
+
+def _replay_current94(
+    payload: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    seed = manifest.get("seed")
+    holdout_examples = manifest.get("holdout_examples")
+    if seed != DIAGNOSTIC_SEED or holdout_examples != DIAGNOSTIC_HOLDOUT_EXAMPLES:
+        raise EvaluationRefused("diagnostic split is not the exact seed-92 78/16 split")
+    return _project_current94(
+        payload,
+        seed=seed,
+        holdout_examples=holdout_examples,
+    )
 
 
 def load_public_diagnostic(
@@ -776,6 +841,201 @@ def load_public_diagnostic(
         "public_only": True,
         "hidden_or_scored_tests_accessed": False,
     }
+
+
+def validate_v4_receipt_header(
+    payload: Any,
+    *,
+    training_manifest: Mapping[str, Any],
+    training_manifest_digest: str,
+) -> dict[str, Any]:
+    """Validate an exact current94 final-training header before deep validation."""
+
+    metadata = _mapping(payload, "training metadata")
+    _exact_keys(metadata, TRAINING_METADATA_KEYS, "training metadata")
+    base_model = metadata.get("base_model")
+    if not isinstance(base_model, str) or base_model not in QWEN25_BASE_MODELS:
+        raise EvaluationRefused("v4 training metadata does not bind a pinned Qwen2.5 base")
+    required = {
+        "schema": TRAINING_SCHEMA_V4,
+        "status": "complete",
+        "run_kind": "final_all_public",
+        "track": candidate.TRACK,
+        "hardware_class": candidate.HARDWARE_CLASS,
+        "corpus_version": candidate.CORPUS_VERSION,
+        "quality_claim": CURRENT94_FINAL_TRAINING_QUALITY_CLAIM,
+    }
+    for key, expected in required.items():
+        if metadata.get(key) != expected:
+            raise EvaluationRefused(f"v4 training metadata field {key!r} changed")
+    dataset = _mapping(metadata.get("dataset"), "v4 training dataset")
+    _exact_keys(
+        dataset,
+        frozenset({"manifest", "manifest_digest"}),
+        "v4 training dataset",
+    )
+    if dataset.get("manifest") != training_manifest:
+        raise EvaluationRefused("v4 training metadata does not bind the prepared manifest")
+    if dataset.get("manifest_digest") != training_manifest_digest:
+        raise EvaluationRefused("v4 training metadata prepared-manifest digest changed")
+    manifest_required = {
+        "schema": candidate.DATASET_SCHEMA,
+        "track": candidate.TRACK,
+        "hardware_class": candidate.HARDWARE_CLASS,
+        "corpus_version": candidate.CORPUS_VERSION,
+        "corpus_canonical_digest": candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+        "split_algorithm": candidate.SPLIT_ALGORITHM,
+        "seed": DIAGNOSTIC_SEED,
+        "train_examples": candidate.EXPECTED_COUNTS["train"],
+        "holdout_examples": 0,
+        "target_construction": "inputs.code_prompt + gold",
+        "quality_claim": candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+    }
+    for key, expected in manifest_required.items():
+        if training_manifest.get(key) != expected:
+            raise EvaluationRefused(f"v4 training manifest field {key!r} changed")
+    return dict(metadata)
+
+
+def load_v4_training_lineage(
+    run: Path,
+    dataset: Path,
+    source_corpus: Path,
+    base: Path,
+) -> tuple[dict[str, Any], tuple[ModuleType, ...]]:
+    """Replay exact current94 source bytes and deeply validate one v4 run."""
+
+    run_root = candidate.assert_tmpfs_path(run, must_exist=True)
+    dataset_root = candidate.assert_tmpfs_path(dataset, must_exist=True)
+    source_root = candidate.assert_tmpfs_path(source_corpus, must_exist=True)
+    base_root = candidate.assert_tmpfs_path(base, must_exist=True)
+    if run_root.is_symlink() or not run_root.is_dir():
+        raise EvaluationRefused("training run must be a regular non-symlink directory")
+    try:
+        payload, source_validation = candidate.load_public_corpus(source_root)
+        train_rows, manifest = candidate.load_prepared_dataset(dataset_root)
+        strict_manifest, _manifest_raw = _read_strict_json(
+            dataset_root / "manifest.json",
+            "v4 prepared manifest",
+            maximum_bytes=MAX_JSON_RECEIPT_BYTES,
+        )
+        if strict_manifest != manifest:
+            raise EvaluationRefused("v4 prepared manifest strict replay changed")
+        holdout_rows = candidate._load_prepared_rows(
+            dataset_root / "holdout.jsonl",
+            "holdout.jsonl",
+        )
+        if (len(train_rows), len(holdout_rows)) != (
+            candidate.EXPECTED_COUNTS["train"],
+            0,
+        ):
+            raise EvaluationRefused("v4 training source replay is not exactly 94/0")
+        expected_train, expected_holdout = _project_current94(
+            payload,
+            seed=DIAGNOSTIC_SEED,
+            holdout_examples=0,
+        )
+        if train_rows != expected_train or holdout_rows != expected_holdout:
+            raise EvaluationRefused("v4 prepared training dataset is not an exact source replay")
+
+        manifest_identity = file_identity(
+            dataset_root / "manifest.json",
+            "v4 prepared manifest",
+        )
+        train_identity = file_identity(
+            dataset_root / "train.jsonl",
+            "v4 prepared train JSONL",
+        )
+        holdout_identity = file_identity(
+            dataset_root / "holdout.jsonl",
+            "v4 prepared holdout JSONL",
+        )
+        source_identity = file_identity(source_root, "current94 public source corpus")
+        if (
+            source_identity["bytes"] != CURRENT94_PUBLIC_CORPUS_BYTES
+            or source_identity["digest"] != CURRENT94_PUBLIC_CORPUS_RAW_DIGEST
+        ):
+            raise EvaluationRefused("v4 public source corpus differs from the exact raw response")
+        if manifest.get("source_file_digest") != source_identity["digest"]:
+            raise EvaluationRefused("v4 prepared dataset does not bind the supplied source bytes")
+        if train_identity["digest"] != manifest.get("train_file_digest"):
+            raise EvaluationRefused("v4 prepared train identity differs from its manifest")
+        if holdout_identity["digest"] != manifest.get("holdout_file_digest"):
+            raise EvaluationRefused("v4 prepared holdout identity differs from its manifest")
+
+        metadata_path = run_root / "training_metadata.json"
+        metadata, _raw = _read_strict_json(
+            metadata_path,
+            "v4 training metadata",
+            maximum_bytes=MAX_JSON_RECEIPT_BYTES,
+        )
+        validated_header = validate_v4_receipt_header(
+            metadata,
+            training_manifest=manifest,
+            training_manifest_digest=str(manifest_identity["digest"]),
+        )
+        base_model = str(validated_header["base_model"])
+        base_identity = candidate.verify_base_snapshot(
+            base_root,
+            expected_model=base_model,
+        )
+        evaluate_code = importlib.import_module("training.evaluate_code")
+        train_code = importlib.import_module("training.train_code")
+        if getattr(train_code, "SCHEMA", None) != TRAINING_SCHEMA_V4:
+            raise EvaluationRefused("shared trainer no longer recognizes the v4 receipt")
+        model_identity = evaluate_code._load_training_run(
+            run_root / "merged",
+            dataset_manifest=manifest,
+            dataset_manifest_digest=str(manifest_identity["digest"]),
+            base_identity=base_identity,
+        )
+        receipt_identity = file_identity(metadata_path, "v4 training metadata")
+        deep_receipt_identity = _mapping(
+            model_identity.get("training_metadata"),
+            "v4 deep-validated training metadata identity",
+        )
+        if not _same_content_identity(receipt_identity, deep_receipt_identity):
+            raise EvaluationRefused(
+                "v4 training metadata identity differs from the shared deep validation"
+            )
+    except (
+        candidate.CandidateError,
+        EvaluationRefused,
+        OSError,
+        ValueError,
+    ):
+        raise
+    except Exception as exc:
+        raise EvaluationRefused(f"v4 training-lineage validation failed: {exc}") from exc
+
+    return (
+        {
+            "status": "provided_and_validated",
+            "schema": TRAINING_SCHEMA_V4,
+            "receipt": receipt_identity,
+            "source_corpus": {
+                "file": source_identity,
+                "corpus_version": candidate.CORPUS_VERSION,
+                "canonical_bytes": source_validation.canonical_bytes,
+                "canonical_digest": source_validation.canonical_digest,
+                "task_count": source_validation.task_count,
+                "refs_digest": source_validation.refs_digest,
+            },
+            "prepared_dataset": {
+                "manifest": manifest_identity,
+                "train": train_identity,
+                "holdout": holdout_identity,
+                "manifest_payload": manifest,
+            },
+            "base_snapshot": base_identity,
+            "run": model_identity,
+            "conversion_binding_claim": (
+                "the training receipt binds the merged HF tree; this evaluator separately "
+                "binds final GGUF bytes and does not claim a conversion proof"
+            ),
+        },
+        (evaluate_code, train_code),
+    )
 
 
 def validate_v5_receipt_header(
@@ -1146,11 +1406,59 @@ def load_training_lineage(
         maximum_bytes=MAX_JSON_RECEIPT_BYTES,
     )
     schema = _mapping(manifest, "training prepared manifest").get("schema")
+    if schema == candidate.DATASET_SCHEMA:
+        return load_v4_training_lineage(run, dataset, source_corpus, base)
     if schema == historical_candidate.DATASET_SCHEMA:
         return load_v5_training_lineage(run, dataset, source_corpus, base)
     if schema == normalized_historical_candidate.DATASET_SCHEMA:
         return load_v6_training_lineage(run, dataset, source_corpus, base)
     raise EvaluationRefused("training prepared manifest schema is unsupported")
+
+
+def lineage_evaluation_contract(training_lineage: Mapping[str, Any]) -> dict[str, str]:
+    """Derive model, GGUF architecture, output schema, and claim from validated lineage."""
+
+    status = training_lineage.get("status")
+    if status == "not_provided":
+        return {
+            "base_model": BASE_MODEL,
+            "gguf_architecture": GGUF_ARCHITECTURE_BY_BASE_MODEL[BASE_MODEL],
+            "evaluation_schema": SCHEMA,
+            "lineage_claim": LINEAGE_CLAIM,
+        }
+    if status != "provided_and_validated":
+        raise EvaluationRefused("training lineage status is unsupported")
+    schema = training_lineage.get("schema")
+    base_snapshot = _mapping(training_lineage.get("base_snapshot"), "training base snapshot")
+    base_model = base_snapshot.get("base_model")
+    if not isinstance(base_model, str):
+        raise EvaluationRefused("training lineage has no exact base-model identity")
+    architecture = GGUF_ARCHITECTURE_BY_BASE_MODEL.get(base_model)
+    if architecture is None:
+        raise EvaluationRefused("training lineage base model has no pinned GGUF architecture")
+    if schema == TRAINING_SCHEMA_V4:
+        if base_model not in QWEN25_BASE_MODELS or architecture != "qwen2":
+            raise EvaluationRefused("v4 lineage is not a pinned Qwen2.5/qwen2 contract")
+        return {
+            "base_model": base_model,
+            "gguf_architecture": architecture,
+            "evaluation_schema": SCHEMA_V2,
+            "lineage_claim": CURRENT_OVERLAP_LINEAGE_CLAIM,
+        }
+    if schema == TRAINING_SCHEMA_V5:
+        lineage_claim = LINEAGE_CLAIM
+    elif schema == TRAINING_SCHEMA_V6:
+        lineage_claim = NORMALIZED_LINEAGE_CLAIM
+    else:
+        raise EvaluationRefused("validated training lineage schema is unsupported")
+    if base_model != BASE_MODEL or architecture != "qwen3":
+        raise EvaluationRefused("legacy v5/v6 lineage is not the pinned Qwen3/qwen3 contract")
+    return {
+        "base_model": base_model,
+        "gguf_architecture": architecture,
+        "evaluation_schema": SCHEMA,
+        "lineage_claim": lineage_claim,
+    }
 
 
 def _distribution_identity(name: str) -> dict[str, Any]:
@@ -1231,7 +1539,7 @@ def validate_engine_contract(
     """Reject any runtime that is not the exact signed deterministic contract."""
 
     if getattr(constants_module, "RELEASE_VERSION", None) != SIGNED_RELEASE_VERSION:
-        raise EvaluationRefused("Microtensor release is not signed v0.3.0")
+        raise EvaluationRefused("Microtensor release is not signed v0.3.2")
     if getattr(constants_module, "MECHANISM_VERSION", None) != SIGNED_MECHANISM_VERSION:
         raise EvaluationRefused("Microtensor mechanism is not signed v0.3.0")
     if getattr(microtensor_module, "__mechanism__", None) != SIGNED_MECHANISM_VERSION:
@@ -1695,11 +2003,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         else:
             training_lineage, extra_tool_modules = load_training_lineage(*training_arguments)
+        evaluation_contract = lineage_evaluation_contract(training_lineage)
         artifact = artifact_identity(
             args.artifact,
             entrypoint=args.entrypoint,
             expected_digest=args.artifact_digest,
             quantization=args.quantization,
+            expected_architecture=evaluation_contract["gguf_architecture"],
         )
         runtime = load_signed_runtime(extra_tool_modules=extra_tool_modules)
         load_manifest = runtime.load_manifest_type(
@@ -1708,7 +2018,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             entrypoint=args.entrypoint,
             max_input={"tokens": args.max_input_tokens},
             preprocessing={"tokenizer": "tokenizer.json"},
-            base_model=BASE_MODEL,
+            base_model=evaluation_contract["base_model"],
         )
         load_manifest_payload = load_manifest.to_dict()
         configuration = {
@@ -1717,6 +2027,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "artifact_digest": args.artifact_digest,
             "diagnostic_refs_digest": diagnostic_lineage["diagnostic_jsonl"]["refs_digest"],
         }
+        if evaluation_contract["evaluation_schema"] == SCHEMA_V2:
+            configuration["expected_gguf_architecture"] = evaluation_contract[
+                "gguf_architecture"
+            ]
         configuration_digest = candidate.digest_bytes(candidate.canonical_json_bytes(configuration))
     except (
         candidate.CandidateError,
@@ -1774,6 +2088,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             after_training_lineage, after_tool_modules = load_training_lineage(*training_arguments)
             if after_training_lineage != training_lineage:
                 raise EvaluationRefused("training lineage changed during evaluation")
+            if lineage_evaluation_contract(after_training_lineage) != evaluation_contract:
+                raise EvaluationRefused("lineage-derived evaluation contract changed")
             if tuple(module.__name__ for module in after_tool_modules) != tuple(
                 module.__name__ for module in extra_tool_modules
             ):
@@ -1783,6 +2099,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             entrypoint=args.entrypoint,
             expected_digest=args.artifact_digest,
             quantization=args.quantization,
+            expected_architecture=evaluation_contract["gguf_architecture"],
         )
         if after_artifact != artifact:
             raise EvaluationRefused("artifact changed during evaluation")
@@ -1793,7 +2110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         finished_at_unix_ns = time.time_ns()
         results_identity = file_identity(result_path, "GGUF results JSONL")
         summary = {
-            "schema": SCHEMA,
+            "schema": evaluation_contract["evaluation_schema"],
             "status": (
                 "complete"
                 if all(row["ok"] is True for row in result_rows)
@@ -1801,14 +2118,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             "track": candidate.TRACK,
             "hardware_class": candidate.HARDWARE_CLASS,
-            "base_model": BASE_MODEL,
+            "base_model": evaluation_contract["base_model"],
             "quality_claim": QUALITY_CLAIM,
             "runtime_claim": RUNTIME_CLAIM,
-            "lineage_claim": (
-                NORMALIZED_LINEAGE_CLAIM
-                if training_lineage.get("schema") == TRAINING_SCHEMA_V6
-                else LINEAGE_CLAIM
-            ),
+            "lineage_claim": evaluation_contract["lineage_claim"],
             "safety_contract": {
                 "generated_code_imported": False,
                 "generated_code_executed": False,

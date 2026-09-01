@@ -64,7 +64,7 @@ class _Engine:
         return self.response
 
 
-def _gguf(file_type: int) -> bytes:
+def _gguf(file_type: int, *, architecture: str = "qwen3") -> bytes:
     def string(value: str) -> bytes:
         encoded = value.encode("utf-8")
         return struct.pack("<Q", len(encoded)) + encoded
@@ -77,7 +77,7 @@ def _gguf(file_type: int) -> bytes:
             struct.pack("<Q", 2),
             string("general.architecture"),
             struct.pack("<I", 8),
-            string("qwen3"),
+            string(architecture),
             string("general.file_type"),
             struct.pack("<I", 4),
             struct.pack("<I", file_type),
@@ -155,6 +155,27 @@ class ArtifactIdentityTests(unittest.TestCase):
             self.assertEqual(identity["tree_digest"], _tree_digest(root))
             self.assertEqual(identity["entrypoint"]["gguf"]["architecture"], "qwen3")
             self.assertEqual(identity["entrypoint"]["gguf"]["file_type"], 7)
+
+    def test_qwen2_header_requires_the_lineage_derived_architecture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "model.gguf").write_bytes(_gguf(17, architecture="qwen2"))
+            identity = evaluator.artifact_identity(
+                root,
+                entrypoint="model.gguf",
+                expected_digest=_tree_digest(root),
+                quantization="Q5_K_M",
+                expected_architecture="qwen2",
+            )
+            self.assertEqual(identity["entrypoint"]["gguf"]["architecture"], "qwen2")
+            with self.assertRaisesRegex(evaluator.EvaluationRefused, "lineage-derived"):
+                evaluator.artifact_identity(
+                    root,
+                    entrypoint="model.gguf",
+                    expected_digest=_tree_digest(root),
+                    quantization="Q5_K_M",
+                    expected_architecture="qwen3",
+                )
 
     def test_digest_and_quantization_mismatches_are_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -287,6 +308,95 @@ class LineageAndReceiptTests(unittest.TestCase):
             evaluator.validate_explicit_diagnostic_rows(list(reversed(rows)), rows)
         with self.assertRaisesRegex(evaluator.EvaluationRefused, "incomplete"):
             evaluator.validate_explicit_diagnostic_rows(rows[:-1], rows[:-1])
+
+    def test_current94_projection_supports_exact_final_94_zero_without_execution(self) -> None:
+        tasks = [
+            {
+                "gold": f"    return {index}\n",
+                "inputs": {"code_prompt": "def task_func():\n"},
+                "max_output_tokens": 1024,
+                "prompt": f"raw prompt {index}",
+                "ref": f"bigcodebench-{index}",
+            }
+            for index in range(94)
+        ]
+        train, holdout = evaluator._project_current94(
+            {"tasks": tasks},
+            seed=92,
+            holdout_examples=0,
+        )
+        self.assertEqual(len(train), 94)
+        self.assertEqual(holdout, [])
+        self.assertEqual(train[0]["completion"], "def task_func():\n    return 0\n")
+
+    def test_v4_header_binds_current94_final_split_and_qwen25(self) -> None:
+        manifest: dict[str, object] = {
+            "schema": candidate.DATASET_SCHEMA,
+            "track": candidate.TRACK,
+            "hardware_class": candidate.HARDWARE_CLASS,
+            "corpus_version": candidate.CORPUS_VERSION,
+            "corpus_canonical_digest": candidate.PUBLIC_CORPUS_CANONICAL_DIGEST,
+            "split_algorithm": candidate.SPLIT_ALGORITHM,
+            "seed": 92,
+            "train_examples": 94,
+            "holdout_examples": 0,
+            "target_construction": "inputs.code_prompt + gold",
+            "quality_claim": candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        }
+        manifest_digest = "sha256:" + "4" * 64
+        metadata = {key: None for key in evaluator.TRAINING_METADATA_KEYS}
+        metadata.update(
+            {
+                "schema": evaluator.TRAINING_SCHEMA_V4,
+                "status": "complete",
+                "run_kind": "final_all_public",
+                "track": candidate.TRACK,
+                "hardware_class": candidate.HARDWARE_CLASS,
+                "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                "corpus_version": candidate.CORPUS_VERSION,
+                "quality_claim": evaluator.CURRENT94_FINAL_TRAINING_QUALITY_CLAIM,
+                "dataset": {
+                    "manifest": manifest,
+                    "manifest_digest": manifest_digest,
+                },
+            }
+        )
+        self.assertEqual(
+            evaluator.validate_v4_receipt_header(
+                metadata,
+                training_manifest=manifest,
+                training_manifest_digest=manifest_digest,
+            ),
+            metadata,
+        )
+
+        wrong_base = copy.deepcopy(metadata)
+        wrong_base["base_model"] = candidate.QWEN3_BASE_MODEL
+        with self.assertRaisesRegex(evaluator.EvaluationRefused, "Qwen2.5"):
+            evaluator.validate_v4_receipt_header(
+                wrong_base,
+                training_manifest=manifest,
+                training_manifest_digest=manifest_digest,
+            )
+        malformed_base = copy.deepcopy(metadata)
+        malformed_base["base_model"] = [candidate.QWEN25_CODER_1_5B_BASE_MODEL]
+        with self.assertRaisesRegex(evaluator.EvaluationRefused, "Qwen2.5"):
+            evaluator.validate_v4_receipt_header(
+                malformed_base,
+                training_manifest=manifest,
+                training_manifest_digest=manifest_digest,
+            )
+
+        wrong_split = copy.deepcopy(manifest)
+        wrong_split["train_examples"] = 78
+        coordinated = copy.deepcopy(metadata)
+        coordinated["dataset"]["manifest"] = wrong_split
+        with self.assertRaisesRegex(evaluator.EvaluationRefused, "train_examples"):
+            evaluator.validate_v4_receipt_header(
+                coordinated,
+                training_manifest=wrong_split,
+                training_manifest_digest=manifest_digest,
+            )
 
     def test_v5_historical_header_is_accepted_and_wrong_schema_is_refused(self) -> None:
         manifest: dict[str, object] = {
@@ -425,6 +535,24 @@ class LineageAndReceiptTests(unittest.TestCase):
             arguments = (run, dataset, source, base)
 
             dataset.joinpath("manifest.json").write_bytes(
+                candidate.canonical_json_bytes({"schema": candidate.DATASET_SCHEMA})
+            )
+            v4_result = ({"schema": evaluator.TRAINING_SCHEMA_V4}, ())
+            with (
+                mock.patch.object(
+                    evaluator,
+                    "load_v4_training_lineage",
+                    return_value=v4_result,
+                ) as load_v4,
+                mock.patch.object(evaluator, "load_v5_training_lineage") as load_v5,
+                mock.patch.object(evaluator, "load_v6_training_lineage") as load_v6,
+            ):
+                self.assertEqual(evaluator.load_training_lineage(*arguments), v4_result)
+                load_v4.assert_called_once_with(*arguments)
+                load_v5.assert_not_called()
+                load_v6.assert_not_called()
+
+            dataset.joinpath("manifest.json").write_bytes(
                 candidate.canonical_json_bytes(
                     {"schema": normalized_historical_candidate.DATASET_SCHEMA}
                 )
@@ -468,6 +596,46 @@ class LineageAndReceiptTests(unittest.TestCase):
             with self.assertRaisesRegex(evaluator.EvaluationRefused, "repeats JSON key"):
                 evaluator.load_training_lineage(*arguments)
 
+    def test_lineage_contract_is_dynamic_without_changing_legacy_meanings(self) -> None:
+        current = evaluator.lineage_evaluation_contract(
+            {
+                "status": "provided_and_validated",
+                "schema": evaluator.TRAINING_SCHEMA_V4,
+                "base_snapshot": {
+                    "base_model": candidate.QWEN25_CODER_1_5B_BASE_MODEL,
+                },
+            }
+        )
+        self.assertEqual(current["base_model"], candidate.QWEN25_CODER_1_5B_BASE_MODEL)
+        self.assertEqual(current["gguf_architecture"], "qwen2")
+        self.assertEqual(current["evaluation_schema"], evaluator.SCHEMA_V2)
+        self.assertEqual(current["lineage_claim"], evaluator.CURRENT_OVERLAP_LINEAGE_CLAIM)
+
+        for schema, claim in (
+            (evaluator.TRAINING_SCHEMA_V5, evaluator.LINEAGE_CLAIM),
+            (evaluator.TRAINING_SCHEMA_V6, evaluator.NORMALIZED_LINEAGE_CLAIM),
+        ):
+            with self.subTest(schema=schema):
+                legacy = evaluator.lineage_evaluation_contract(
+                    {
+                        "status": "provided_and_validated",
+                        "schema": schema,
+                        "base_snapshot": {"base_model": candidate.QWEN3_BASE_MODEL},
+                    }
+                )
+                self.assertEqual(legacy["base_model"], candidate.QWEN3_BASE_MODEL)
+                self.assertEqual(legacy["gguf_architecture"], "qwen3")
+                self.assertEqual(legacy["evaluation_schema"], evaluator.SCHEMA)
+                self.assertEqual(legacy["lineage_claim"], claim)
+
+        mismatched = {
+            "status": "provided_and_validated",
+            "schema": evaluator.TRAINING_SCHEMA_V4,
+            "base_snapshot": {"base_model": candidate.QWEN3_BASE_MODEL},
+        }
+        with self.assertRaisesRegex(evaluator.EvaluationRefused, "Qwen2.5"):
+            evaluator.lineage_evaluation_contract(mismatched)
+
     def test_optional_training_cli_is_all_or_none(self) -> None:
         empty = Namespace(
             training_run=None,
@@ -489,7 +657,7 @@ class LineageAndReceiptTests(unittest.TestCase):
 class RuntimeAndSummaryTests(unittest.TestCase):
     def test_exact_signed_runtime_markers_are_required(self) -> None:
         microtensor = SimpleNamespace(__mechanism__="0.3.0")
-        constants = SimpleNamespace(RELEASE_VERSION="0.3.0", MECHANISM_VERSION="0.3.0")
+        constants = SimpleNamespace(RELEASE_VERSION="0.3.2", MECHANISM_VERSION="0.3.0")
         info = SimpleNamespace(name="llama-cpp", version="0.2.0", deterministic=True)
         gguf = SimpleNamespace(
             THREADS=1,
