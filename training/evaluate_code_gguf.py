@@ -42,15 +42,18 @@ from typing import Any, Final
 try:
     from training import code_candidate as candidate
     from training import historical_code_candidate as historical_candidate
+    from training import normalized_historical_code_candidate as normalized_historical_candidate
 except ModuleNotFoundError as exc:
     if exc.name != "training":
         raise
     import code_candidate as candidate  # type: ignore[no-redef]
     import historical_code_candidate as historical_candidate  # type: ignore[no-redef]
+    import normalized_historical_code_candidate as normalized_historical_candidate  # type: ignore[no-redef]
 
 
 SCHEMA: Final[str] = "microtensor.code.gguf-structural-evaluation.v1"
 TRAINING_SCHEMA_V5: Final[str] = "microtensor.code.training.v5"
+TRAINING_SCHEMA_V6: Final[str] = "microtensor.code.training.v6"
 SIGNED_RELEASE_VERSION: Final[str] = "0.3.0"
 SIGNED_MECHANISM_VERSION: Final[str] = "0.3.0"
 ENGINE_ADAPTER_VERSION: Final[str] = "0.2.0"
@@ -78,6 +81,10 @@ RUNTIME_CLAIM: Final[str] = (
 LINEAGE_CLAIM: Final[str] = (
     "the exact current94 public holdout is a diagnostic lineage separate from optional "
     "historical8000 all-public training; no execution pass@1 is claimed"
+)
+NORMALIZED_LINEAGE_CLAIM: Final[str] = (
+    "the exact current94 public holdout is a diagnostic lineage separate from optional "
+    "normalized historical all-public training; no execution pass@1 is claimed"
 )
 NO_TRAINING_LINEAGE_CLAIM: Final[str] = (
     "no training receipt was supplied; this evaluation binds GGUF bytes and public "
@@ -915,6 +922,237 @@ def load_v5_training_lineage(
     )
 
 
+def validate_v6_receipt_header(
+    payload: Any,
+    *,
+    training_manifest: Mapping[str, Any],
+    training_manifest_digest: str,
+) -> dict[str, Any]:
+    """Validate the normalized v6 header before the shared deep receipt validator."""
+
+    metadata = _mapping(payload, "training metadata")
+    _exact_keys(metadata, TRAINING_METADATA_KEYS, "training metadata")
+    required = {
+        "schema": TRAINING_SCHEMA_V6,
+        "status": "complete",
+        "run_kind": "final_all_public",
+        "track": candidate.TRACK,
+        "hardware_class": candidate.HARDWARE_CLASS,
+        "base_model": BASE_MODEL,
+        "corpus_version": normalized_historical_candidate.CORPUS_VERSION,
+        "quality_claim": normalized_historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+    }
+    for key, expected in required.items():
+        if metadata.get(key) != expected:
+            raise EvaluationRefused(f"v6 training metadata field {key!r} changed")
+    dataset = _mapping(metadata.get("dataset"), "v6 training dataset")
+    _exact_keys(
+        dataset,
+        frozenset({"manifest", "manifest_digest", "source_corpus"}),
+        "v6 training dataset",
+    )
+    if dataset.get("manifest") != training_manifest:
+        raise EvaluationRefused("v6 training metadata does not bind the prepared manifest")
+    if dataset.get("manifest_digest") != training_manifest_digest:
+        raise EvaluationRefused("v6 training metadata prepared-manifest digest changed")
+    if dataset.get("source_corpus") != normalized_historical_candidate.source_corpus_identity():
+        raise EvaluationRefused("v6 training metadata source-corpus identity changed")
+    manifest_required = {
+        "schema": normalized_historical_candidate.DATASET_SCHEMA,
+        "corpus_profile": normalized_historical_candidate.CORPUS_PROFILE,
+        "seed": normalized_historical_candidate.EXPECTED_SEED,
+        "source_examples": normalized_historical_candidate.EXPECTED_SOURCE_EXAMPLES,
+        "train_examples": normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES,
+        "holdout_examples": normalized_historical_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+        "excluded_examples": normalized_historical_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+        "excluded_refs_file": normalized_historical_candidate.EXCLUDED_REFS_FILE,
+        "excluded_refs_canonical_bytes": (
+            normalized_historical_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+        ),
+        "excluded_refs_digest": normalized_historical_candidate.EXPECTED_EXCLUDED_REFS_DIGEST,
+        "target_construction": normalized_historical_candidate.TARGET_CONSTRUCTION,
+        "normalization": normalized_historical_candidate.NORMALIZATION_CONTRACT,
+        "quality_claim": normalized_historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+    }
+    for key, expected in manifest_required.items():
+        if training_manifest.get(key) != expected:
+            raise EvaluationRefused(f"v6 training manifest field {key!r} changed")
+    return dict(metadata)
+
+
+def load_v6_training_lineage(
+    run: Path,
+    dataset: Path,
+    source_corpus: Path,
+    base: Path,
+) -> tuple[dict[str, Any], tuple[ModuleType, ...]]:
+    """Replay normalized source bytes and deeply validate one optional v6 run."""
+
+    run_root = candidate.assert_tmpfs_path(run, must_exist=True)
+    dataset_root = candidate.assert_tmpfs_path(dataset, must_exist=True)
+    source_root = candidate.assert_tmpfs_path(source_corpus, must_exist=True)
+    base_root = candidate.assert_tmpfs_path(base, must_exist=True)
+    if run_root.is_symlink() or not run_root.is_dir():
+        raise EvaluationRefused("training run must be a regular non-symlink directory")
+    try:
+        train_rows, manifest = normalized_historical_candidate.load_prepared_dataset(
+            dataset_root,
+            source_root,
+        )
+        holdout_rows = normalized_historical_candidate.load_prepared_rows(
+            dataset_root / "holdout.jsonl",
+            "holdout.jsonl",
+        )
+        expected_split = (
+            normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES,
+            normalized_historical_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+        )
+        if (len(train_rows), len(holdout_rows)) != expected_split:
+            raise EvaluationRefused(
+                f"v6 training source replay is not exactly {expected_split[0]}/{expected_split[1]}"
+            )
+        manifest_identity = file_identity(
+            dataset_root / "manifest.json",
+            "v6 prepared manifest",
+        )
+        train_identity = file_identity(
+            dataset_root / "train.jsonl",
+            "v6 prepared train JSONL",
+        )
+        holdout_identity = file_identity(
+            dataset_root / "holdout.jsonl",
+            "v6 prepared holdout JSONL",
+        )
+        excluded_refs_identity = file_identity(
+            dataset_root / normalized_historical_candidate.EXCLUDED_REFS_FILE,
+            "v6 prepared excluded refs",
+        )
+        source_identity = file_identity(
+            source_root,
+            "normalized historical public source corpus",
+        )
+        expected_file_identities = (
+            (
+                train_identity,
+                manifest.get("train_file_bytes"),
+                manifest.get("train_file_digest"),
+                "train",
+            ),
+            (
+                holdout_identity,
+                manifest.get("holdout_file_bytes"),
+                manifest.get("holdout_file_digest"),
+                "holdout",
+            ),
+            (
+                excluded_refs_identity,
+                manifest.get("excluded_refs_canonical_bytes"),
+                manifest.get("excluded_refs_digest"),
+                "excluded-refs",
+            ),
+            (
+                source_identity,
+                normalized_historical_candidate.PUBLIC_CORPUS_RESPONSE_BYTES,
+                normalized_historical_candidate.PUBLIC_CORPUS_RAW_DIGEST,
+                "source-corpus",
+            ),
+        )
+        for identity, expected_bytes, expected_digest, label in expected_file_identities:
+            if identity["bytes"] != expected_bytes or identity["digest"] != expected_digest:
+                raise EvaluationRefused(f"v6 {label} identity differs from its manifest contract")
+        metadata_path = run_root / "training_metadata.json"
+        payload, _raw = _read_strict_json(
+            metadata_path,
+            "v6 training metadata",
+            maximum_bytes=MAX_JSON_RECEIPT_BYTES,
+        )
+        validate_v6_receipt_header(
+            payload,
+            training_manifest=manifest,
+            training_manifest_digest=str(manifest_identity["digest"]),
+        )
+        base_identity = candidate.verify_base_snapshot(
+            base_root,
+            expected_model=BASE_MODEL,
+        )
+        evaluate_code = importlib.import_module("training.evaluate_code")
+        train_code = importlib.import_module("training.train_code")
+        if getattr(train_code, "NORMALIZED_HISTORICAL_SCHEMA", None) != TRAINING_SCHEMA_V6:
+            raise EvaluationRefused("shared trainer no longer recognizes the v6 receipt")
+        model_identity = evaluate_code._load_training_run(
+            run_root / "merged",
+            dataset_manifest=manifest,
+            dataset_manifest_digest=str(manifest_identity["digest"]),
+            base_identity=base_identity,
+        )
+        receipt_identity = file_identity(metadata_path, "v6 training metadata")
+        deep_receipt_identity = _mapping(
+            model_identity.get("training_metadata"),
+            "v6 deep-validated training metadata identity",
+        )
+        if not _same_content_identity(receipt_identity, deep_receipt_identity):
+            raise EvaluationRefused(
+                "v6 training metadata identity differs from the shared deep validation"
+            )
+    except (
+        candidate.CandidateError,
+        EvaluationRefused,
+        OSError,
+        ValueError,
+    ):
+        raise
+    except Exception as exc:
+        raise EvaluationRefused(f"v6 training-lineage validation failed: {exc}") from exc
+
+    return (
+        {
+            "status": "provided_and_validated",
+            "schema": TRAINING_SCHEMA_V6,
+            "receipt": receipt_identity,
+            "source_corpus": {
+                "file": source_identity,
+                **normalized_historical_candidate.source_corpus_identity(),
+            },
+            "prepared_dataset": {
+                "manifest": manifest_identity,
+                "train": train_identity,
+                "holdout": holdout_identity,
+                "excluded_refs": excluded_refs_identity,
+                "manifest_payload": manifest,
+            },
+            "base_snapshot": base_identity,
+            "run": model_identity,
+            "conversion_binding_claim": (
+                "the training receipt binds the merged HF tree; this evaluator separately "
+                "binds final GGUF bytes and does not claim a conversion proof"
+            ),
+        },
+        (evaluate_code, train_code, normalized_historical_candidate),
+    )
+
+
+def load_training_lineage(
+    run: Path,
+    dataset: Path,
+    source_corpus: Path,
+    base: Path,
+) -> tuple[dict[str, Any], tuple[ModuleType, ...]]:
+    """Strictly dispatch an optional training lineage by prepared-manifest schema."""
+
+    dataset_root = candidate.assert_tmpfs_path(dataset, must_exist=True)
+    manifest, _raw = _read_strict_json(
+        dataset_root / "manifest.json",
+        "training prepared manifest",
+        maximum_bytes=MAX_JSON_RECEIPT_BYTES,
+    )
+    schema = _mapping(manifest, "training prepared manifest").get("schema")
+    if schema == historical_candidate.DATASET_SCHEMA:
+        return load_v5_training_lineage(run, dataset, source_corpus, base)
+    if schema == normalized_historical_candidate.DATASET_SCHEMA:
+        return load_v6_training_lineage(run, dataset, source_corpus, base)
+    raise EvaluationRefused("training prepared manifest schema is unsupported")
+
+
 def _distribution_identity(name: str) -> dict[str, Any]:
     try:
         distribution = importlib.metadata.distribution(name)
@@ -1456,7 +1694,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "claim": NO_TRAINING_LINEAGE_CLAIM,
             }
         else:
-            training_lineage, extra_tool_modules = load_v5_training_lineage(*training_arguments)
+            training_lineage, extra_tool_modules = load_training_lineage(*training_arguments)
         artifact = artifact_identity(
             args.artifact,
             entrypoint=args.entrypoint,
@@ -1533,15 +1771,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if after_rows != rows or after_diagnostic_lineage != diagnostic_lineage:
             raise EvaluationRefused("public diagnostic lineage changed during evaluation")
         if training_arguments is not None:
-            after_training_lineage, after_tool_modules = load_v5_training_lineage(
-                *training_arguments
-            )
+            after_training_lineage, after_tool_modules = load_training_lineage(*training_arguments)
             if after_training_lineage != training_lineage:
-                raise EvaluationRefused("v5 training lineage changed during evaluation")
+                raise EvaluationRefused("training lineage changed during evaluation")
             if tuple(module.__name__ for module in after_tool_modules) != tuple(
                 module.__name__ for module in extra_tool_modules
             ):
-                raise EvaluationRefused("v5 validation tool set changed during evaluation")
+                raise EvaluationRefused("training validation tool set changed during evaluation")
         after_artifact = artifact_identity(
             args.artifact,
             entrypoint=args.entrypoint,
@@ -1568,7 +1804,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "base_model": BASE_MODEL,
             "quality_claim": QUALITY_CLAIM,
             "runtime_claim": RUNTIME_CLAIM,
-            "lineage_claim": LINEAGE_CLAIM,
+            "lineage_claim": (
+                NORMALIZED_LINEAGE_CLAIM
+                if training_lineage.get("schema") == TRAINING_SCHEMA_V6
+                else LINEAGE_CLAIM
+            ),
             "safety_contract": {
                 "generated_code_imported": False,
                 "generated_code_executed": False,

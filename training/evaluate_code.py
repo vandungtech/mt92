@@ -28,12 +28,14 @@ from typing import Any, Final
 try:
     from training import code_candidate as candidate
     from training import historical_code_candidate as historical_candidate
+    from training import normalized_historical_code_candidate as normalized_candidate
     from training import train_code
 except ModuleNotFoundError as exc:
     if exc.name != "training":
         raise
     import code_candidate as candidate  # type: ignore[no-redef]
     import historical_code_candidate as historical_candidate  # type: ignore[no-redef]
+    import normalized_historical_code_candidate as normalized_candidate  # type: ignore[no-redef]
     import train_code  # type: ignore[no-redef]
 
 
@@ -281,6 +283,7 @@ def validate_training_metadata(
         train_code.BEST_HOLDOUT_SCHEMA,
         train_code.SCHEMA,
         train_code.HISTORICAL_SCHEMA,
+        train_code.NORMALIZED_HISTORICAL_SCHEMA,
     }:
         _exact_keys(metadata, TRAINING_METADATA_KEYS, "training metadata")
         run_kind = metadata.get("run_kind")
@@ -293,12 +296,20 @@ def validate_training_metadata(
         raise EvaluationRefused("training metadata has an invalid run_kind")
 
     historical_profile = schema == train_code.HISTORICAL_SCHEMA
+    normalized_profile = schema == train_code.NORMALIZED_HISTORICAL_SCHEMA
+    source_bound_profile = historical_profile or normalized_profile
     expected_dataset_schema = (
-        historical_candidate.DATASET_SCHEMA if historical_profile else candidate.DATASET_SCHEMA
+        normalized_candidate.DATASET_SCHEMA
+        if normalized_profile
+        else historical_candidate.DATASET_SCHEMA
+        if historical_profile
+        else candidate.DATASET_SCHEMA
     )
     if dataset_manifest.get("schema") != expected_dataset_schema:
         raise EvaluationRefused("training receipt and prepared-corpus schemas were cross-swapped")
-    if historical_profile:
+    if normalized_profile:
+        expected_quality_claim = normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
+    elif historical_profile:
         expected_quality_claim = (
             historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
             if run_kind == train_code.FINAL_ALL_PUBLIC_RUN_KIND
@@ -317,7 +328,9 @@ def validate_training_metadata(
         "hardware_class": candidate.HARDWARE_CLASS,
         "base_model": base_identity.get("base_model"),
         "corpus_version": (
-            historical_candidate.CORPUS_VERSION if historical_profile else candidate.CORPUS_VERSION
+            historical_candidate.CORPUS_VERSION
+            if source_bound_profile
+            else candidate.CORPUS_VERSION
         ),
     }
     try:
@@ -329,6 +342,11 @@ def validate_training_metadata(
             raise EvaluationRefused("historical v5 receipt must describe final_all_public training")
         if base_contract.model != candidate.QWEN3_BASE_MODEL:
             raise EvaluationRefused("historical v5 receipt must bind the pinned Qwen3-0.6B base")
+    if normalized_profile:
+        if run_kind != train_code.FINAL_ALL_PUBLIC_RUN_KIND:
+            raise EvaluationRefused("normalized v6 receipt must describe final_all_public training")
+        if base_contract.model != candidate.QWEN3_BASE_MODEL:
+            raise EvaluationRefused("normalized v6 receipt must bind the pinned Qwen3-0.6B base")
     for key, expected in required.items():
         if metadata.get(key) != expected:
             raise EvaluationRefused(f"training metadata field {key!r} changed")
@@ -340,7 +358,7 @@ def validate_training_metadata(
     dataset = _mapping(metadata.get("dataset"), "training metadata dataset")
     expected_dataset_keys = (
         frozenset({"manifest", "manifest_digest", "source_corpus"})
-        if historical_profile
+        if source_bound_profile
         else frozenset({"manifest", "manifest_digest"})
     )
     _exact_keys(dataset, expected_dataset_keys, "training metadata dataset")
@@ -348,11 +366,15 @@ def validate_training_metadata(
         raise EvaluationRefused("training metadata does not bind the prepared manifest")
     if dataset.get("manifest_digest") != dataset_manifest_digest:
         raise EvaluationRefused("training metadata prepared-manifest digest changed")
-    if (
-        historical_profile
-        and dataset.get("source_corpus") != historical_candidate.source_corpus_identity()
-    ):
-        raise EvaluationRefused("historical training metadata source-corpus identity changed")
+    expected_source_identity = (
+        normalized_candidate.source_corpus_identity()
+        if normalized_profile
+        else historical_candidate.source_corpus_identity()
+        if historical_profile
+        else None
+    )
+    if source_bound_profile and dataset.get("source_corpus") != expected_source_identity:
+        raise EvaluationRefused("source-bound training metadata source-corpus identity changed")
 
     train_examples = _nonnegative_integer(
         dataset_manifest.get("train_examples"), "prepared train examples"
@@ -361,7 +383,9 @@ def validate_training_metadata(
         dataset_manifest.get("holdout_examples"), "prepared holdout examples"
     )
     expected_examples = (
-        historical_candidate.EXPECTED_COUNTS["train"]
+        normalized_candidate.EXPECTED_TRAIN_EXAMPLES
+        if normalized_profile
+        else historical_candidate.EXPECTED_COUNTS["train"]
         if historical_profile
         else candidate.EXPECTED_COUNTS["train"]
     )
@@ -378,11 +402,17 @@ def validate_training_metadata(
         raise EvaluationRefused("development metadata must bind a non-empty deterministic holdout")
 
     target = _mapping(metadata.get("target"), "training metadata target")
-    if schema in {train_code.SCHEMA, train_code.HISTORICAL_SCHEMA}:
+    if schema in {
+        train_code.SCHEMA,
+        train_code.HISTORICAL_SCHEMA,
+        train_code.NORMALIZED_HISTORICAL_SCHEMA,
+    }:
         raw_settings = _mapping(metadata.get("settings"), "training settings")
         expected_target = {
             "construction": (
-                historical_candidate.TRAINING_TARGET_CONSTRUCTION
+                normalized_candidate.TRAINING_TARGET_CONSTRUCTION
+                if normalized_profile
+                else historical_candidate.TRAINING_TARGET_CONSTRUCTION
                 if historical_profile
                 else "raw prompt -> complete importable task_func module"
             ),
@@ -413,7 +443,12 @@ def validate_training_metadata(
     settings = _mapping(metadata.get("settings"), "training settings")
     expected_setting_keys = (
         CURRENT_TRAINING_SETTING_KEYS
-        if schema in {train_code.SCHEMA, train_code.HISTORICAL_SCHEMA}
+        if schema
+        in {
+            train_code.SCHEMA,
+            train_code.HISTORICAL_SCHEMA,
+            train_code.NORMALIZED_HISTORICAL_SCHEMA,
+        }
         else PRE_TERMINAL_EOS_SETTING_KEYS
     )
     _exact_keys(settings, expected_setting_keys, "training settings")
@@ -459,7 +494,9 @@ def validate_training_metadata(
             "holdout diagnostics",
         )
         diagnostic_profile = (
-            train_code.HISTORICAL_CORPUS_PROFILE
+            train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE
+            if normalized_profile
+            else train_code.HISTORICAL_CORPUS_PROFILE
             if historical_profile
             else train_code.DEFAULT_CORPUS_PROFILE
         )
@@ -472,6 +509,7 @@ def validate_training_metadata(
             train_code.BEST_HOLDOUT_SCHEMA,
             train_code.SCHEMA,
             train_code.HISTORICAL_SCHEMA,
+            train_code.NORMALIZED_HISTORICAL_SCHEMA,
         }:
             _exact_keys(
                 diagnostics,
@@ -511,6 +549,7 @@ def validate_training_metadata(
         train_code.BEST_HOLDOUT_SCHEMA,
         train_code.SCHEMA,
         train_code.HISTORICAL_SCHEMA,
+        train_code.NORMALIZED_HISTORICAL_SCHEMA,
     }:
         selection = _mapping(metadata.get("selection"), "training selection")
         _exact_keys(selection, SELECTION_KEYS, "training selection")
@@ -625,7 +664,20 @@ def _prepared_training_lineage(
     )
     manifest_probe = _mapping(payload, "training prepared manifest")
     schema = manifest_probe.get("schema")
-    if schema == historical_candidate.DATASET_SCHEMA:
+    normalized_profile = schema == normalized_candidate.DATASET_SCHEMA
+    if normalized_profile:
+        if source_corpus_root is None:
+            raise EvaluationRefused(
+                "normalized historical training lineage requires --training-source-corpus"
+            )
+        _rows, manifest = normalized_candidate.load_prepared_dataset(
+            dataset_root,
+            source_corpus_root,
+        )
+        holdout = normalized_candidate.load_prepared_rows(
+            dataset_root / "holdout.jsonl", "holdout.jsonl"
+        )
+    elif schema == historical_candidate.DATASET_SCHEMA:
         if source_corpus_root is None:
             raise EvaluationRefused("historical training lineage requires --training-source-corpus")
         _rows, manifest = historical_candidate.load_prepared_dataset(
@@ -658,6 +710,20 @@ def _prepared_training_lineage(
         "holdout_examples": len(holdout),
         "holdout_refs_digest": manifest["holdout_refs_digest"],
         "corpus_version": manifest["corpus_version"],
+        **(
+            {
+                "excluded_refs": {
+                    "bytes": (dataset_root / normalized_candidate.EXCLUDED_REFS_FILE)
+                    .stat()
+                    .st_size,
+                    "digest": candidate.digest_file(
+                        dataset_root / normalized_candidate.EXCLUDED_REFS_FILE
+                    ),
+                }
+            }
+            if normalized_profile
+            else {}
+        ),
     }
     return manifest, identity
 

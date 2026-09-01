@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import struct
 import tempfile
@@ -14,6 +15,7 @@ from unittest import mock
 from training import code_candidate as candidate
 from training import evaluate_code_gguf as evaluator
 from training import historical_code_candidate as historical_candidate
+from training import normalized_historical_code_candidate as normalized_historical_candidate
 
 
 def _row(index: int) -> dict[str, object]:
@@ -327,6 +329,144 @@ class LineageAndReceiptTests(unittest.TestCase):
                 training_manifest=manifest,
                 training_manifest_digest=manifest_digest,
             )
+
+    def test_v6_header_binds_normalized_source_counts_and_schemas(self) -> None:
+        manifest: dict[str, object] = {
+            "schema": normalized_historical_candidate.DATASET_SCHEMA,
+            "corpus_profile": normalized_historical_candidate.CORPUS_PROFILE,
+            "seed": normalized_historical_candidate.EXPECTED_SEED,
+            "source_examples": normalized_historical_candidate.EXPECTED_SOURCE_EXAMPLES,
+            "train_examples": normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": normalized_historical_candidate.EXPECTED_HOLDOUT_EXAMPLES,
+            "excluded_examples": normalized_historical_candidate.EXPECTED_EXCLUDED_EXAMPLES,
+            "excluded_refs_file": normalized_historical_candidate.EXCLUDED_REFS_FILE,
+            "excluded_refs_canonical_bytes": (
+                normalized_historical_candidate.EXPECTED_EXCLUDED_REFS_CANONICAL_BYTES
+            ),
+            "excluded_refs_digest": (normalized_historical_candidate.EXPECTED_EXCLUDED_REFS_DIGEST),
+            "target_construction": normalized_historical_candidate.TARGET_CONSTRUCTION,
+            "normalization": normalized_historical_candidate.NORMALIZATION_CONTRACT,
+            "quality_claim": normalized_historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        }
+        manifest_digest = "sha256:" + "2" * 64
+        metadata = {key: None for key in evaluator.TRAINING_METADATA_KEYS}
+        metadata.update(
+            {
+                "schema": evaluator.TRAINING_SCHEMA_V6,
+                "status": "complete",
+                "run_kind": "final_all_public",
+                "track": candidate.TRACK,
+                "hardware_class": candidate.HARDWARE_CLASS,
+                "base_model": candidate.QWEN3_BASE_MODEL,
+                "corpus_version": normalized_historical_candidate.CORPUS_VERSION,
+                "quality_claim": normalized_historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+                "dataset": {
+                    "manifest": manifest,
+                    "manifest_digest": manifest_digest,
+                    "source_corpus": normalized_historical_candidate.source_corpus_identity(),
+                },
+            }
+        )
+        self.assertEqual(
+            evaluator.validate_v6_receipt_header(
+                metadata,
+                training_manifest=manifest,
+                training_manifest_digest=manifest_digest,
+            ),
+            metadata,
+        )
+
+        wrong_schema = copy.deepcopy(metadata)
+        wrong_schema["schema"] = evaluator.TRAINING_SCHEMA_V5
+        with self.assertRaisesRegex(evaluator.EvaluationRefused, "schema"):
+            evaluator.validate_v6_receipt_header(
+                wrong_schema,
+                training_manifest=manifest,
+                training_manifest_digest=manifest_digest,
+            )
+
+        wrong_source = copy.deepcopy(metadata)
+        wrong_source["dataset"]["source_corpus"]["raw_digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(evaluator.EvaluationRefused, "source-corpus identity"):
+            evaluator.validate_v6_receipt_header(
+                wrong_source,
+                training_manifest=manifest,
+                training_manifest_digest=manifest_digest,
+            )
+
+        for field, changed in (
+            ("seed", normalized_historical_candidate.EXPECTED_SEED + 1),
+            ("train_examples", normalized_historical_candidate.EXPECTED_TRAIN_EXAMPLES - 1),
+            ("holdout_examples", normalized_historical_candidate.EXPECTED_HOLDOUT_EXAMPLES + 1),
+            ("excluded_examples", normalized_historical_candidate.EXPECTED_EXCLUDED_EXAMPLES + 1),
+            ("excluded_refs_digest", "sha256:" + "0" * 64),
+            ("schema", historical_candidate.DATASET_SCHEMA),
+        ):
+            with self.subTest(manifest_field=field):
+                wrong_manifest = copy.deepcopy(manifest)
+                wrong_manifest[field] = changed
+                coordinated = copy.deepcopy(metadata)
+                coordinated["dataset"]["manifest"] = wrong_manifest
+                with self.assertRaisesRegex(evaluator.EvaluationRefused, field):
+                    evaluator.validate_v6_receipt_header(
+                        coordinated,
+                        training_manifest=wrong_manifest,
+                        training_manifest_digest=manifest_digest,
+                    )
+
+    def test_training_lineage_dispatches_only_from_strict_manifest_schema(self) -> None:
+        with tempfile.TemporaryDirectory(dir=candidate.TMPFS_MOUNT) as temporary:
+            root = Path(temporary)
+            dataset = root / "dataset"
+            dataset.mkdir()
+            run = root / "run"
+            source = root / "source.json"
+            base = root / "base"
+            arguments = (run, dataset, source, base)
+
+            dataset.joinpath("manifest.json").write_bytes(
+                candidate.canonical_json_bytes(
+                    {"schema": normalized_historical_candidate.DATASET_SCHEMA}
+                )
+            )
+            v6_result = ({"schema": evaluator.TRAINING_SCHEMA_V6}, ())
+            with (
+                mock.patch.object(
+                    evaluator,
+                    "load_v6_training_lineage",
+                    return_value=v6_result,
+                ) as load_v6,
+                mock.patch.object(evaluator, "load_v5_training_lineage") as load_v5,
+            ):
+                self.assertEqual(evaluator.load_training_lineage(*arguments), v6_result)
+                load_v6.assert_called_once_with(*arguments)
+                load_v5.assert_not_called()
+
+            dataset.joinpath("manifest.json").write_bytes(
+                candidate.canonical_json_bytes({"schema": historical_candidate.DATASET_SCHEMA})
+            )
+            v5_result = ({"schema": evaluator.TRAINING_SCHEMA_V5}, ())
+            with (
+                mock.patch.object(
+                    evaluator,
+                    "load_v5_training_lineage",
+                    return_value=v5_result,
+                ) as load_v5,
+                mock.patch.object(evaluator, "load_v6_training_lineage") as load_v6,
+            ):
+                self.assertEqual(evaluator.load_training_lineage(*arguments), v5_result)
+                load_v5.assert_called_once_with(*arguments)
+                load_v6.assert_not_called()
+
+            dataset.joinpath("manifest.json").write_bytes(
+                candidate.canonical_json_bytes({"schema": "unsupported"})
+            )
+            with self.assertRaisesRegex(evaluator.EvaluationRefused, "schema is unsupported"):
+                evaluator.load_training_lineage(*arguments)
+
+            dataset.joinpath("manifest.json").write_bytes(b'{"schema":"first","schema":"second"}')
+            with self.assertRaisesRegex(evaluator.EvaluationRefused, "repeats JSON key"):
+                evaluator.load_training_lineage(*arguments)
 
     def test_optional_training_cli_is_all_or_none(self) -> None:
         empty = Namespace(

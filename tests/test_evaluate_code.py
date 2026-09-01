@@ -12,6 +12,7 @@ from unittest import mock
 from training import code_candidate as candidate
 from training import evaluate_code, train_code
 from training import historical_code_candidate as historical_candidate
+from training import normalized_historical_code_candidate as normalized_candidate
 
 
 class _Tensor:
@@ -99,15 +100,26 @@ def _training_metadata(
 ) -> dict[str, object]:
     final_run = run_kind == train_code.FINAL_ALL_PUBLIC_RUN_KIND
     historical = schema == train_code.HISTORICAL_SCHEMA
+    normalized = schema == train_code.NORMALIZED_HISTORICAL_SCHEMA
+    source_bound = historical or normalized
     corpus_profile = (
-        train_code.HISTORICAL_CORPUS_PROFILE if historical else train_code.DEFAULT_CORPUS_PROFILE
+        train_code.NORMALIZED_HISTORICAL_CORPUS_PROFILE
+        if normalized
+        else train_code.HISTORICAL_CORPUS_PROFILE
+        if historical
+        else train_code.DEFAULT_CORPUS_PROFILE
     )
     current = schema in {
         train_code.BEST_HOLDOUT_SCHEMA,
         train_code.SCHEMA,
         train_code.HISTORICAL_SCHEMA,
+        train_code.NORMALIZED_HISTORICAL_SCHEMA,
     }
-    weighted = schema in {train_code.SCHEMA, train_code.HISTORICAL_SCHEMA}
+    weighted = schema in {
+        train_code.SCHEMA,
+        train_code.HISTORICAL_SCHEMA,
+        train_code.NORMALIZED_HISTORICAL_SCHEMA,
+    }
     settings = train_code.Settings()
     base_contract = candidate.contract_for_identity(base_identity)
     settings_payload = asdict(settings)
@@ -116,7 +128,9 @@ def _training_metadata(
     target = (
         {
             "construction": (
-                historical_candidate.TRAINING_TARGET_CONSTRUCTION
+                normalized_candidate.TRAINING_TARGET_CONSTRUCTION
+                if normalized
+                else historical_candidate.TRAINING_TARGET_CONSTRUCTION
                 if historical
                 else "raw prompt -> complete importable task_func module"
             ),
@@ -142,7 +156,9 @@ def _training_metadata(
         warmup_ratio=settings.warmup_ratio,
     )
     quality_claim = (
-        historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
+        normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
+        if normalized
+        else historical_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM
         if historical and final_run
         else historical_candidate.DEVELOPMENT_QUALITY_CLAIM
         if historical
@@ -180,14 +196,20 @@ def _training_metadata(
         "base_model": base_identity["base_model"],
         "base_snapshot": base_identity,
         "corpus_version": (
-            historical_candidate.CORPUS_VERSION if historical else candidate.CORPUS_VERSION
+            historical_candidate.CORPUS_VERSION if source_bound else candidate.CORPUS_VERSION
         ),
         "dataset": {
             "manifest": manifest,
             "manifest_digest": manifest_digest,
             **(
-                {"source_corpus": historical_candidate.source_corpus_identity()}
-                if historical
+                {
+                    "source_corpus": (
+                        normalized_candidate.source_corpus_identity()
+                        if normalized
+                        else historical_candidate.source_corpus_identity()
+                    )
+                }
+                if source_bound
                 else {}
             ),
         },
@@ -363,6 +385,38 @@ class TrainingLineageTests(unittest.TestCase):
                 ) as replay,
                 self.assertRaisesRegex(
                     historical_candidate.HistoricalCandidateError,
+                    "raw digest changed",
+                ),
+            ):
+                evaluate_code._prepared_training_lineage(dataset_root, wrong_source)
+            replay.assert_called_once_with(dataset_root, wrong_source)
+
+    def test_normalized_lineage_requires_and_replays_exact_source(self) -> None:
+        with tempfile.TemporaryDirectory(dir=candidate.TMPFS_MOUNT) as temporary:
+            dataset_root = Path(temporary)
+            (dataset_root / "manifest.json").write_text(
+                json.dumps({"schema": normalized_candidate.DATASET_SCHEMA}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                evaluate_code.EvaluationRefused,
+                "--training-source-corpus",
+            ):
+                evaluate_code._prepared_training_lineage(dataset_root, None)
+
+            wrong_source = dataset_root / "wrong-source.json"
+            wrong_source.write_bytes(b"{}")
+            refusal = normalized_candidate.NormalizedHistoricalCandidateError(
+                "historical public corpus raw digest changed"
+            )
+            with (
+                mock.patch.object(
+                    normalized_candidate,
+                    "load_prepared_dataset",
+                    side_effect=refusal,
+                ) as replay,
+                self.assertRaisesRegex(
+                    normalized_candidate.NormalizedHistoricalCandidateError,
                     "raw digest changed",
                 ),
             ):
@@ -603,6 +657,70 @@ class TrainingMetadataTests(unittest.TestCase):
             evaluate_code.validate_training_metadata(
                 metadata,
                 dataset_manifest=self.manifest,
+                dataset_manifest_digest=self.manifest_digest,
+                base_identity=qwen3_identity,
+                adapter_identity=self.adapter_identity,
+                merged_identity=self.merged_identity,
+                metrics_digest=self.metrics_digest,
+            )
+
+    def test_normalized_v6_receipt_binds_projection_and_rejects_cross_swap(self) -> None:
+        normalized_manifest: dict[str, object] = {
+            "schema": normalized_candidate.DATASET_SCHEMA,
+            "train_examples": normalized_candidate.EXPECTED_TRAIN_EXAMPLES,
+            "holdout_examples": 0,
+        }
+        qwen3_identity: dict[str, object] = {
+            "base_model": candidate.QWEN3_BASE_MODEL,
+            "required_bytes": candidate.QWEN3_BASE_REQUIRED_BYTES,
+            "files": {},
+        }
+        metadata = _training_metadata(
+            manifest=normalized_manifest,
+            manifest_digest=self.manifest_digest,
+            base_identity=qwen3_identity,
+            adapter_identity=self.adapter_identity,
+            merged_identity=self.merged_identity,
+            metrics_digest=self.metrics_digest,
+            run_kind=train_code.FINAL_ALL_PUBLIC_RUN_KIND,
+            schema=train_code.NORMALIZED_HISTORICAL_SCHEMA,
+        )
+
+        def validate_normalized(payload: object) -> dict[str, object]:
+            return evaluate_code.validate_training_metadata(
+                payload,
+                dataset_manifest=normalized_manifest,
+                dataset_manifest_digest=self.manifest_digest,
+                base_identity=qwen3_identity,
+                adapter_identity=self.adapter_identity,
+                merged_identity=self.merged_identity,
+                metrics_digest=self.metrics_digest,
+            )
+
+        self.assertEqual(validate_normalized(metadata), metadata)
+        self.assertEqual(
+            metadata["quality_claim"],
+            normalized_candidate.FINAL_ALL_PUBLIC_QUALITY_CLAIM,
+        )
+        wrong_source = copy.deepcopy(metadata)
+        wrong_source["dataset"]["source_corpus"]["excluded_refs_digest"] = (  # type: ignore[index]
+            "sha256:" + "0" * 64
+        )
+        with self.assertRaisesRegex(
+            evaluate_code.EvaluationRefused,
+            "source-corpus identity",
+        ):
+            validate_normalized(wrong_source)
+
+        historical_manifest: dict[str, object] = {
+            "schema": historical_candidate.DATASET_SCHEMA,
+            "train_examples": historical_candidate.EXPECTED_COUNTS["train"],
+            "holdout_examples": 0,
+        }
+        with self.assertRaisesRegex(evaluate_code.EvaluationRefused, "cross-swapped"):
+            evaluate_code.validate_training_metadata(
+                metadata,
+                dataset_manifest=historical_manifest,
                 dataset_manifest_digest=self.manifest_digest,
                 base_identity=qwen3_identity,
                 adapter_identity=self.adapter_identity,
