@@ -1,0 +1,284 @@
+{
+  "base_model": {
+    "files": {
+      "config.json": {
+        "bytes": 660,
+        "git_blob_sha1": "b4831594221a81ea1540f0c6aeae93b6a8aeae56"
+      },
+      "generation_config.json": {
+        "bytes": 242,
+        "git_blob_sha1": "b7849b3dad857bc1e227afd6ca21d1e4cb3f8f82"
+      },
+      "merges.txt": {
+        "bytes": 1671839,
+        "git_blob_sha1": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0"
+      },
+      "model.safetensors": {
+        "bytes": 3087467144,
+        "sha256": "sha256:c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8"
+      },
+      "tokenizer.json": {
+        "bytes": 7031645,
+        "git_blob_sha1": "443909a61d429dff23010e5bddd28ff530edda00"
+      },
+      "tokenizer_config.json": {
+        "bytes": 7305,
+        "git_blob_sha1": "acee076f49bf3c0298e15de0909d1da7b392f0c3"
+      },
+      "vocab.json": {
+        "bytes": 2776833,
+        "git_blob_sha1": "4783fe10ac3adce15ac8f358ef5462739852c569"
+      }
+    },
+    "identity": "Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a",
+    "path": "/dev/shm/microtensor-code/base-qwen25-coder-15b",
+    "required_bytes": 3098955668,
+    "verification": "training.code_candidate.verify_base_snapshot must reproduce the exact pinned contract before and after model loading"
+  },
+  "code": {
+    "commit": "8460b302f61ef1d5775a10e64240909d0e04ac25",
+    "detached_worktree": {
+      "commit": "8460b302f61ef1d5775a10e64240909d0e04ac25",
+      "ignored_files_observed_empty": true,
+      "path": "/tmp/mt92-qwen25-current94-train-8460b30",
+      "status_must_remain_clean_before_and_after_training": true,
+      "status_observed_clean": true
+    },
+    "files": {
+      "tests/test_train_code.py": {
+        "bytes": 17890,
+        "sha256": "sha256:facef53c61513b475cbb20b2e8162a008b3663d9e31e0949647041f1218b707e"
+      },
+      "training/code_candidate.py": {
+        "bytes": 41583,
+        "sha256": "sha256:220e27023ee9c01560c0810d587dc417a70c92a314cb6874b97954b6ba8e5e0c"
+      },
+      "training/historical_code_candidate.py": {
+        "bytes": 21984,
+        "sha256": "sha256:2e8540486e53f6ae348c8d471fdce97284c1fef0c6a4254b67e35db8f141d00a"
+      },
+      "training/normalized_historical_code_candidate.py": {
+        "bytes": 35806,
+        "sha256": "sha256:dcfc2e4d6ffd4a362b360392b5452e4dc8339e99a63053b7262f16aa28da75b1"
+      },
+      "training/train_code.py": {
+        "bytes": 54031,
+        "sha256": "sha256:9d7d2837e0dccd1d8172652a4796d0ffa983cfcfa7a247f3c252fb59cc1ad37b"
+      }
+    },
+    "repository": "https://github.com/vandungtech/mt92",
+    "tree": "6fd3d90d8d8295fdd2910008adea5f7b02739662",
+    "verification": {
+      "candidate_and_trainer_tests_passed": 28,
+      "generated_or_corpus_code_executed": false,
+      "immutable_raw_readback_required_before_training": true,
+      "model_execution_performed_by_preflight": false
+    }
+  },
+  "created_at_utc": "2026-09-01T15:39:48Z",
+  "dataset": {
+    "holdout": {
+      "bytes": 0,
+      "path": "/dev/shm/microtensor-code/dataset-final-seed92-h0/holdout.jsonl",
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "manifest": {
+      "bytes": 1074,
+      "path": "/dev/shm/microtensor-code/dataset-final-seed92-h0/manifest.json",
+      "sha256": "sha256:7c51718bf4728284d8fd131c16cc2f9845c6b74d4c9de71d012d4f28e71a51a2"
+    },
+    "profile": "bigcodebench94",
+    "quality_claim": "none: all 94 public examples are training inputs; no holdout or execution pass@1 is measured",
+    "source_corpus": {
+      "bytes": 152605,
+      "canonical_sha256": "sha256:f126ea986aeeb45eecb3a63e850bbe2f6572c01d24142eed639b2dfbddcea4cd",
+      "path": "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+      "sha256": "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5"
+    },
+    "split": {
+      "holdout_examples": 0,
+      "run_kind": "final_all_public",
+      "train_examples": 94
+    },
+    "target_construction": "inputs.code_prompt + gold",
+    "train": {
+      "bytes": 136854,
+      "path": "/dev/shm/microtensor-code/dataset-final-seed92-h0/train.jsonl",
+      "sha256": "sha256:927670027ab9a456187ebfd9779f7057e626f7eb16fc99f24e16e45d1a8e7769"
+    }
+  },
+  "declaration_state": "prospective_before_output_creation_and_before_any_optimizer_step",
+  "experiment_id": "code-current94-qwen25-coder-15b-r32-e3-b4ga2-lr5e5-seed92-v8",
+  "operational_safety": {
+    "chain_transaction_permitted": false,
+    "coordinator_submission_permitted": false,
+    "generated_or_corpus_code_compilation_permitted": false,
+    "generated_or_corpus_code_execution_permitted": false,
+    "github_artifact_publication_permitted": false,
+    "hidden_or_scored_endpoint_access_permitted": false,
+    "live_controller_remains_fail_closed": true,
+    "wandb_operation_permitted": false
+  },
+  "post_training": {
+    "conversion": "requires a fresh audited current94/Qwen2.5 conversion schema with exact interpreter, environment, dependency, host-library, process, and quantizer closure",
+    "diagnostic": "requires a fresh versioned Qwen2.5 namespace; training-overlap diagnostics are structural and timing evidence only",
+    "old_normalized_v4_artifact_reusable": false,
+    "publication_or_submission": "forbidden until all independent conversion, diagnostic, public-readback, W&B, round-coherence, and zero-cost transaction gates pass",
+    "quantization": "not selected or authorized by this declaration"
+  },
+  "rank_target": {
+    "claim_at_declaration": "not achieved; this training declaration makes no official quality, cost, rank, or eligibility claim",
+    "competition": "code/mt-3g",
+    "goal": "verified official settled rank 1",
+    "hotkey": "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r",
+    "netuid": 92,
+    "registered_uid_at_last_preflight": 32
+  },
+  "resource_preflight": {
+    "arena_limits_last_observed": {
+      "max_p95_ms": 15000,
+      "max_rss_bytes": 3221225472,
+      "max_size_bytes": 1610612736
+    },
+    "artifact_fit_claimed_by_training": false,
+    "tmpfs_available_bytes": 13312491520,
+    "tmpfs_total_bytes": 33285996544,
+    "trainer_minimum_free_bytes": 12884901888
+  },
+  "runtime": {
+    "gpu": {
+      "capability": [
+        12,
+        0
+      ],
+      "driver": "590.48.01",
+      "memory_mib": 32607,
+      "name": "NVIDIA GeForce RTX 5090",
+      "uuid": "GPU-63d76726-6ced-309c-ca4c-42600bd352c1"
+    },
+    "interpreter": {
+      "bytes": 21333768,
+      "path": "/tmp/mt-train-venv/bin/python",
+      "resolved_path": "/.uv/python_install/cpython-3.11.14-linux-x86_64-gnu/bin/python3.11",
+      "sha256": "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e",
+      "version": "3.11.14"
+    },
+    "packages": {
+      "accelerate": "1.14.0",
+      "peft": "0.20.0",
+      "safetensors": "0.8.0",
+      "torch": "2.13.0",
+      "transformers": "5.16.1"
+    },
+    "parent_environment_exact": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "HF_DATASETS_OFFLINE": "1",
+      "HF_HUB_OFFLINE": "1",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "PATH": "/tmp/mt-train-venv/bin:/usr/bin:/bin",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "0",
+      "PYTHONNOUSERSITE": "1",
+      "TOKENIZERS_PARALLELISM": "false",
+      "TRANSFORMERS_OFFLINE": "1",
+      "VECLIB_MAXIMUM_THREADS": "1",
+      "WANDB_MODE": "disabled"
+    },
+    "trainer_sets_before_torch_import": {
+      "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+      "HF_DATASETS_OFFLINE": "1",
+      "HF_HUB_OFFLINE": "1",
+      "TRANSFORMERS_OFFLINE": "1"
+    }
+  },
+  "schema": "microtensor.code.current94-training-experiment.v1",
+  "training": {
+    "argv": [
+      "/tmp/mt-train-venv/bin/python",
+      "training/train_code.py",
+      "--dataset",
+      "/dev/shm/microtensor-code/dataset-final-seed92-h0",
+      "--dataset-profile",
+      "bigcodebench94",
+      "--base",
+      "/dev/shm/microtensor-code/base-qwen25-coder-15b",
+      "--base-model",
+      "Qwen/Qwen2.5-Coder-1.5B-Instruct@2e1fd397ee46e1388853d2af2c993145b0f1098a",
+      "--out",
+      "/dev/shm/microtensor-code/runs/qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8",
+      "--final-all-public",
+      "--seed",
+      "92",
+      "--epochs",
+      "3",
+      "--batch-size",
+      "4",
+      "--gradient-accumulation",
+      "2",
+      "--learning-rate",
+      "0.00005",
+      "--weight-decay",
+      "0.01",
+      "--warmup-ratio",
+      "0.10",
+      "--max-length",
+      "1024",
+      "--lora-rank",
+      "32",
+      "--lora-alpha",
+      "64",
+      "--lora-dropout",
+      "0.05",
+      "--max-grad-norm",
+      "1.0",
+      "--terminal-eos-loss-weight",
+      "1.0"
+    ],
+    "attempt_policy": {
+      "completed_runs_allowed_in_this_namespace": 1,
+      "failure_action": "preserve the failed receipt and declare a new namespace before another training attempt",
+      "resume_allowed": false,
+      "retry_allowed": false
+    },
+    "cwd": "/tmp/mt92-qwen25-current94-train-8460b30",
+    "optimizer_plan": {
+      "batches_per_epoch": 24,
+      "total_updates": 36,
+      "updates_per_epoch": 12,
+      "warmup_updates": 3
+    },
+    "output_path": "/dev/shm/microtensor-code/runs/qwen25-coder-15b-current94-final-r32-e3-b4ga2-lr5e5-seed92-v8",
+    "output_path_observed_absent": true,
+    "receipt_schema": "microtensor.code.training.v4",
+    "selection": {
+      "holdout_diagnostics": "not_run",
+      "policy": "final_epoch_no_holdout",
+      "quality_claim": "none until official validator scoring"
+    },
+    "settings": {
+      "batch_size": 4,
+      "epochs": 3,
+      "gradient_accumulation": 2,
+      "learning_rate": 5e-05,
+      "lora_alpha": 64,
+      "lora_dropout": 0.05,
+      "lora_rank": 32,
+      "max_grad_norm": 1.0,
+      "max_length": 1024,
+      "seed": 92,
+      "terminal_eos_loss_weight": 1.0,
+      "warmup_ratio": 0.1,
+      "weight_decay": 0.01
+    }
+  },
+  "transaction_authorization": {
+    "applies_during_training": false,
+    "future_artifact_commitment_limits_unchanged": true,
+    "no_transaction_is_composed_estimated_signed_or_sent_by_this_declaration": true
+  }
+}
