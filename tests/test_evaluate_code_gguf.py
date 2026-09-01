@@ -597,6 +597,9 @@ class LineageAndReceiptTests(unittest.TestCase):
                 evaluator.load_training_lineage(*arguments)
 
     def test_lineage_contract_is_dynamic_without_changing_legacy_meanings(self) -> None:
+        no_training = evaluator.lineage_evaluation_contract({"status": "not_provided"})
+        self.assertEqual(no_training["lineage_claim"], evaluator.NO_TRAINING_LINEAGE_CLAIM)
+
         current = evaluator.lineage_evaluation_contract(
             {
                 "status": "provided_and_validated",

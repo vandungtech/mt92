@@ -1424,7 +1424,7 @@ def lineage_evaluation_contract(training_lineage: Mapping[str, Any]) -> dict[str
             "base_model": BASE_MODEL,
             "gguf_architecture": GGUF_ARCHITECTURE_BY_BASE_MODEL[BASE_MODEL],
             "evaluation_schema": SCHEMA,
-            "lineage_claim": LINEAGE_CLAIM,
+            "lineage_claim": NO_TRAINING_LINEAGE_CLAIM,
         }
     if status != "provided_and_validated":
         raise EvaluationRefused("training lineage status is unsupported")
