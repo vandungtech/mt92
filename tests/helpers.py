@@ -16,6 +16,9 @@ def base_env(root: Path, *, dry_run: bool = True) -> dict[str, str]:
         "MMC_EXPECTED_UID": "32",
         "MMC_STATE_DIR": str(root / "state"),
         "MMC_ARTIFACT_DIR": str(root / "artifact"),
+        "MMC_ARTIFACT_COMPETITION_BINDING_PATH": str(
+            root / "artifact-competition.binding.json"
+        ),
         "MMC_SELFCHECK_PATH": str(root / "upstream" / "selfcheck.json"),
         "MMC_TRACK": "extract",
         "MMC_HARDWARE_CLASS": "mt-3g",

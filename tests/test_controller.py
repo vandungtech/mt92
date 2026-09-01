@@ -12,7 +12,11 @@ from helpers import base_env, coordinator_payload, v030_coordinator_payload, v03
 
 from microtensor_miner_controller.config import UPSTREAM_COMMIT, UPSTREAM_RELEASE, ControllerConfig
 from microtensor_miner_controller.controller import Controller
-from microtensor_miner_controller.errors import AuthorizationRefused, VerificationError
+from microtensor_miner_controller.errors import (
+    ArtifactCompetitionBindingError,
+    AuthorizationRefused,
+    VerificationError,
+)
 from microtensor_miner_controller.models import (
     PackagedArtifact,
     PreflightSnapshot,
@@ -29,8 +33,11 @@ class FakeBackend:
         fail_source: bool = False,
         refuse_authorization: bool = False,
         publish_error: Exception | None = None,
+        publish_binding_error: bool = False,
         registration_error: Exception | None = None,
         anchor_error: Exception | None = None,
+        binding_error_on_call: int | None = None,
+        bound_artifact_digest: str = "sha256:artifact",
         onchain_payload: str = "mt1|payload",
     ) -> None:
         self.operations: list[str] = []
@@ -38,14 +45,19 @@ class FakeBackend:
         self.fail_source = fail_source
         self.refuse_authorization = refuse_authorization
         self.publish_error = publish_error
+        self.publish_binding_error = publish_binding_error
         self.registration_error = registration_error
         self.anchor_error = anchor_error
+        self.binding_error_on_call = binding_error_on_call
+        self.bound_artifact_digest = bound_artifact_digest
+        self.binding_checks = 0
         self.onchain_payload = onchain_payload
         self.provenance_blocks: list[int] = []
         self.local: PackagedArtifact | None = None
 
     def preflight(self) -> PreflightSnapshot:
         self.operations.append("preflight")
+        self.validate_artifact_competition_binding()
         return PreflightSnapshot("5Hotkey", 32, 150, UPSTREAM_RELEASE, UPSTREAM_COMMIT)
 
     def block(self) -> int:
@@ -68,6 +80,16 @@ class FakeBackend:
         self.operations.append("registered")
         if self.registration_error is not None:
             raise self.registration_error
+
+    def validate_artifact_competition_binding(self) -> str:
+        self.operations.append("artifact_binding")
+        self.binding_checks += 1
+        if (
+            self.binding_error_on_call is not None
+            and self.binding_checks >= self.binding_error_on_call
+        ):
+            raise ArtifactCompetitionBindingError("fixture competition mismatch")
+        return self.bound_artifact_digest
 
     def load_local(self) -> PackagedArtifact | None:
         self.operations.append("load_local")
@@ -97,6 +119,9 @@ class FakeBackend:
         self.provenance_blocks.append(block)
 
     def publish(self, packaged: PackagedArtifact) -> PublishReceipt:
+        if self.publish_binding_error:
+            self.operations.append("publish_binding_refused")
+            raise ArtifactCompetitionBindingError("backend boundary binding refusal")
         self.operations.append("publish")
         if self.refuse_authorization:
             raise AuthorizationRefused("estimated transaction fee is 1 rao")
@@ -314,6 +339,126 @@ class ControllerTests(unittest.TestCase):
             self.assertNotIn("package", backend.operations)
             self.assertNotIn("publish", backend.operations)
 
+    def test_submission_binding_mismatch_stops_before_package_upload_or_publish(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(binding_error_on_call=2)
+            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
+
+            self.assertEqual(controller.run(once=True), 2)
+            self.assertEqual(state.read_status()["phase"], "artifact_competition_refused")
+            self.assertEqual(backend.operations.count("artifact_binding"), 2)
+            self.assertNotIn("package", backend.operations)
+            self.assertNotIn("upload", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+
+    def test_later_binding_refusal_stops_immediately_before_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(binding_error_on_call=3)
+            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
+
+            self.assertEqual(controller.run(once=True), 2)
+            self.assertEqual(state.read_status()["phase"], "artifact_competition_refused")
+            self.assertEqual(backend.operations.count("artifact_binding"), 3)
+            self.assertNotIn("upload", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+            self.assertEqual(state.read_submission_pending(), {})
+
+    def test_later_binding_refusal_before_publish_clears_pending_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(binding_error_on_call=4)
+            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
+            with (
+                mock.patch.object(
+                    state,
+                    "mark_submission_pending",
+                    wraps=state.mark_submission_pending,
+                ) as mark_pending,
+                mock.patch.object(
+                    state,
+                    "clear_submission_pending",
+                    wraps=state.clear_submission_pending,
+                ) as clear_pending,
+            ):
+                self.assertEqual(controller.run(once=True), 2)
+
+            self.assertEqual(state.read_status()["phase"], "artifact_competition_refused")
+            mark_pending.assert_called_once()
+            clear_pending.assert_called_once()
+            self.assertEqual(state.read_submission_pending(), {})
+            self.assertEqual(state.read_authorization_refusal(), {})
+            self.assertNotIn("publish", backend.operations)
+
+    def test_backend_boundary_binding_refusal_clears_pending_without_tx_latch(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(publish_binding_error=True)
+            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
+            with (
+                mock.patch.object(
+                    state,
+                    "mark_submission_pending",
+                    wraps=state.mark_submission_pending,
+                ) as mark_pending,
+                mock.patch.object(
+                    state,
+                    "clear_submission_pending",
+                    wraps=state.clear_submission_pending,
+                ) as clear_pending,
+            ):
+                self.assertEqual(controller.run(once=True), 2)
+
+            self.assertEqual(state.read_status()["phase"], "artifact_competition_refused")
+            mark_pending.assert_called_once()
+            clear_pending.assert_called_once()
+            self.assertIn("publish_binding_refused", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+            self.assertEqual(state.read_submission_pending(), {})
+            self.assertEqual(state.read_authorization_refusal(), {})
+
+    def test_selected_artifact_digest_must_equal_bound_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(bound_artifact_digest="sha256:different")
+            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
+            source = controller.config.source_for(7, "5Hotkey")
+            backend.local = PackagedArtifact(
+                7, source, "5Hotkey", "sha256:manifest", "sha256:artifact", 2, 10
+            )
+
+            self.assertEqual(controller.run(once=True), 2)
+            self.assertEqual(state.read_status()["phase"], "artifact_competition_refused")
+            self.assertNotIn("package", backend.operations)
+            self.assertNotIn("validate_commitment", backend.operations)
+            self.assertNotIn("upload", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+
+    def test_persistent_startup_binding_refusal_retries_without_process_crash_loop(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = FakeBackend(binding_error_on_call=1)
+            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
+            stop = mock.Mock()
+            stop.wait.side_effect = (False, True)
+            controller.stop_event = stop
+
+            self.assertEqual(controller.run(), 0)
+            self.assertEqual(backend.operations.count("preflight"), 2)
+            self.assertEqual(backend.operations.count("artifact_binding"), 2)
+            self.assertEqual(
+                stop.wait.call_args_list,
+                [
+                    mock.call(controller.config.retry_seconds),
+                    mock.call(controller.config.retry_seconds),
+                ],
+            )
+            self.assertEqual(state.read_status()["phase"], "stopped")
+            self.assertNotIn("package", backend.operations)
+            self.assertNotIn("upload", backend.operations)
+            self.assertNotIn("publish", backend.operations)
+
     def test_live_success_requires_all_proofs_and_readback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             backend = FakeBackend()
@@ -338,8 +483,15 @@ class ControllerTests(unittest.TestCase):
             self.assertGreater(backend.operations.count("on_chain"), 1)
             publish_index = backend.operations.index("publish")
             self.assertEqual(
-                backend.operations[publish_index - 5 : publish_index],
-                ["block", "chain_round", "anchor", "arena", "registered"],
+                backend.operations[publish_index - 6 : publish_index],
+                [
+                    "block",
+                    "chain_round",
+                    "anchor",
+                    "arena",
+                    "registered",
+                    "artifact_binding",
+                ],
             )
 
     def test_source_failure_never_publishes_or_claims_success(self) -> None:

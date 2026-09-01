@@ -7,13 +7,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from helpers import base_env
+
 from microtensor_miner_controller.backend import MicrotensorBackend
-from microtensor_miner_controller.config import ControllerConfig, UPSTREAM_COMMIT, UPSTREAM_RELEASE
-from microtensor_miner_controller.errors import PreflightError, VerificationError
+from microtensor_miner_controller.config import UPSTREAM_COMMIT, UPSTREAM_RELEASE, ControllerConfig
+from microtensor_miner_controller.errors import (
+    ArtifactCompetitionBindingError,
+    PreflightError,
+    VerificationError,
+)
 from microtensor_miner_controller.github_release import ReleasePublishError
 from microtensor_miner_controller.models import PackagedArtifact
-
-from helpers import base_env
 
 TOKEN = "github_pat_backend_test_secret"  # noqa: S105
 SOURCE_TEMPLATE = "https:github.com/vandungtech/mt92/releases/download/r{round}"
@@ -120,23 +124,41 @@ class GitHubBackendTests(unittest.TestCase):
         with (
             patch.object(
                 backend,
+                "validate_artifact_competition_binding",
+                return_value="sha256:" + "0" * 64,
+            ) as binding_gate,
+            patch.object(
+                backend,
                 "_verify_upstream",
                 return_value=(UPSTREAM_COMMIT, UPSTREAM_RELEASE),
             ),
             self.assertRaisesRegex(PreflightError, "exactly 0600"),
         ):
             backend.preflight()
+        binding_gate.assert_called_once_with()
 
     def test_upload_dispatches_exact_publishable_files_to_github(self) -> None:
         backend = MicrotensorBackend(self.config)
         publisher = Mock()
-        publisher.publish.return_value = SimpleNamespace(
+        published = SimpleNamespace(
             source=self.source,
             assets=(
                 SimpleNamespace(name="model.gguf"),
                 SimpleNamespace(name="manifest.json"),
             ),
         )
+
+        events: list[str] = []
+
+        def assert_binding(packaged: PackagedArtifact) -> None:
+            self.assertIs(packaged, self.packaged)
+            events.append("binding")
+
+        def publish(_assets: object) -> SimpleNamespace:
+            events.append("publish")
+            return published
+
+        publisher.publish.side_effect = publish
 
         with (
             patch(
@@ -147,6 +169,11 @@ class GitHubBackendTests(unittest.TestCase):
                 "microtensor_miner_controller.github_release.GitHubReleasePublisher",
                 return_value=publisher,
             ) as publisher_class,
+            patch.object(
+                backend,
+                "_assert_packaged_artifact_competition_binding",
+                side_effect=assert_binding,
+            ) as binding_gate,
         ):
             backend.upload(self.packaged)
 
@@ -156,6 +183,8 @@ class GitHubBackendTests(unittest.TestCase):
             tag="r7",
             token=TOKEN,
         )
+        binding_gate.assert_called_once_with(self.packaged)
+        self.assertEqual(events, ["binding", "publish"])
         assets = publisher.publish.call_args.args[0]
         self.assertEqual(
             assets,
@@ -164,6 +193,34 @@ class GitHubBackendTests(unittest.TestCase):
                 "manifest.json": self.config.artifact_dir / "manifest.json",
             },
         )
+
+    def test_binding_refusal_at_backend_boundary_never_calls_publisher(self) -> None:
+        backend = MicrotensorBackend(self.config)
+        publisher = Mock()
+
+        with (
+            patch(
+                "microtensor_miner_controller.backend._publishable_files",
+                return_value=["model.gguf", "manifest.json"],
+            ),
+            patch(
+                "microtensor_miner_controller.github_release.GitHubReleasePublisher",
+                return_value=publisher,
+            ),
+            patch.object(
+                backend,
+                "_assert_packaged_artifact_competition_binding",
+                side_effect=ArtifactCompetitionBindingError("binding revoked"),
+            ) as binding_gate,
+            self.assertRaisesRegex(
+                ArtifactCompetitionBindingError,
+                "binding revoked",
+            ),
+        ):
+            backend.upload(self.packaged)
+
+        binding_gate.assert_called_once_with(self.packaged)
+        publisher.publish.assert_not_called()
 
     def test_publisher_secret_error_is_wrapped_generically(self) -> None:
         backend = MicrotensorBackend(self.config)
@@ -180,6 +237,11 @@ class GitHubBackendTests(unittest.TestCase):
                 return_value=publisher,
             ),
             self.assertRaises(VerificationError) as raised,
+            patch.object(
+                backend,
+                "_assert_packaged_artifact_competition_binding",
+                return_value=None,
+            ),
         ):
             backend.upload(self.packaged)
 

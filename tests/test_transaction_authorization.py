@@ -23,7 +23,11 @@ from microtensor_miner_controller.config import (
     SUBSTRATE_INTERFACE_VERSION,
     ControllerConfig,
 )
-from microtensor_miner_controller.errors import AuthorizationRefused, PreflightError
+from microtensor_miner_controller.errors import (
+    ArtifactCompetitionBindingError,
+    AuthorizationRefused,
+    PreflightError,
+)
 
 
 class Amount:
@@ -459,6 +463,48 @@ class TransactionAuthorizationTests(unittest.TestCase):
                 backend.publish(packaged)
             validate.assert_not_called()
             self.assertEqual(subtensor.substrate.create_calls, [])
+
+    def test_binding_refusal_at_backend_boundary_never_submits_transaction(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            backend, _, _ = self._backend(Path(temporary))
+            packaged = SimpleNamespace(
+                hotkey=AUTHORIZED_HOTKEY_SS58,
+                round_index=7,
+                source=backend.config.source_for(7, AUTHORIZED_HOTKEY_SS58),
+                artifact_digest="sha256:artifact",
+            )
+
+            with (
+                patch.object(
+                    backend,
+                    "_assert_live_transaction_policy",
+                    return_value=None,
+                ),
+                patch.object(
+                    backend,
+                    "validate_commitment",
+                    return_value="mt1|payload",
+                ),
+                patch.object(
+                    backend,
+                    "_assert_packaged_artifact_competition_binding",
+                    side_effect=ArtifactCompetitionBindingError("binding revoked"),
+                ) as binding_gate,
+                patch.object(
+                    backend,
+                    "_submit_authorized_commitment",
+                ) as submit_commitment,
+                self.assertRaisesRegex(
+                    ArtifactCompetitionBindingError,
+                    "binding revoked",
+                ),
+            ):
+                backend.publish(packaged)
+
+            binding_gate.assert_called_once_with(packaged)
+            submit_commitment.assert_not_called()
 
     def test_dry_run_never_reaches_signing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

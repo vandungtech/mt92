@@ -10,6 +10,10 @@ class PreflightError(ControllerError):
     """The host cannot safely operate the configured miner."""
 
 
+class ArtifactCompetitionBindingError(PreflightError):
+    """The artifact is not explicitly bound to the configured competition."""
+
+
 class RoundRefused(ControllerError):
     """No trustworthy current submission round could be established."""
 

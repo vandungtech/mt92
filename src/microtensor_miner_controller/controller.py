@@ -11,7 +11,13 @@ from typing import Any
 from .backend import Backend
 from .config import ControllerConfig
 from .coordinator import fetch_current_round, resolve_round
-from .errors import AuthorizationRefused, ControllerError, RoundRefused, VerificationError
+from .errors import (
+    ArtifactCompetitionBindingError,
+    AuthorizationRefused,
+    ControllerError,
+    RoundRefused,
+    VerificationError,
+)
 from .leaderboard import RankMonitor
 from .models import PackagedArtifact, PreflightSnapshot, RoundWindow, VerificationProofs
 from .redaction import redact_text
@@ -87,7 +93,22 @@ class Controller:
         rank_monitor: RankMonitor | None = None
         with self.state.lock():
             try:
-                snapshot = self.preflight()
+                while True:
+                    try:
+                        snapshot = self.preflight()
+                        break
+                    except ArtifactCompetitionBindingError as exc:
+                        self._failure("artifact_competition_refused", exc)
+                        if once:
+                            return 2
+                        if self.stop_event.wait(self.config.retry_seconds):
+                            self.state.write(
+                                "stopped",
+                                ok=False,
+                                message="controller stopped cleanly",
+                                details=self._static_details(),
+                            )
+                            return 0
                 if not once:
                     rank_monitor = self._start_rank_monitor(snapshot.hotkey)
                 while not self.stop_event.is_set():
@@ -96,6 +117,9 @@ class Controller:
                     except AuthorizationRefused as exc:
                         self._authorization_failure(exc)
                         return 3
+                    except ArtifactCompetitionBindingError as exc:
+                        self._failure("artifact_competition_refused", exc)
+                        outcome = "refused"
                     except RoundRefused as exc:
                         if self.config.uses_signed_v030:
                             self._waiting_for_trusted_round(exc)
@@ -384,6 +408,7 @@ class Controller:
         source: str,
         local: PackagedArtifact | None,
     ) -> str:
+        bound_artifact_digest = self.backend.validate_artifact_competition_binding()
         self.backend.assert_registered()
         common = self._round_details(snapshot, window, head, source)
         reusable = self._local_matches(local, window.index, source, snapshot.hotkey)
@@ -410,6 +435,11 @@ class Controller:
             if packaged.sealed:
                 raise VerificationError("backend returned a sealed artifact")
 
+        if packaged.artifact_digest != bound_artifact_digest:
+            raise ArtifactCompetitionBindingError(
+                "selected packaged artifact digest differs from the authorized "
+                "artifact competition binding"
+            )
         artifact_details = {**common, "artifact": packaged.public_dict()}
         self.state.write(
             "validating_commitment",
@@ -454,6 +484,7 @@ class Controller:
                 message="uploading the round-specific artifact tree and manifest",
                 details={**artifact_details, "chain_head": upload_head},
             )
+            self._assert_packaged_artifact_competition_binding(packaged)
             self.backend.upload(packaged)
             self.state.write(
                 "verifying_source",
@@ -497,6 +528,7 @@ class Controller:
                 broadcast_head, broadcast_window = self._refresh_same_round(window)
                 self._assert_deadline(broadcast_window, broadcast_head, "publish")
                 self.backend.assert_registered()
+                self._assert_packaged_artifact_competition_binding(packaged)
             except Exception:
                 try:
                     self.state.clear_submission_pending(commitment_fingerprint)
@@ -523,6 +555,16 @@ class Controller:
                     raise AuthorizationRefused(
                         "post-submission chain readback differs from the pending commitment"
                     )
+            except ArtifactCompetitionBindingError:
+                try:
+                    self.state.clear_submission_pending(commitment_fingerprint)
+                except Exception as clear_exc:
+                    raise AuthorizationRefused(
+                        "commitment was not submitted after artifact binding refusal, "
+                        "but its pending marker could not be cleared"
+                    ) from clear_exc
+                raise
+
             except AuthorizationRefused:
                 raise
             except Exception as exc:
@@ -547,6 +589,16 @@ class Controller:
             source_full=True,
             message="source, provenance policy, and exact on-chain commitment verified",
         )
+
+    def _assert_packaged_artifact_competition_binding(
+        self, packaged: PackagedArtifact
+    ) -> None:
+        bound_artifact_digest = self.backend.validate_artifact_competition_binding()
+        if packaged.artifact_digest != bound_artifact_digest:
+            raise ArtifactCompetitionBindingError(
+                "selected packaged artifact digest differs from the authorized "
+                "artifact competition binding"
+            )
 
     def _reverify(
         self,

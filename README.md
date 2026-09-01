@@ -38,6 +38,8 @@ Only step 9 followed by all earlier proofs writes `"ok": true` to health state.
 ## Safety defaults
 
 - `MMC_DRY_RUN=true` prevents packaging, signing, uploading, and chain writes.
+- A required private root-owned binding cross-authorizes one exact artifact-tree digest
+  for one exact `track/hardware_class`; mismatch fails before submission.
 - Coordinator failure, rollback, changed bounds, stale bounds, unanchored config,
   inconsistent phase, config-hash mismatch, or a closed competition all fail closed.
 - Chain-schedule fallback is disabled. It is used only if
@@ -62,6 +64,8 @@ The controller is not paired with a candidate until all validation gates pass. A
 deployment must prepare these runtime inputs, which remain Git-ignored:
 
 - `runtime/artifact/model.gguf` (the tokenizer is embedded in this GGUF);
+- a root:root mode-0600 private JSON binding for the exact artifact-tree digest and
+  intended competition;
 - a valid upstream self-check JSON containing positive `size_bytes`,
   `peak_rss_bytes`, and `p95_latency_ms`;
 - a base model locator pinned as `<org>/<repo>@<7-40 hex commit>`;
@@ -113,12 +117,48 @@ shell code. Keep it owned by the service user or root and mode 0600.
 The service user must be the wallet owner or have read access to only the required
 wallet tree. Do not copy wallet material into this Git repository or an image.
 
+Create the separate artifact/competition authorization binding as root. It is intentionally
+not generated or updated by the controller:
+
+```bash
+sudo install -o root -g root -m 0600 /dev/null /etc/microtensor-miner/artifact-competition.binding.json
+sudoedit /etc/microtensor-miner/artifact-competition.binding.json
+```
+
+The file must contain only these four JSON fields, with the exact approved artifact-tree
+digest and competition:
+
+```json
+{
+  "artifact_digest": "sha256:<64 lowercase hex>",
+  "hardware_class": "mt-3g",
+  "schema_version": 1,
+  "track": "code"
+}
+```
+
+Set `MMC_ARTIFACT_COMPETITION_BINDING_PATH` to that absolute path. Preflight
+requires a bounded strict-UTF-8/JSON file that is root:root, mode 0600, a regular
+non-symlink, and has exactly one hard link. Duplicate keys, non-finite numbers, unknown
+fields, a different competition, or a digest that differs from the current artifact tree
+all fail closed. Every ancestor directory of the configured binding path must also be
+root-owned and not writable by the miner service account; for a repository-local ignored
+binding, keep the `runtime/` ancestry root:root and mode 0700.
+
+The application hashes the full tree at startup and freshly revalidates it at controller
+and backend call boundaries immediately before GitHub publication and chain submission;
+the selected packaged digest must match each time. These are point-in-time application
+checks, not an atomic filesystem lease, so keep both the candidate and binding-path
+ancestry outside service-user write control. A continuous service retries a binding
+refusal internally instead of creating a Supervisor process crash loop.
+
 Use the exact Microtensor HTTPS locator form below; it intentionally has no `//` after
 `https:`:
 
 ```dotenv
 MMC_SOURCE_TEMPLATE=https:github.com/vandungtech/mt92/releases/download/r{round}
 MMC_GITHUB_TOKEN_FILE=/etc/microtensor-miner/github.token
+MMC_ARTIFACT_COMPETITION_BINDING_PATH=/etc/microtensor-miner/artifact-competition.binding.json
 MMC_TRANSACTION_AUTHORIZATION=netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1
 MMC_V030_ACTIVATION_BLOCK=8966795
 MMC_TRACK=code
@@ -171,6 +211,7 @@ Live mode is supported only for the immutable GitHub source. Before setting
 `MMC_DRY_RUN=false`, confirm all of the following:
 
 - the compact repository exists, is initialized, and is publicly readable;
+- the artifact binding matches the exact candidate digest and `code/mt-3g`;
 - the protected token file passes preflight and has the permissions described above;
 - any provenance gate enabled by the exact signed release is satisfied; and
 - the coordinator reports a coherent, anchored submissions phase with enough blocks left.

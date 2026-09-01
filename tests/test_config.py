@@ -26,8 +26,21 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.wallet_name, "you-cold")
         self.assertEqual(config.wallet_hotkey, "you-hot1")
         self.assertEqual(config.expected_uid, 32)
+        self.assertEqual(
+            config.artifact_competition_binding_path,
+            Path(temporary) / "artifact-competition.binding.json",
+        )
         self.assertEqual(config.source_for(41, "5Hotkey"), "s3:public/uid-32/round-41")
         self.assertEqual(len(UPSTREAM_COMMIT), 40)
+
+    def test_artifact_competition_binding_path_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            env = base_env(Path(temporary))
+            env.pop("MMC_ARTIFACT_COMPETITION_BINDING_PATH")
+            with self.assertRaisesRegex(
+                ConfigError, "MMC_ARTIFACT_COMPETITION_BINDING_PATH is required"
+            ):
+                ControllerConfig.from_env(env)
 
     def test_signed_v030_identity_and_explicit_activation_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

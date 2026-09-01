@@ -150,6 +150,7 @@ class ControllerConfig:
     upstream_observer_status_path: Path
     upstream_observer_max_age_seconds: int
     artifact_dir: Path
+    artifact_competition_binding_path: Path
     selfcheck_path: Path
     selfcheck_binding_path: Path
     v030_activation_block: int | None
@@ -217,6 +218,12 @@ class ControllerConfig:
                 maximum=DEFAULT_MAX_AGE_SECONDS,
             ),
             artifact_dir=artifact_dir,
+            artifact_competition_binding_path=_path(
+                source,
+                "MMC_ARTIFACT_COMPETITION_BINDING_PATH",
+                "",
+                required=True,
+            ),
             selfcheck_path=_path(source, "MMC_SELFCHECK_PATH", selfcheck_default),
             selfcheck_binding_path=_path(source, "MMC_SELFCHECK_BINDING_PATH", binding_default),
             v030_activation_block=v030_activation_block,

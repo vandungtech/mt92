@@ -16,6 +16,9 @@ from numbers import Integral
 from pathlib import Path
 from typing import Any, Protocol
 
+from .artifact_competition import (
+    validate_artifact_competition_binding as validate_artifact_competition,
+)
 from .binding import validate_binding
 from .config import (
     AUTHORIZED_GITHUB_REPOSITORY,
@@ -41,7 +44,12 @@ from .config import (
     UPSTREAM_RELEASE,
     ControllerConfig,
 )
-from .errors import AuthorizationRefused, PreflightError, VerificationError
+from .errors import (
+    ArtifactCompetitionBindingError,
+    AuthorizationRefused,
+    PreflightError,
+    VerificationError,
+)
 from .models import (
     PackagedArtifact,
     PreflightSnapshot,
@@ -238,6 +246,8 @@ class Backend(Protocol):
     def validate_round(self, window: RoundWindow) -> None: ...
 
     def assert_registered(self) -> None: ...
+
+    def validate_artifact_competition_binding(self) -> str: ...
 
     def load_local(self) -> PackagedArtifact | None: ...
 
@@ -481,12 +491,6 @@ class MicrotensorBackend:
 
     def _validate_artifact_config(self) -> None:
         config = self.config
-        if config.source_template.startswith("https:") and not config.dry_run:
-            self._read_github_token()
-
-        if not config.wallet_path.is_dir():
-            raise PreflightError(f"wallet path is not a directory: {config.wallet_path}")
-        self._validate_wallet_permissions()
         if not config.artifact_dir.is_dir():
             raise PreflightError(f"artifact directory is missing: {config.artifact_dir}")
         entrypoint = config.artifact_dir / config.entrypoint
@@ -498,6 +502,14 @@ class MicrotensorBackend:
             raise PreflightError(
                 "artifact.enc exists; this controller categorically refuses sealing"
             )
+        self.validate_artifact_competition_binding()
+
+        if config.source_template.startswith("https:") and not config.dry_run:
+            self._read_github_token()
+        if not config.wallet_path.is_dir():
+            raise PreflightError(f"wallet path is not a directory: {config.wallet_path}")
+        self._validate_wallet_permissions()
+
         if not config.selfcheck_path.is_file():
             raise PreflightError(
                 f"selfcheck is missing: {config.selfcheck_path}; run the pinned upstream "
@@ -518,6 +530,19 @@ class MicrotensorBackend:
                 raise PreflightError(
                     "existing manifest is sealed; remove it only after manual review"
                 )
+
+    def validate_artifact_competition_binding(self) -> str:
+        binding = validate_artifact_competition(self.config)
+        return str(binding["artifact_digest"])
+
+    def _assert_packaged_artifact_competition_binding(
+        self, packaged: PackagedArtifact
+    ) -> None:
+        bound_artifact_digest = self.validate_artifact_competition_binding()
+        if packaged.artifact_digest != bound_artifact_digest:
+            raise ArtifactCompetitionBindingError(
+                "packaged artifact digest differs from the authorized binding"
+            )
 
     def _read_github_token(self) -> str:
         path = self.config.github_token_file
@@ -1374,6 +1399,7 @@ class MicrotensorBackend:
             )
             if self.config.uses_signed_v030:
                 self._verify_upstream_observer_status()
+            self._assert_packaged_artifact_competition_binding(packaged)
             result = publisher.publish(assets)
             published_names = tuple(asset.name for asset in result.assets)
             if (
@@ -1382,6 +1408,8 @@ class MicrotensorBackend:
                 or set(published_names) != set(names)
             ):
                 raise VerificationError("GitHub release result does not match the package")
+        except ArtifactCompetitionBindingError:
+            raise
         except Exception:
             raise VerificationError("GitHub immutable release upload failed") from None
 
@@ -1481,6 +1509,7 @@ class MicrotensorBackend:
         ):
             raise AuthorizationRefused("packaged artifact is not in vandungtech/mt92")
         payload = self.validate_commitment(packaged)
+        self._assert_packaged_artifact_competition_binding(packaged)
         self._submit_authorized_commitment(payload)
         return PublishReceipt(round_index=packaged.round_index, payload=payload)
 
