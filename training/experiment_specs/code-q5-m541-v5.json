@@ -1,0 +1,88 @@
+{
+  "candidate": {
+    "id": "qwen3-06b-historical7299-v5-q5-m541",
+    "output_bundle": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q5-m541-bundle",
+    "quantization": "Q5_K_M",
+    "max_input_tokens": 541,
+    "single_candidate_only": true
+  },
+  "code": {
+    "commit": "93f3422704cbb2338bda2e1aa8ad051b10317edf",
+    "converter": {
+      "path": "training/convert_code_gguf.py",
+      "sha256": "sha256:d8291f9044a75325c481b71223329da1ad45657c4d4b9151a79b8bd4a95c7ae3"
+    },
+    "evaluator": {
+      "path": "training/evaluate_code_gguf.py",
+      "sha256": "sha256:98091689311e20383ce05b58ae230ee149fd37504fb1f6edcf2d2a97594e3892"
+    }
+  },
+  "conversion": {
+    "llama_cpp_revision": "c589f0ed10c643678c4707dd160c21ac7633ebc0",
+    "converter_sha256": "sha256:e38975e1c68d98ac1664dfd530616eb35c72294382a4dd873d4746b23f27779f",
+    "quantizer_sha256": "sha256:e7d4504b4db541f9a17ae920a8b505bc07159055400319ee056f4309bd800580",
+    "output_must_not_exist": true,
+    "no_retry_after_quantizer_starts": true
+  },
+  "created_at_utc": "2026-09-01T01:16:47Z",
+  "diagnostic": {
+    "dataset_manifest_sha256": "sha256:6af4fe8952293339773e133a867d78e817d759a83138bc7400af98e2e04898ff",
+    "holdout_jsonl_sha256": "sha256:8b07f781c6d160f752963b3a42f343c18d53a785d7b7cd09f472fdddbd2d7993",
+    "refs_sha256": "sha256:73edc2a7674e0c718ea4ef7ea67c638b1a2c431320789b632aad5909309e01ee",
+    "examples": 16,
+    "output_roots": [
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7299-b1ga16-v5-q5-m541-current16-signed-v030-r1",
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7299-b1ga16-v5-q5-m541-current16-signed-v030-r2",
+      "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7299-b1ga16-v5-q5-m541-current16-signed-v030-r3"
+    ],
+    "repeat_policy": "run r1 first; stop on any structural gate failure; otherwise run exactly r2 and r3 sequentially and use the worst observed p95 TTFT",
+    "signed_mechanism_version": "0.3.0"
+  },
+  "gates": {
+    "failed_generations_maximum": 0,
+    "maximum_request_latency_ms": 31200,
+    "maximum_stream_pieces": 373,
+    "peak_rss_bytes_maximum": 1073741824,
+    "p95_ttft_ms_maximum": 5256,
+    "p95_ttft_ms_preferred": 5100,
+    "scorer_extracted_parseable_python_minimum": 16,
+    "scorer_extracted_residual_fences_maximum": 0,
+    "scorer_extracted_top_level_task_func_minimum": 16,
+    "successful_generations_minimum": 16
+  },
+  "lineage": {
+    "base_model": "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca",
+    "historical_dataset_manifest_sha256": "sha256:76594ff4df3c0b0caf56aa668a4c8dcac8291c425cfd1b46a3fb222d733a81e8",
+    "merged_tree_sha256": "sha256:52b399b89edaec39005507045b0facbc31adf654a5e2d3e801b5a52e79c3a175",
+    "metrics_sha256": "sha256:9cc96df4c754e83f054b88caa9087ea2cde136291dd3726b146bb6a2a98922d6",
+    "training_metadata_sha256": "sha256:2c637e7e9f8e9811d5150e9c8bbd01e596b2f30908aecb10c1a1a8e2dd2cfc6c"
+  },
+  "reference": {
+    "q4_m541_rejected": {
+      "p95_ttft_ms": 4799.903040751815,
+      "parseable_task_func": 14,
+      "summary_sha256": "sha256:aea6896a41622ee33e82487811b48c4707177e7fa7834494b601b4a209cb9158"
+    },
+    "q8_m541_fallback": {
+      "artifact_tree_sha256": "sha256:c4dff69435bf6593894fd585f2bf1ad6cabaab2b188948f7ff7da8dfc3be7bff",
+      "entrypoint_bytes": 639446720,
+      "p95_ttft_ms": 5849.22972554341,
+      "parseable_task_func": 16,
+      "summary_sha256": "sha256:0d7e05a781454a059fbf6a3534cd227a4ea438146e423311560fadfab567f0b3"
+    }
+  },
+  "safety": {
+    "corpus_code_executed": false,
+    "generated_code_compiled": false,
+    "generated_code_executed": false,
+    "hidden_or_scored_tests_accessed": false,
+    "quality_claim": "none: public structural diagnostics are not execution pass@1",
+    "static_ast_parse_only": true
+  },
+  "schema": "microtensor.code.quantization-experiment.v1",
+  "selection": {
+    "promote_only_if_every_gate_passes_on_every_required_repeat": true,
+    "retain_q8_as_fallback_on_any_failure": true,
+    "official_validator_measurements_remain_authoritative": true
+  }
+}
