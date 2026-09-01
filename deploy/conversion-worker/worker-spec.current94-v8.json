@@ -1,0 +1,548 @@
+{
+  "schema": "microtensor.code.oci-worker-spec.current94-v8.v1",
+  "status": "incomplete_non_runnable",
+  "runnable": false,
+  "unresolved": [
+    "UNRESOLVED:external_runner_preflight_evidence_identity",
+    "UNRESOLVED:immutable_image_digest_and_reference",
+    "UNRESOLVED:image_sbom_identity",
+    "UNRESOLVED:clean_immutable_source_closure",
+    "UNRESOLVED:final_input_manifest_identity",
+    "UNRESOLVED:oci_config_identity",
+    "UNRESOLVED:seccomp_profile_identity",
+    "UNRESOLVED:lsm_profile_identity",
+    "UNRESOLVED:receipt_signature_scheme_and_key",
+    "UNRESOLVED:offline_signature_verifier_identity",
+    "UNRESOLVED:expected_output_file_identities",
+    "UNRESOLVED:expected_model_identity",
+    "UNRESOLVED:expected_calibration_receipt_identity",
+    "UNRESOLVED:expected_conversion_receipt_identity",
+    "UNRESOLVED:expected_load_spec_identity",
+    "UNRESOLVED:independent_review"
+  ],
+  "independent_review": {
+    "status": "UNRESOLVED:not_reviewed",
+    "reviewer": "UNRESOLVED:independent_reviewer",
+    "review_digest": "UNRESOLVED:review_digest"
+  },
+  "platform": {
+    "os": "linux",
+    "architecture": "amd64",
+    "rootless_or_userns_remapped": true
+  },
+  "resources": {
+    "cpu_cores": 4,
+    "memory_bytes": 34359738368,
+    "tmpfs_bytes": 17179869184,
+    "persistent_workspace_bytes": 21474836480
+  },
+  "image": {
+    "reference": "UNRESOLVED:microtensor-converter@sha256-image-digest",
+    "digest": "UNRESOLVED:sha256-image-digest",
+    "sbom": {
+      "name": "UNRESOLVED:sbom_filename",
+      "bytes": "UNRESOLVED:sbom_bytes",
+      "digest": "UNRESOLVED:sbom_sha256"
+    },
+    "source_closure": {
+      "worktree_state": "UNRESOLVED:clean_immutable_snapshot",
+      "tree_digest": "UNRESOLVED:source_tree_sha256",
+      "files": [
+        {
+          "path": "opt/microtensor-miner/training/code_candidate.py",
+          "bytes": 41583,
+          "digest": "sha256:220e27023ee9c01560c0810d587dc417a70c92a314cb6874b97954b6ba8e5e0c"
+        },
+        {
+          "path": "opt/microtensor-miner/training/convert_code_gguf.py",
+          "bytes": 191227,
+          "digest": "sha256:9452eb1c721ee0971c1ecce1202ca4da7db18c8f7960fa0a43b029c7627a699c"
+        },
+        {
+          "path": "opt/microtensor-miner/training/evaluate_code_gguf.py",
+          "bytes": 89431,
+          "digest": "sha256:323a27985c035b621a2025457f0392eacefa7e21013abb5656da3e31c36b806e"
+        },
+        {
+          "path": "opt/microtensor-miner/training/historical_code_candidate.py",
+          "bytes": 21984,
+          "digest": "sha256:2e8540486e53f6ae348c8d471fdce97284c1fef0c6a4254b67e35db8f141d00a"
+        },
+        {
+          "path": "opt/microtensor-miner/training/normalized_historical_code_candidate.py",
+          "bytes": 35806,
+          "digest": "sha256:dcfc2e4d6ffd4a362b360392b5452e4dc8339e99a63053b7262f16aa28da75b1"
+        },
+        {
+          "path": "opt/microtensor-miner/training/publish_code_provenance.py",
+          "bytes": 160975,
+          "digest": "sha256:7179aea2dcea474ddf5d08e361fddd9a7e365add582d7258e188e9c474af6bd5"
+        },
+        {
+          "path": "opt/python/bin/python3.11",
+          "bytes": 21333768,
+          "digest": "sha256:96d1b01675f2492922ec6f6ed8445791d2d3231ccae727cda521db30494b751e"
+        },
+        {
+          "path": "tmp/llama.cpp/convert_hf_to_gguf.py",
+          "bytes": 12798,
+          "digest": "sha256:e38975e1c68d98ac1664dfd530616eb35c72294382a4dd873d4746b23f27779f"
+        }
+      ]
+    }
+  },
+  "input_manifest_identity": {
+    "bytes": "UNRESOLVED:final_input_manifest_bytes",
+    "digest": "UNRESOLVED:final_input_manifest_sha256"
+  },
+  "oci_config_identity": {
+    "bytes": "UNRESOLVED:oci_config_bytes",
+    "digest": "UNRESOLVED:oci_config_sha256"
+  },
+  "runner_preflight_evidence": {
+    "name": "UNRESOLVED:runner_preflight_evidence_filename",
+    "bytes": "UNRESOLVED:runner_preflight_evidence_bytes",
+    "digest": "UNRESOLVED:runner_preflight_evidence_sha256"
+  },
+  "mounts": [
+    {
+      "destination": "/dev/shm",
+      "kind": "tmpfs",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid"
+      ],
+      "read_only": false,
+      "size_bytes": 17179869184,
+      "source_role": "ephemeral_memory"
+    },
+    {
+      "destination": "/dev/shm/in/training-run",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "training_run"
+    },
+    {
+      "destination": "/dev/shm/in/training-dataset",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "training_dataset"
+    },
+    {
+      "destination": "/dev/shm/in/current-corpus.json",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "current_source_corpus"
+    },
+    {
+      "destination": "/dev/shm/in/base",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "base_snapshot"
+    },
+    {
+      "destination": "/dev/shm/in/current-calibration-dataset",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "current_calibration_dataset"
+    },
+    {
+      "destination": "/dev/shm/in/aux-dataset",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "auxiliary_normalized_dataset"
+    },
+    {
+      "destination": "/dev/shm/in/aux-corpus.json",
+      "kind": "bind",
+      "options": [
+        "nodev",
+        "noexec",
+        "nosuid",
+        "rbind"
+      ],
+      "read_only": true,
+      "source_role": "auxiliary_source_corpus"
+    }
+  ],
+  "security": {
+    "runtime_mode": "rootless_or_userns_remapped",
+    "network_mode": "none",
+    "root_filesystem_read_only": true,
+    "no_new_privileges": true,
+    "capabilities": [],
+    "private_namespaces": [
+      "cgroup",
+      "ipc",
+      "mount",
+      "network",
+      "pid",
+      "user",
+      "uts"
+    ],
+    "profiles": {
+      "seccomp": {
+        "name": "UNRESOLVED:seccomp_profile_name",
+        "bytes": "UNRESOLVED:seccomp_profile_bytes",
+        "digest": "UNRESOLVED:seccomp_profile_sha256"
+      },
+      "lsm": {
+        "name": "UNRESOLVED:lsm_profile_name",
+        "bytes": "UNRESOLVED:lsm_profile_bytes",
+        "digest": "UNRESOLVED:lsm_profile_sha256"
+      }
+    }
+  },
+  "cgroup": {
+    "cpu_quota_cores": 4,
+    "memory_max_bytes": 34359738368,
+    "memory_swap_max_bytes": 0,
+    "pids_max": 128
+  },
+  "command": [
+    "/opt/python/bin/python3.11",
+    "-I",
+    "-B",
+    "-c",
+    "import runpy,sys,types;_p=types.ModuleType('training');_p.__path__=['/opt/microtensor-miner/training'];_p.__package__='training';sys.modules['training']=_p;runpy.run_path('/opt/microtensor-miner/training/convert_code_gguf.py',run_name='__main__')",
+    "--training-run",
+    "/dev/shm/in/training-run",
+    "--training-dataset",
+    "/dev/shm/in/training-dataset",
+    "--source-corpus",
+    "/dev/shm/in/current-corpus.json",
+    "--base",
+    "/dev/shm/in/base",
+    "--llama-cpp",
+    "/tmp/llama.cpp",
+    "--converter",
+    "/tmp/llama.cpp/convert_hf_to_gguf.py",
+    "--converter-python",
+    "/opt/python/bin/python3.11",
+    "--quantizer",
+    "/tmp/llama.cpp/build/bin/llama-quantize",
+    "--output-bundle",
+    "/dev/shm/export/qwen25-current94-v8-q4-m541-v6-bundle",
+    "--quantization",
+    "Q4_K_M",
+    "--max-input-tokens",
+    "541",
+    "--calibration-profile",
+    "code-public-imatrix128-v1",
+    "--calibration-current-dataset",
+    "/dev/shm/in/current-calibration-dataset",
+    "--calibration-current-source-corpus",
+    "/dev/shm/in/current-corpus.json",
+    "--calibration-aux-dataset",
+    "/dev/shm/in/aux-dataset",
+    "--calibration-aux-source-corpus",
+    "/dev/shm/in/aux-corpus.json",
+    "--imatrix-tool",
+    "/tmp/llama.cpp/build/bin/llama-imatrix"
+  ],
+  "expected_internal_commands": [
+    {
+      "name": "convert_f16",
+      "argv": [
+        "/opt/python/bin/python3.11",
+        "/tmp/llama.cpp/convert_hf_to_gguf.py",
+        "/dev/shm/in/training-run/merged",
+        "--outfile",
+        "model-f16.gguf",
+        "--outtype",
+        "f16"
+      ]
+    },
+    {
+      "name": "calibrate_imatrix",
+      "argv": [
+        "/tmp/llama.cpp/build/bin/llama-imatrix",
+        "--offline",
+        "--model",
+        "model-f16.gguf",
+        "--file",
+        "calibration.txt",
+        "--output",
+        "calibration.imatrix.gguf",
+        "--output-format",
+        "gguf",
+        "--ctx-size",
+        "512",
+        "--chunks",
+        "128",
+        "--batch-size",
+        "512",
+        "--ubatch-size",
+        "512",
+        "--threads",
+        "1",
+        "--threads-batch",
+        "1",
+        "--device",
+        "none",
+        "--gpu-layers",
+        "0",
+        "--fit",
+        "off",
+        "--flash-attn",
+        "off",
+        "--no-ppl",
+        "--parse-special",
+        "--output-frequency",
+        "129",
+        "--save-frequency",
+        "0"
+      ]
+    },
+    {
+      "name": "quantize",
+      "argv": [
+        "/tmp/llama.cpp/build/bin/llama-quantize",
+        "--imatrix",
+        "calibration.imatrix.gguf",
+        "model-f16.gguf",
+        "artifact/model.gguf",
+        "Q4_K_M",
+        "1"
+      ]
+    }
+  ],
+  "expected_child_environment": {
+    "CUDA_VISIBLE_DEVICES": "",
+    "HF_HUB_OFFLINE": "1",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PATH": "/opt/python/bin:/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONPYCACHEPREFIX": ".microtensor-empty-pycache",
+    "TRANSFORMERS_OFFLINE": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "WANDB_MODE": "offline"
+  },
+  "runtime_library_contract": {
+    "schema": "microtensor.code.llama-cpp-runtime-libraries.v1",
+    "root": "/tmp/llama.cpp",
+    "build_bin_namespace": [
+      "build/bin/libggml-base.so",
+      "build/bin/libggml-base.so.0",
+      "build/bin/libggml-base.so.0.22.0",
+      "build/bin/libggml-cpu.so",
+      "build/bin/libggml-cpu.so.0",
+      "build/bin/libggml-cpu.so.0.22.0",
+      "build/bin/libggml.so",
+      "build/bin/libggml.so.0",
+      "build/bin/libggml.so.0.22.0",
+      "build/bin/libllama-common.so",
+      "build/bin/libllama-common.so.0",
+      "build/bin/libllama-common.so.0.3.0",
+      "build/bin/libllama-quantize-impl.so",
+      "build/bin/libllama.so",
+      "build/bin/libllama.so.0",
+      "build/bin/libllama.so.0.3.0",
+      "build/bin/llama-imatrix",
+      "build/bin/llama-quantize"
+    ],
+    "symlinks": [
+      {
+        "path": "build/bin/libggml-base.so",
+        "target": "libggml-base.so.0"
+      },
+      {
+        "path": "build/bin/libggml-base.so.0",
+        "target": "libggml-base.so.0.22.0"
+      },
+      {
+        "path": "build/bin/libggml-cpu.so",
+        "target": "libggml-cpu.so.0"
+      },
+      {
+        "path": "build/bin/libggml-cpu.so.0",
+        "target": "libggml-cpu.so.0.22.0"
+      },
+      {
+        "path": "build/bin/libggml.so",
+        "target": "libggml.so.0"
+      },
+      {
+        "path": "build/bin/libggml.so.0",
+        "target": "libggml.so.0.22.0"
+      },
+      {
+        "path": "build/bin/libllama-common.so",
+        "target": "libllama-common.so.0"
+      },
+      {
+        "path": "build/bin/libllama-common.so.0",
+        "target": "libllama-common.so.0.3.0"
+      },
+      {
+        "path": "build/bin/libllama.so",
+        "target": "libllama.so.0"
+      },
+      {
+        "path": "build/bin/libllama.so.0",
+        "target": "libllama.so.0.3.0"
+      }
+    ],
+    "executables": [
+      {
+        "path": "build/bin/llama-imatrix",
+        "bytes": 343128,
+        "digest": "sha256:3661d870d8645bb1c770328dcf2e4bf7f4bf076e70a6c8beabc1b60085499a35",
+        "mode": "0755"
+      },
+      {
+        "path": "build/bin/llama-quantize",
+        "bytes": 17928,
+        "digest": "sha256:e7d4504b4db541f9a17ae920a8b505bc07159055400319ee056f4309bd800580",
+        "mode": "0755"
+      }
+    ],
+    "libraries": [
+      {
+        "loader_path": "build/bin/libggml-base.so.0",
+        "target_path": "build/bin/libggml-base.so.0.22.0",
+        "bytes": 939528,
+        "digest": "sha256:73106e6e34d4f6dcd9f4ffca57f132070c48e93c9dd409df2333eea1b7c4806f",
+        "mode": "0755"
+      },
+      {
+        "loader_path": "build/bin/libggml-cpu.so.0",
+        "target_path": "build/bin/libggml-cpu.so.0.22.0",
+        "bytes": 1143800,
+        "digest": "sha256:196c9f2c112e51f17b79375e80b102c72bc872b3e4fc17295ab1564533812807",
+        "mode": "0755"
+      },
+      {
+        "loader_path": "build/bin/libggml.so.0",
+        "target_path": "build/bin/libggml.so.0.22.0",
+        "bytes": 56376,
+        "digest": "sha256:eaea0b8964d5acee7ce26bb4895137df772ad24387f45fbb51158495f596fa29",
+        "mode": "0755"
+      },
+      {
+        "loader_path": "build/bin/libllama-common.so.0",
+        "target_path": "build/bin/libllama-common.so.0.3.0",
+        "bytes": 5909928,
+        "digest": "sha256:ce12dd60805687b1dfbd574033d5163089979a1b2b556cb8a6c65b85af7048f5",
+        "mode": "0755"
+      },
+      {
+        "loader_path": "build/bin/libllama-quantize-impl.so",
+        "target_path": "build/bin/libllama-quantize-impl.so",
+        "bytes": 89792,
+        "digest": "sha256:d79664774038f0f42eccee8b1d5772b2bbe0f7840181401c73e30f2986113cbb",
+        "mode": "0755"
+      },
+      {
+        "loader_path": "build/bin/libllama.so.0",
+        "target_path": "build/bin/libllama.so.0.3.0",
+        "bytes": 4692320,
+        "digest": "sha256:8c809635a537f48c79bb058034ae9eb3c437693bc8b4fc13e0035c0be7bad8ed",
+        "mode": "0755"
+      }
+    ]
+  },
+  "receipt_signature": {
+    "scheme": "UNRESOLVED:signature_scheme",
+    "key_id": "UNRESOLVED:worker_receipt_key_id",
+    "trusted_public_key": {
+      "name": "UNRESOLVED:trusted_public_key_filename",
+      "bytes": "UNRESOLVED:trusted_public_key_bytes",
+      "digest": "UNRESOLVED:trusted_public_key_sha256"
+    },
+    "verifier": {
+      "name": "UNRESOLVED:offline_signature_verifier_filename",
+      "bytes": "UNRESOLVED:offline_signature_verifier_bytes",
+      "digest": "UNRESOLVED:offline_signature_verifier_sha256",
+      "format": "UNRESOLVED:static-elf-linux-amd64",
+      "closure": "UNRESOLVED:single-file-no-pt-interp-no-dynamic"
+    }
+  },
+  "expected_output": {
+    "bundle_files": [
+      "bundle/artifact/model.gguf",
+      "bundle/calibration-receipt.json",
+      "bundle/conversion-receipt.json",
+      "bundle/load-spec.json"
+    ],
+    "file_identities": [
+      {
+        "path": "bundle/artifact/model.gguf",
+        "bytes": "UNRESOLVED:model_gguf_bytes_max_1610612736",
+        "digest": "UNRESOLVED:model_gguf_sha256"
+      },
+      {
+        "path": "bundle/calibration-receipt.json",
+        "bytes": "UNRESOLVED:calibration_receipt_bytes",
+        "digest": "UNRESOLVED:calibration_receipt_sha256"
+      },
+      {
+        "path": "bundle/conversion-receipt.json",
+        "bytes": "UNRESOLVED:conversion_receipt_bytes",
+        "digest": "UNRESOLVED:conversion_receipt_sha256"
+      },
+      {
+        "path": "bundle/load-spec.json",
+        "bytes": "UNRESOLVED:load_spec_bytes",
+        "digest": "UNRESOLVED:load_spec_sha256"
+      }
+    ]
+  },
+  "execution_protocol": {
+    "working_directory": "/opt/microtensor-miner",
+    "stdin": "/dev/null",
+    "umask": "0077",
+    "export_root": "/dev/shm/export/qwen25-current94-v8-q4-m541-v6-bundle",
+    "input_preflight_and_postflight_hashing": true,
+    "copy_only_after_cgroup_empty": true,
+    "container_removed_before_receipt": true,
+    "container_stopped_before_export": true,
+    "host_persistent_mount_visible_to_container": false,
+    "private_intermediates_exported": false,
+    "return_only_exact_export_file_set": true
+  }
+}

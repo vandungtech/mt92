@@ -1,0 +1,266 @@
+{
+  "schema": "microtensor.code.oci-input-manifest.current94-v8.v1",
+  "status": "incomplete_non_runnable",
+  "sealed": false,
+  "unresolved": [
+    "UNRESOLVED:immutable_snapshot_technology",
+    "UNRESOLVED:immutable_snapshot_enforcement",
+    "UNRESOLVED:input_manifest_independent_review"
+  ],
+  "independent_review": {
+    "status": "UNRESOLVED:not_reviewed",
+    "reviewer": "UNRESOLVED:independent_reviewer",
+    "review_digest": "UNRESOLVED:review_digest"
+  },
+  "snapshot": {
+    "technology": "UNRESOLVED:immutable_snapshot_technology",
+    "immutable_for_run": false,
+    "host_writers_excluded": false
+  },
+  "inputs": [
+    {
+      "id": "training_run",
+      "kind": "directory",
+      "mount": "/dev/shm/in/training-run",
+      "total_bytes": 3258141232,
+      "component_tree_digests": {
+        "adapter": "sha256:bb222af82dd83f46967e9060f642e2648ba2f00e398ecc989ad9af7ebaa48c30",
+        "merged": "sha256:5b05fe2ec5c145c5f88c28acfb5ab37a6c724816188a7022284d8581b0d356ee"
+      },
+      "files": [
+        {
+          "path": "adapter/README.md",
+          "bytes": 5248,
+          "digest": "sha256:829b724f6f083cf551a330fe9de27c7efa9ff6e45cef28cdb3b7815ed20c954a"
+        },
+        {
+          "path": "adapter/adapter_config.json",
+          "bytes": 1180,
+          "digest": "sha256:a872b26c08efb5b7c1f10976935f13aaf4d2d27b920107cd002116d95e043a46"
+        },
+        {
+          "path": "adapter/adapter_model.safetensors",
+          "bytes": 147770496,
+          "digest": "sha256:14e342f4a7d3a39f61dff19fee92535b76d0d4f12dd43d4c6d5e2a89eb9465a4"
+        },
+        {
+          "path": "adapter/chat_template.jinja",
+          "bytes": 2507,
+          "digest": "sha256:cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f"
+        },
+        {
+          "path": "adapter/tokenizer.json",
+          "bytes": 11421892,
+          "digest": "sha256:3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8"
+        },
+        {
+          "path": "adapter/tokenizer_config.json",
+          "bytes": 691,
+          "digest": "sha256:bd9df05957db8b747d5b6fae78d8a00cc1f1bebe46f7bf3d159c17e0aaf9a5b2"
+        },
+        {
+          "path": "merged/chat_template.jinja",
+          "bytes": 2507,
+          "digest": "sha256:cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f"
+        },
+        {
+          "path": "merged/config.json",
+          "bytes": 1373,
+          "digest": "sha256:50644d18e8b04dd363e1894c0e902f4be43be7ca3ea3759d2fc3e6ac6710fc6e"
+        },
+        {
+          "path": "merged/generation_config.json",
+          "bytes": 242,
+          "digest": "sha256:9b4cd225aa41c8f5c9a743317f377abf345c08595a1d6adbf2a2f3f837a6e9c0"
+        },
+        {
+          "path": "merged/model-00001-of-00002.safetensors",
+          "bytes": 1991828104,
+          "digest": "sha256:081a565cf6a236a0a47371146516ae8c028ef875fd02ca86148e0417f374b9f6"
+        },
+        {
+          "path": "merged/model-00002-of-00002.safetensors",
+          "bytes": 1095638800,
+          "digest": "sha256:57334d818a3685e9e084564c6457de75afde23f0fd62053c4bd46a6e4e2e0ace"
+        },
+        {
+          "path": "merged/model.safetensors.index.json",
+          "bytes": 27729,
+          "digest": "sha256:f744be6cb51bee7997eda010f081ee5af2b9d86700abe413f8bd8c97c440bbc1"
+        },
+        {
+          "path": "merged/tokenizer.json",
+          "bytes": 11421892,
+          "digest": "sha256:3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8"
+        },
+        {
+          "path": "merged/tokenizer_config.json",
+          "bytes": 691,
+          "digest": "sha256:bd9df05957db8b747d5b6fae78d8a00cc1f1bebe46f7bf3d159c17e0aaf9a5b2"
+        },
+        {
+          "path": "metrics.jsonl",
+          "bytes": 10134,
+          "digest": "sha256:1c2947a3bed290d01880698b144331ef4f148368634514ef7de396d90d67169e"
+        },
+        {
+          "path": "training_metadata.json",
+          "bytes": 7746,
+          "digest": "sha256:1e983beff4f32f574a57352b61c2e4f29d9a4922d59d71b1b722902255a3ef10"
+        }
+      ]
+    },
+    {
+      "id": "training_dataset",
+      "kind": "directory",
+      "mount": "/dev/shm/in/training-dataset",
+      "total_bytes": 137928,
+      "component_tree_digests": {},
+      "files": [
+        {
+          "path": "holdout.jsonl",
+          "bytes": 0,
+          "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "manifest.json",
+          "bytes": 1074,
+          "digest": "sha256:7c51718bf4728284d8fd131c16cc2f9845c6b74d4c9de71d012d4f28e71a51a2"
+        },
+        {
+          "path": "train.jsonl",
+          "bytes": 136854,
+          "digest": "sha256:927670027ab9a456187ebfd9779f7057e626f7eb16fc99f24e16e45d1a8e7769"
+        }
+      ]
+    },
+    {
+      "id": "current_source_corpus",
+      "kind": "file",
+      "mount": "/dev/shm/in/current-corpus.json",
+      "total_bytes": 152605,
+      "component_tree_digests": {},
+      "files": [
+        {
+          "path": "current-corpus.json",
+          "bytes": 152605,
+          "digest": "sha256:1c37a0e212936bfac8c86f955ad61fd378f58603413b45ece88382d528ace9d5"
+        }
+      ]
+    },
+    {
+      "id": "base_snapshot",
+      "kind": "directory",
+      "mount": "/dev/shm/in/base",
+      "total_bytes": 3098955668,
+      "component_tree_digests": {},
+      "files": [
+        {
+          "path": "config.json",
+          "bytes": 660,
+          "digest": "sha256:88f9a17863c05fb313515d2ff74b1098e0c35579f99068e32beda00618508ae0"
+        },
+        {
+          "path": "generation_config.json",
+          "bytes": 242,
+          "digest": "sha256:1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1"
+        },
+        {
+          "path": "merges.txt",
+          "bytes": 1671839,
+          "digest": "sha256:599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+        },
+        {
+          "path": "model.safetensors",
+          "bytes": 3087467144,
+          "digest": "sha256:c1b9b30e907950516ba3c646bdf570d8084c25a6410a0cdca80cf04b11bc13a8"
+        },
+        {
+          "path": "tokenizer.json",
+          "bytes": 7031645,
+          "digest": "sha256:c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "bytes": 7305,
+          "digest": "sha256:959e7f1d9a1b7641a6d6ce05ca97b75c7894fcb66cbe5a040406458fb1128ee4"
+        },
+        {
+          "path": "vocab.json",
+          "bytes": 2776833,
+          "digest": "sha256:ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ]
+    },
+    {
+      "id": "current_calibration_dataset",
+      "kind": "directory",
+      "mount": "/dev/shm/in/current-calibration-dataset",
+      "total_bytes": 137924,
+      "component_tree_digests": {},
+      "files": [
+        {
+          "path": "holdout.jsonl",
+          "bytes": 23390,
+          "digest": "sha256:8b07f781c6d160f752963b3a42f343c18d53a785d7b7cd09f472fdddbd2d7993"
+        },
+        {
+          "path": "manifest.json",
+          "bytes": 1070,
+          "digest": "sha256:6af4fe8952293339773e133a867d78e817d759a83138bc7400af98e2e04898ff"
+        },
+        {
+          "path": "train.jsonl",
+          "bytes": 113464,
+          "digest": "sha256:779995021b84418592da1f3d622e5a7eac80f59c3f2721a05b69e2355d30108a"
+        }
+      ]
+    },
+    {
+      "id": "auxiliary_normalized_dataset",
+      "kind": "directory",
+      "mount": "/dev/shm/in/aux-dataset",
+      "total_bytes": 15688217,
+      "component_tree_digests": {},
+      "files": [
+        {
+          "path": "excluded-refs.json",
+          "bytes": 3184,
+          "digest": "sha256:03859ad7b36efe69a3a202ad203697490c50de810a2ff51e00d2abb32d96f35d"
+        },
+        {
+          "path": "holdout.jsonl",
+          "bytes": 0,
+          "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "manifest.json",
+          "bytes": 3209,
+          "digest": "sha256:6496d2b3e8aa125f430227061255f430d92fd667f07f2fa62c1e1c83de51ed5f"
+        },
+        {
+          "path": "train.jsonl",
+          "bytes": 15681824,
+          "digest": "sha256:10fd0cc986802fc78e5ac39384fab1f109401a95fcec1af5e2ce9c3f0efa4e03"
+        }
+      ]
+    },
+    {
+      "id": "auxiliary_source_corpus",
+      "kind": "file",
+      "mount": "/dev/shm/in/aux-corpus.json",
+      "total_bytes": 19023989,
+      "component_tree_digests": {},
+      "files": [
+        {
+          "path": "aux-corpus.json",
+          "bytes": 19023989,
+          "digest": "sha256:eb76adcaabdd11c9ce0005c22e50a8530397c32127515a4461b1340e77e2d4b5"
+        }
+      ]
+    }
+  ],
+  "total_input_bytes": 6392237563,
+  "file_count": 35,
+  "aggregate_digest": "sha256:323e2b10ab7aeabf0e6a09a6c4b2297a45b145b6a8dfebe7cd6075c8c8db42cb"
+}
