@@ -1,0 +1,137 @@
+{
+  "candidate": {
+    "artifact": {
+      "bytes": 444414656,
+      "file_sha256": "sha256:94d9536d014b6e77b98d1d62d4f6d6b860255e771feac0d7fd2cd276e521eb06",
+      "tree_digest": "sha256:129fad63fb5badd46b66eda89c29ead5d5a69ae226ea46394ae3bba8bb4eba2f"
+    },
+    "bundle": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q5-m541-bundle",
+    "conversion_receipt_sha256": "sha256:97cfacfbc98edac7756246fa39f4d6b73c395e8f7a75d2df7421572ef1783517",
+    "load_spec_sha256": "sha256:fef137a4172522bcd01f3c9cc27d2110fabf186d40fddd8147646e8d1bef203a",
+    "max_input_tokens": 541,
+    "quantization": "Q5_K_M"
+  },
+  "decision": {
+    "decided_at_utc": "2026-09-01T01:40:55Z",
+    "outcome": "rejected",
+    "reason": "all three repeats passed the structural, request-latency, stream-piece, and RSS gates, but every repeat exceeded the predeclared 5256 ms p95 TTFT ceiling",
+    "worst_p95_ttft_ms": 8919.093132950366
+  },
+  "declaration": {
+    "commit": "a7b3411056eb4a7ce6f7f155c7e3bbf82f351c32",
+    "path": "training/experiment_specs/code-q5-m541-v5.json",
+    "sha256": "sha256:e84884f4226c1a3303bbeaa241df909f267c3c83ca19d6de4e47eece976c58c6"
+  },
+  "diagnostic": {
+    "quality_claim": "none: generated and reference code were never executed; public structural diagnostics are not execution pass@1",
+    "repeats": [
+      {
+        "failed_generations": 0,
+        "maximum_request_latency_ms": 29487.55114711821,
+        "maximum_stream_pieces": 356,
+        "peak_rss_bytes": 983588864,
+        "p95_ttft_ms": 8881.763014011085,
+        "results_bytes": 46213,
+        "results_sha256": "sha256:3e3a3d3109fd60a5895fa997bdc9ae780d7075342110de1d633043b2470f591a",
+        "scorer_extracted_parseable_python": 16,
+        "scorer_extracted_residual_fences": 0,
+        "scorer_extracted_top_level_task_func": 16,
+        "successful_generations": 16,
+        "summary_bytes": 49063,
+        "summary_sha256": "sha256:6c9dd7e59393e44fc94d3c0759d59d8657b95b6b1f68768d9adf495283e05197"
+      },
+      {
+        "failed_generations": 0,
+        "maximum_request_latency_ms": 29342.691984027624,
+        "maximum_stream_pieces": 356,
+        "peak_rss_bytes": 983433216,
+        "p95_ttft_ms": 8852.075322531164,
+        "results_bytes": 46215,
+        "results_sha256": "sha256:701d8b608a2aae47e11b5bcaa732d914921be02331e7aac27abd533fa31a3a43",
+        "scorer_extracted_parseable_python": 16,
+        "scorer_extracted_residual_fences": 0,
+        "scorer_extracted_top_level_task_func": 16,
+        "successful_generations": 16,
+        "summary_bytes": 49070,
+        "summary_sha256": "sha256:fd0db81f8036521dfdfd52c4deef13ee0371f24a69050c3cdbb103764eaf63fb"
+      },
+      {
+        "failed_generations": 0,
+        "maximum_request_latency_ms": 29626.38495489955,
+        "maximum_stream_pieces": 356,
+        "peak_rss_bytes": 983826432,
+        "p95_ttft_ms": 8919.093132950366,
+        "results_bytes": 46207,
+        "results_sha256": "sha256:0f19df17e8625fbfe0359d2f0ed7696e55c7e65cef0d804e3406a187600e784c",
+        "scorer_extracted_parseable_python": 16,
+        "scorer_extracted_residual_fences": 0,
+        "scorer_extracted_top_level_task_func": 16,
+        "successful_generations": 16,
+        "summary_bytes": 49064,
+        "summary_sha256": "sha256:28d1bcc6a1e4ec824b5fe862b474750d05924d2d07c6a30841bea965cfd9910a"
+      }
+    ],
+    "signed_mechanism_version": "0.3.0"
+  },
+  "gates": {
+    "failed_generations_maximum": {
+      "limit": 0,
+      "observed_worst": 0,
+      "passed": true
+    },
+    "maximum_request_latency_ms": {
+      "limit": 31200,
+      "observed_worst": 29626.38495489955,
+      "passed": true
+    },
+    "maximum_stream_pieces": {
+      "limit": 373,
+      "observed_worst": 356,
+      "passed": true
+    },
+    "peak_rss_bytes_maximum": {
+      "limit": 1073741824,
+      "observed_worst": 983826432,
+      "passed": true
+    },
+    "p95_ttft_ms_maximum": {
+      "limit": 5256,
+      "observed_worst": 8919.093132950366,
+      "passed": false
+    },
+    "scorer_extracted_parseable_python_minimum": {
+      "limit": 16,
+      "observed_worst": 16,
+      "passed": true
+    },
+    "scorer_extracted_residual_fences_maximum": {
+      "limit": 0,
+      "observed_worst": 0,
+      "passed": true
+    },
+    "scorer_extracted_top_level_task_func_minimum": {
+      "limit": 16,
+      "observed_worst": 16,
+      "passed": true
+    },
+    "successful_generations_minimum": {
+      "limit": 16,
+      "observed_worst": 16,
+      "passed": true
+    }
+  },
+  "safety": {
+    "corpus_code_executed": false,
+    "generated_code_compiled": false,
+    "generated_code_executed": false,
+    "hidden_or_scored_tests_accessed": false,
+    "static_ast_parse_only": true
+  },
+  "schema": "microtensor.code.quantization-experiment-decision.v1",
+  "selection": {
+    "fallback_artifact_tree_digest": "sha256:c4dff69435bf6593894fd585f2bf1ad6cabaab2b188948f7ff7da8dfc3be7bff",
+    "fallback_quantization": "Q8_0",
+    "promotion": false,
+    "submission": false
+  }
+}
