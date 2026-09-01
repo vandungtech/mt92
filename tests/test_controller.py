@@ -163,6 +163,23 @@ class ControllerTests(unittest.TestCase):
         raw = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
         payload["config_hash"] = "sha256:" + hashlib.sha256(raw).hexdigest()
 
+    def test_static_authorization_reports_limits_not_unperformed_estimates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, _state = self._build(
+                Path(temporary),
+                dry_run=False,
+                backend=FakeBackend(),
+            )
+            authorization = controller._static_details()["transaction_authorization"]
+            self.assertEqual(authorization["authorized_max_fee_rao"], 0)
+            self.assertEqual(authorization["authorized_max_deposit_rao"], 0)
+            self.assertEqual(
+                authorization["fee_and_deposit_check"],
+                "performed immediately before signing",
+            )
+            self.assertNotIn("estimated_fee_rao", authorization)
+            self.assertNotIn("required_deposit_rao", authorization)
+
     def test_v030_waits_below_activation_without_resolving_or_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             backend = FakeBackend()
