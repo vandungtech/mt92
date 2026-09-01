@@ -4,6 +4,7 @@ import ast
 import copy
 import hashlib
 import json
+import math
 import os
 import struct
 import subprocess
@@ -91,6 +92,8 @@ def _gguf(file_type: int) -> bytes:
 def _contract_gguf(
     metadata: list[tuple[str, int, object]],
     tensors: list[tuple[str, tuple[int, ...], int, bytes]],
+    *,
+    version: int = 3,
 ) -> bytes:
     def string(value: str) -> bytes:
         encoded = value.encode("utf-8")
@@ -115,7 +118,7 @@ def _contract_gguf(
     header = b"".join(
         (
             b"GGUF",
-            struct.pack("<I", 3),
+            struct.pack("<I", version),
             struct.pack("<Q", len(tensors)),
             struct.pack("<Q", len(metadata)),
             *(
@@ -165,12 +168,36 @@ def _imatrix_gguf(
     dataset: str = "calibration.txt",
     paired: bool = True,
     chunks: int = 128,
+    version: int = 3,
+    sums_dimensions: tuple[int, ...] = (2,),
+    counts_dimensions: tuple[int, ...] = (1,),
+    count_value: float = 65536.0,
 ) -> bytes:
+    sums_values = math.prod(sums_dimensions)
+    counts_values = math.prod(counts_dimensions)
     tensors = [
-        ("blk.0.attn_q.weight.in_sum2", (2, 1), 0, struct.pack("<ff", 1.0, 2.0)),
+        (
+            "blk.0.attn_q.weight.in_sum2",
+            sums_dimensions,
+            0,
+            struct.pack(
+                f"<{sums_values}f",
+                *(float(index + 1) for index in range(sums_values)),
+            ),
+        ),
     ]
     if paired:
-        tensors.append(("blk.0.attn_q.weight.counts", (1, 1), 0, struct.pack("<f", 4.0)))
+        tensors.append(
+            (
+                "blk.0.attn_q.weight.counts",
+                counts_dimensions,
+                0,
+                struct.pack(
+                    f"<{counts_values}f",
+                    *([count_value] * counts_values),
+                ),
+            )
+        )
     return _contract_gguf(
         [
             ("general.type", 8, "imatrix"),
@@ -179,6 +206,7 @@ def _imatrix_gguf(
             ("imatrix.chunk_size", 4, 512),
         ],
         tensors,
+        version=version,
     )
 
 
@@ -1018,6 +1046,77 @@ class CalibrationSelectionTests(ConversionFixture):
 
 
 class CalibratedMetadataTests(unittest.TestCase):
+    def test_imatrix_accepts_canonical_dense_and_expert_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
+            imatrix = Path(temporary) / "imatrix.gguf"
+            for sums_dimensions, counts_dimensions in (
+                ((2,), (1,)),
+                ((2, 2), (1, 2)),
+            ):
+                with self.subTest(
+                    sums_dimensions=sums_dimensions,
+                    counts_dimensions=counts_dimensions,
+                ):
+                    imatrix.write_bytes(
+                        _imatrix_gguf(
+                            sums_dimensions=sums_dimensions,
+                            counts_dimensions=counts_dimensions,
+                        )
+                    )
+                    self.assertEqual(
+                        converter._validate_imatrix_gguf(imatrix)["entries_count"],
+                        1,
+                    )
+
+    def test_imatrix_rejects_noncanonical_pair_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
+            imatrix = Path(temporary) / "imatrix.gguf"
+            for label, sums_dimensions, counts_dimensions in (
+                ("rank-one sums with rank-two counts", (2,), (1, 2)),
+                ("rank-two sums with rank-one counts", (2, 2), (1,)),
+                ("rank-one multiple counts", (4,), (2,)),
+                ("nondivisible mismatched expert axes", (2, 2), (1, 3)),
+                ("reversed expert count axes", (2, 3), (3, 1)),
+                ("rank-three tensors", (2, 2, 2), (1, 2, 2)),
+                ("padded singleton axes", (2, 1), (1, 1)),
+            ):
+                with self.subTest(label=label):
+                    imatrix.write_bytes(
+                        _imatrix_gguf(
+                            sums_dimensions=sums_dimensions,
+                            counts_dimensions=counts_dimensions,
+                        )
+                    )
+                    with self.assertRaisesRegex(
+                        converter.ConversionRefused,
+                        "tensor pair dimensions changed",
+                    ):
+                        converter._validate_imatrix_gguf(imatrix)
+
+    def test_imatrix_rejects_version_and_count_metadata_inconsistency(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
+            imatrix = Path(temporary) / "imatrix.gguf"
+            for raw, message in (
+                (_imatrix_gguf(version=2), "version changed"),
+                (_imatrix_gguf(count_value=65535.0), "maximum count"),
+            ):
+                with self.subTest(message=message):
+                    imatrix.write_bytes(raw)
+                    with self.assertRaisesRegex(converter.ConversionRefused, message):
+                        converter._validate_imatrix_gguf(imatrix)
+
+    def test_imatrix_rejects_invalid_count_values(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
+            imatrix = Path(temporary) / "imatrix.gguf"
+            for count_value in (0.0, 65536.5, math.inf, math.nan):
+                with self.subTest(count_value=count_value):
+                    imatrix.write_bytes(_imatrix_gguf(count_value=count_value))
+                    with self.assertRaisesRegex(
+                        converter.ConversionRefused,
+                        "invalid count value",
+                    ):
+                        converter._validate_imatrix_gguf(imatrix)
+
     def test_imatrix_and_final_model_metadata_are_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory(dir="/dev/shm") as temporary:
             root = Path(temporary)

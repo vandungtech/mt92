@@ -1867,6 +1867,8 @@ def _validate_imatrix_gguf(path: Path) -> dict[str, Any]:
         wanted_metadata=wanted,
         include_tensor_details=True,
     )
+    if parsed["version"] != 3:
+        raise ConversionRefused("imatrix GGUF version changed")
     if parsed["metadata_keys"] != wanted:
         raise ConversionRefused("imatrix GGUF metadata fields changed")
     _required_metadata(parsed, "general.type", kind=8, value="imatrix")
@@ -1904,6 +1906,7 @@ def _validate_imatrix_gguf(path: Path) -> dict[str, Any]:
         pairs.setdefault(base_name, {})[suffix] = tensor
     if any(frozenset(pair) != frozenset({".in_sum2", ".counts"}) for pair in pairs.values()):
         raise ConversionRefused("imatrix GGUF has an unmatched tensor pair")
+    validated_counts: list[float] = []
     tensor_ranges: list[tuple[int, int]] = []
     for pair in pairs.values():
         sums = pair[".in_sum2"]
@@ -1912,12 +1915,19 @@ def _validate_imatrix_gguf(path: Path) -> dict[str, Any]:
             raise ConversionRefused("imatrix GGUF tensor pairs must be F32")
         sums_dimensions = tuple(sums["dimensions"])
         counts_dimensions = tuple(counts["dimensions"])
-        if (
-            len(sums_dimensions) != 2
-            or len(counts_dimensions) != 2
-            or counts_dimensions[0] != 1
-            or sums_dimensions[1] != counts_dimensions[1]
-        ):
+        # The pinned writer constructs both tensors as 2-D, but GGUF serializes
+        # them with ggml_n_dims(), which removes a trailing singleton matrix
+        # axis. Dense entries therefore have canonical ranks 1/1, while expert
+        # entries with more than one matrix retain canonical ranks 2/2.
+        dense_dimensions = len(sums_dimensions) == 1 and counts_dimensions == (1,)
+        expert_dimensions = (
+            len(sums_dimensions) == 2
+            and len(counts_dimensions) == 2
+            and counts_dimensions[0] == 1
+            and counts_dimensions[1] > 1
+            and sums_dimensions[1] == counts_dimensions[1]
+        )
+        if not dense_dimensions and not expert_dimensions:
             raise ConversionRefused("imatrix GGUF tensor pair dimensions changed")
         for tensor in (sums, counts):
             elements = 1
@@ -1937,10 +1947,13 @@ def _validate_imatrix_gguf(path: Path) -> dict[str, Any]:
             if tensor is sums:
                 if any(not math.isfinite(value) or value < 0 for value in values):
                     raise ConversionRefused("imatrix GGUF contains an invalid sum-of-squares value")
-            elif any(
-                not math.isfinite(value) or value <= 0 or not value.is_integer() for value in values
-            ):
-                raise ConversionRefused("imatrix GGUF contains an invalid count value")
+            else:
+                for value in values:
+                    if not math.isfinite(value) or value <= 0 or not value.is_integer():
+                        raise ConversionRefused("imatrix GGUF contains an invalid count value")
+                    validated_counts.append(value)
+    if int(max(validated_counts)) // CALIBRATION_CONTEXT_TOKENS != CALIBRATION_CHUNKS:
+        raise ConversionRefused("imatrix GGUF maximum count is inconsistent with chunk metadata")
     ordered_ranges = sorted(tensor_ranges)
     if any(left[1] > right[0] for left, right in pairwise(ordered_ranges)):
         raise ConversionRefused("imatrix GGUF tensor data overlaps")
