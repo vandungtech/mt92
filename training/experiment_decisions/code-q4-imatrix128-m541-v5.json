@@ -1,0 +1,126 @@
+{
+  "schema": "microtensor.code.quantization-experiment-decision.v1",
+  "declaration": {
+    "commit": "3c3c998fba11adc81fe5a34aa81674cb0b5140b5",
+    "path": "training/experiment_specs/code-q4-imatrix128-m541-v5.json",
+    "sha256": "sha256:c5161533676a87c15433c8986089505f501b9a327e95ed2f420c0db63fc87a3c"
+  },
+  "code": {
+    "commit": "60737e9ee82173413f3828f4fb6c83210c45f49b",
+    "converter_path": "training/convert_code_gguf.py",
+    "converter_sha256": "sha256:76f00c515d2bf234630e8585282897137ef2955feda4a7b8cc4d605b3b346a1d"
+  },
+  "candidate": {
+    "id": "qwen3-06b-historical7299-v5-q4-imatrix128-m541",
+    "quantization": "Q4_K_M",
+    "max_input_tokens": 541
+  },
+  "execution": {
+    "external_invocation_id": "replay1",
+    "invocation_json_pointer": "/conversion/top_level_invocations/0",
+    "invocation_canonical_json_sha256": "sha256:052435eb3c936434b91a02b92fc5284a15eebdc92b8713bd2002c393e4af7968",
+    "argv_json_pointer": "/conversion/top_level_invocations/0/argv",
+    "argv_canonical_json_sha256": "sha256:fa31d18118d6b95ee12fc17cbef2de75d7025673425a96ad7959b47cb20f1e28",
+    "parent_environment_json_pointer": "/conversion/parent_environment_exact",
+    "parent_environment_canonical_json_sha256": "sha256:5825bf3dbd22d407e35ac2dc5197ee5fc51973098819e0f6dfb7124051df7cf6",
+    "child_environment_json_pointer": "/conversion/child_environment_exact",
+    "child_environment_canonical_json_sha256": "sha256:5825bf3dbd22d407e35ac2dc5197ee5fc51973098819e0f6dfb7124051df7cf6",
+    "canonical_json_encoding": "UTF-8 JSON, recursively lexicographically sorted object keys, compact separators, preserved array order, no trailing newline",
+    "started_at_utc": null,
+    "finished_at_utc": null,
+    "start_and_finish_timestamps_available": false,
+    "post_failure_observed_at_utc": "2026-09-01T05:58:42Z",
+    "post_failure_timestamp_is_not_execution_start_or_finish": true,
+    "exit_code": 1,
+    "stdout_before_traceback_bytes": 0,
+    "complete_stdout_or_stderr_capture_retained": false,
+    "failure": {
+      "exception_type": "ConversionRefused",
+      "message": "imatrix GGUF tensor pair dimensions changed",
+      "runtime_path": "/tmp/mt92-q4-code-60737e9/training/convert_code_gguf.py",
+      "repository_path": "training/convert_code_gguf.py",
+      "function": "_validate_imatrix_gguf",
+      "line": 1921,
+      "failed_imatrix_retained": false,
+      "failed_imatrix_cleanup": "removed with private staging during converter failure cleanup",
+      "failed_imatrix_tensor_shapes_directly_observed": false,
+      "recorded_exception_does_not_attest_exact_tensor_shapes": true
+    },
+    "control_flow": {
+      "replay1_started": true,
+      "convert_f16_returned_zero": true,
+      "calibrate_imatrix_returned_zero": true,
+      "imatrix_validation_failed": true,
+      "quantizer_started": false,
+      "internal_determinism_replay_started": false,
+      "external_replay2_started": false,
+      "basis": "traceback location plus control flow of the exact committed converter; child logs and timestamps were removed with private staging"
+    }
+  },
+  "post_failure_verification": {
+    "observed_at_utc": "2026-09-01T05:58:42Z",
+    "output_bundles": {
+      "replay1": {
+        "path": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay1-bundle",
+        "exists": false
+      },
+      "replay2": {
+        "path": "/dev/shm/microtensor-code/qwen3-06b-historical7299-final-r64-e2-b1ga16-seed92-v5-q4-imatrix128-m541-replay2-bundle",
+        "exists": false
+      }
+    },
+    "private_staging": {
+      "parent": "/dev/shm/microtensor-code",
+      "name_pattern": ".microtensor-code-gguf-*",
+      "matching_directories": 0
+    },
+    "matching_conversion_processes": 0,
+    "source_worktree_commit": "60737e9ee82173413f3828f4fb6c83210c45f49b",
+    "source_worktree_status_clean": true,
+    "llama_cpp_commit": "c589f0ed10c643678c4707dd160c21ac7633ebc0",
+    "llama_cpp_status_clean": true,
+    "dev_shm_free_human_observation": "12G",
+    "dev_shm_free_exact_bytes": 11817414656
+  },
+  "decision": {
+    "outcome": "rejected",
+    "reason": "replay1 failed after conversion children started because the pinned imatrix GGUF was refused by the declared tensor-pair dimension validator",
+    "retry_allowed": false,
+    "replay1_may_be_restarted": false,
+    "replay2_may_be_started": false,
+    "ad_hoc_third_invocation_allowed": false,
+    "policy_json_pointers": [
+      "/conversion/determinism/external_policy",
+      "/conversion/undeclared_retry_after_failed_tool_start_forbidden"
+    ]
+  },
+  "effects": {
+    "scope": "the failed replay1 invocation only; unrelated supervisor services excluded",
+    "final_artifact_published": false,
+    "diagnostics_started": false,
+    "wandb_upload_started": false,
+    "github_release_or_asset_created": false,
+    "coordinator_submission_started": false,
+    "network_operation_requested_by_this_invocation": false,
+    "kernel_packet_capture_available": false,
+    "transaction_composed": false,
+    "transaction_fee_estimated": false,
+    "transaction_signed": false,
+    "transaction_sent": false,
+    "transaction_hash": null
+  },
+  "safety": {
+    "offline_model_forward_pass_performed": true,
+    "corpus_code_executed": false,
+    "generated_code_compiled": false,
+    "generated_code_executed": false,
+    "hidden_or_scored_tests_accessed": false,
+    "credentials_or_wallet_values_passed_to_children": false
+  },
+  "selection": {
+    "promotion": false,
+    "submission": false,
+    "immutable_q8_fallback_unchanged": true,
+    "official_quality_or_rank_claim": null
+  }
+}
