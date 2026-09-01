@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# ruff: noqa: S101, S108 -- assertions and fixed /tmp identities are test fixtures.
 import copy
 import json
 import os
@@ -15,10 +16,44 @@ from types import SimpleNamespace
 from unittest import mock
 
 from training import run_code_gguf_diagnostic as launcher
+from training import validate_code_gguf_diagnostic as diagnostic_validator
 
 
 def _identity(raw: bytes) -> dict[str, object]:
     return {"bytes": len(raw), "sha256": launcher._digest_bytes(raw)}
+
+
+def _v7_spec_raw(*, status: str = "final") -> bytes:
+    commit = "a" * 40
+    payload = diagnostic_validator.normalized_v7_spec_payload(
+        source_root=Path("/tmp") / f"mt92-normalized-diagnostic-{commit[:7]}",
+        source_commit=commit,
+        source_files={
+            relative: {"bytes": 1, "digest": "sha256:" + "1" * 64}
+            for relative in diagnostic_validator.NORMALIZED_REQUIRED_SOURCE_FILES
+        },
+        training_receipt={"bytes": 2, "digest": "sha256:" + "2" * 64},
+        merged_tree_digest="sha256:" + "3" * 64,
+        conversion_schema="microtensor.code.gguf-conversion.v4",
+        conversion_receipt={"bytes": 4, "digest": "sha256:" + "4" * 64},
+        load_spec={"bytes": 5, "digest": "sha256:" + "5" * 64},
+        artifact={
+            "tree_digest": "sha256:" + "6" * 64,
+            "entrypoint_bytes": 42,
+            "entrypoint_digest": "sha256:" + "7" * 64,
+        },
+        runtime_identity={"bytes": 8, "digest": "sha256:" + "8" * 64},
+    )
+    payload["status"] = status
+    return launcher._pretty_json_bytes(payload)
+
+
+def _v7_public_files(spec_raw: bytes) -> dict[str, dict[str, object]]:
+    return {
+        launcher.LAUNCHER_RELATIVE: {"bytes": 10, "sha256": "sha256:" + "a" * 64},
+        launcher.VALIDATOR_RELATIVE: {"bytes": 20, "sha256": "sha256:" + "b" * 64},
+        launcher.NORMALIZED_SPEC_RELATIVE: _identity(spec_raw),
+    }
 
 
 @contextmanager
@@ -378,6 +413,187 @@ class ExactContractTests(unittest.TestCase):
             [str(path) for path in launcher.OUTPUT_ROOTS],
         )
 
+    def test_normalized_v7_payload_is_deterministic_fresh_and_refuses_unresolved_spec(self) -> None:
+        spec_raw = _v7_spec_raw()
+        files = _v7_public_files(spec_raw)
+        first = launcher.normalized_v7_addendum_payload(
+            experiment_spec_raw=spec_raw,
+            public_commit="b" * 40,
+            public_files=files,
+        )
+        second = launcher.normalized_v7_addendum_payload(
+            experiment_spec_raw=spec_raw,
+            public_commit="b" * 40,
+            public_files=copy.deepcopy(files),
+        )
+        self.assertEqual(
+            launcher._canonical_json_bytes(first), launcher._canonical_json_bytes(second)
+        )
+        self.assertEqual(first["schema"], launcher.NORMALIZED_ADDENDUM_SCHEMA)
+        expected_policy = launcher._normalized_artifact_use_policy()
+        self.assertEqual(first["artifact_use_policy"], expected_policy)
+        self.assertEqual(expected_policy["intended_use"], "local_quality_isolation_only")
+        self.assertIs(expected_policy["conversion_runtime_closure_attested"], False)
+        self.assertIs(expected_policy["publication_eligible"], False)
+        self.assertIs(expected_policy["submission_eligible"], False)
+        self.assertEqual(
+            first["execution"]["report_root"],  # type: ignore[index]
+            str(launcher.NORMALIZED_REPORT_ROOT),
+        )
+        self.assertTrue(set(launcher.NORMALIZED_OUTPUT_ROOTS).isdisjoint(launcher.OUTPUT_ROOTS))
+        invocations = first["invocations"]
+        assert isinstance(invocations, list)
+        self.assertEqual([item["repeat"] for item in invocations], ["r1", "r2", "r3"])
+        self.assertTrue(
+            all("historical7730-normalized" in item["argv"][-1] for item in invocations)
+        )
+        with self.assertRaisesRegex(launcher.LaunchRefused, "not final"):
+            launcher.normalized_v7_addendum_payload(
+                experiment_spec_raw=_v7_spec_raw(status="running"),
+                public_commit="b" * 40,
+                public_files=files,
+            )
+        changed_spec = bytearray(spec_raw)
+        changed_spec[-2] = 0x20
+        with self.assertRaises(launcher.LaunchRefused):
+            launcher.normalized_v7_addendum_payload(
+                experiment_spec_raw=bytes(changed_spec),
+                public_commit="b" * 40,
+                public_files=files,
+            )
+        payload = json.loads(spec_raw)
+        payload["artifact_use_policy"]["publication_eligible"] = True
+        with self.assertRaisesRegex(launcher.LaunchRefused, "use policy"):
+            launcher._normalized_spec_values(launcher._pretty_json_bytes(payload))
+        payload = json.loads(spec_raw)
+        payload["conversion"]["schema"] = "microtensor.code.gguf-conversion.v5"
+        with self.assertRaisesRegex(launcher.LaunchRefused, "only the generic v4"):
+            launcher._normalized_spec_values(launcher._pretty_json_bytes(payload))
+
+    def test_normalized_loader_binds_public_spec_source_and_artifact_hashes(self) -> None:
+        expected_policy = launcher._normalized_artifact_use_policy()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_raw = _v7_spec_raw()
+            sources = {
+                launcher.LAUNCHER_RELATIVE: b"l" * 10,
+                launcher.VALIDATOR_RELATIVE: b"v" * 20,
+                launcher.NORMALIZED_SPEC_RELATIVE: spec_raw,
+            }
+            for relative, raw in sources.items():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+            public_files = {relative: _identity(raw) for relative, raw in sources.items()}
+            payload = launcher.normalized_v7_addendum_payload(
+                experiment_spec_raw=spec_raw,
+                public_commit="b" * 40,
+                public_files=public_files,
+            )
+            addendum = root / launcher.NORMALIZED_ADDENDUM_RELATIVE
+            addendum.parent.mkdir(parents=True, exist_ok=True)
+            addendum.write_bytes(launcher._pretty_json_bytes(payload))
+            with (
+                mock.patch.object(launcher, "_repository_root", return_value=root),
+                mock.patch.object(
+                    launcher,
+                    "_validate_public_git_binding",
+                    return_value=_public_git("b" * 40),
+                ),
+            ):
+                contract = launcher._load_contract(addendum)
+                self.assertEqual(contract.protocol, "normalized-v7")
+                self.assertEqual(contract.validation_schema, launcher.NORMALIZED_VALIDATION_SCHEMA)
+                self.assertEqual(contract.artifact_tree_digest, "sha256:" + "6" * 64)
+                self.assertEqual(dict(contract.artifact_use_policy), expected_policy)
+
+                changed = json.loads(spec_raw)
+                changed["source"]["files"]["training/convert_code_gguf.py"]["digest"] = (
+                    "sha256:" + "f" * 64
+                )
+                (root / launcher.NORMALIZED_SPEC_RELATIVE).write_bytes(
+                    launcher._pretty_json_bytes(changed)
+                )
+                with self.assertRaises(launcher.LaunchRefused):
+                    launcher._load_contract(addendum)
+                (root / launcher.NORMALIZED_SPEC_RELATIVE).write_bytes(spec_raw)
+
+                tampered_addendum = copy.deepcopy(payload)
+                tampered_addendum["preflight"]["artifact_tree_sha256"] = "sha256:" + "e" * 64
+                addendum.write_bytes(launcher._pretty_json_bytes(tampered_addendum))
+                with self.assertRaisesRegex(launcher.LaunchRefused, "contract changed"):
+                    launcher._load_contract(addendum)
+
+                tampered_addendum = copy.deepcopy(payload)
+                tampered_addendum["artifact_use_policy"]["submission_eligible"] = True
+                addendum.write_bytes(launcher._pretty_json_bytes(tampered_addendum))
+                with self.assertRaisesRegex(launcher.LaunchRefused, "contract changed"):
+                    launcher._load_contract(addendum)
+
+    def test_normalized_receipt_repeats_policy_and_legacy_claim_shape_is_unchanged(self) -> None:
+        legacy = SimpleNamespace(protocol="v6")
+        self.assertEqual(
+            launcher._launch_receipt_claim(legacy),
+            {
+                "local_structural_diagnostic_only": True,
+                "generated_or_corpus_code_executed_by_validator": False,
+                "official_quality_or_rank_claimed": False,
+                "publication_authorized_by_receipt": False,
+                "submission_authorized_by_receipt": False,
+                "transaction_authorized_by_receipt": False,
+            },
+        )
+        policy = launcher._normalized_artifact_use_policy()
+        normalized = SimpleNamespace(
+            protocol="normalized-v7",
+            artifact_use_policy=tuple(sorted(policy.items())),
+        )
+        claim = launcher._launch_receipt_claim(normalized)
+        self.assertEqual(claim["artifact_use_policy"], policy)
+        self.assertIs(claim["artifact_use_policy"]["publication_eligible"], False)
+        self.assertIs(claim["artifact_use_policy"]["submission_eligible"], False)
+
+        validation_claim = {
+            "local_structural_diagnostics_only": True,
+            "completed_v6_training_lineage_bound": True,
+            "normalized_conversion_schema_bound": True,
+            "artifact_use_policy": copy.deepcopy(policy),
+            "quality_or_rank_claimed": False,
+            "promotion_authorized": False,
+            "remaining_local_repeats": ["r2", "r3"],
+            "remaining_external_gates": [
+                (
+                    "a fresh strengthened conversion with exact runtime closure and a fresh "
+                    "diagnostic namespace is required for any publication candidate"
+                ),
+                "official validator measurement and settled rank remain external",
+            ],
+        }
+        report = {
+            "schema": launcher.NORMALIZED_VALIDATION_SCHEMA,
+            "status": "partially_validated",
+            "through": "r1",
+            "aggregate": {
+                "validated_repeat_hard_gates_passed": True,
+                "all_declared_local_gates_passed": False,
+            },
+            "claim": validation_claim,
+        }
+        contract = SimpleNamespace(
+            protocol="normalized-v7",
+            validation_schema=launcher.NORMALIZED_VALIDATION_SCHEMA,
+            experiment_spec=Path("spec.json"),
+            artifact_use_policy=tuple(sorted(policy.items())),
+        )
+        fake_validator = SimpleNamespace(
+            validate_normalized_v7_diagnostic=mock.Mock(return_value=report),
+            _canonical_json_bytes=launcher._canonical_json_bytes,
+        )
+        launcher._validate_through(fake_validator, contract, "r1")
+        validation_claim["artifact_use_policy"]["publication_eligible"] = True
+        with self.assertRaisesRegex(launcher.LaunchRefused, "artifact-use"):
+            launcher._validate_through(fake_validator, contract, "r1")
+
     def test_strict_json_rejects_duplicates_nonfinite_and_bad_utf8(self) -> None:
         cases = (
             (b'{"a":1,"a":2}', "repeats JSON key"),
@@ -559,6 +775,29 @@ class OnceOnlyStateMachineTests(unittest.TestCase):
                 return_value=SimpleNamespace(name="post-static-validator"),
             ),
         )
+
+    def test_normalized_v7_namespace_is_one_shot_and_r2_cannot_skip_r1(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "base").mkdir(mode=0o700)
+            contract = replace(
+                _synthetic_contract(root),
+                protocol="normalized-v7",
+                validation_schema=launcher.NORMALIZED_VALIDATION_SCHEMA,
+                source_root=Path("/tmp/mt92-normalized-diagnostic-aaaaaaa"),
+                source_commit="a" * 40,
+            )
+            launcher._ensure_report_root(contract.report_root, root / "base")
+            with self.assertRaisesRegex(launcher.LaunchRefused, "prior diagnostic root"):
+                launcher._validate_namespace_state(contract, "r2")
+            self.assertEqual(launcher._validate_namespace_state(contract, "r1"), {})
+            launcher._atomic_publish_noreplace(
+                launcher._marker_path(contract, "r1"),
+                launcher._attempt_payload(contract, "r1"),
+            )
+            with self.assertRaisesRegex(launcher.LaunchRefused, "inventory changed"):
+                launcher._validate_namespace_state(contract, "r1")
+            self.assertFalse(contract.invocations[0].output_root.exists())
 
     def test_success_is_validated_and_r2_requires_revalidation_of_r1(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

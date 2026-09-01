@@ -32,7 +32,9 @@ sys.dont_write_bytecode = True
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v1"
+NORMALIZED_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v2"
 SPEC_SCHEMA: Final[str] = "microtensor.code.calibrated-quantization-experiment.v1"
+NORMALIZED_SPEC_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-experiment.v2"
 SPEC_BYTES: Final[int] = 49_270
 SPEC_DIGEST: Final[str] = "sha256:7dc168c55316b3cc378809d13f8fe3777bfa29824bc97dd603c215324b8bd97d"
 SOURCE_ROOT: Final[Path] = Path(
@@ -59,6 +61,8 @@ EXPECTED_EXAMPLES: Final[int] = 16
 REPEATS: Final[tuple[str, ...]] = ("r1", "r2", "r3")
 _DIGEST: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}\Z")
 GIT_EXECUTABLE: Final[str] = "/usr/bin/git"
+REPOSITORY: Final[str] = "https://github.com/vandungtech/mt92"
+ADVERTISED_REMOTE_REF: Final[str] = "refs/remotes/origin/main"
 PINNED_IMPORTS: Final[frozenset[str]] = frozenset(
     {
         "training",
@@ -238,6 +242,109 @@ EXPECTED_REPLAY_FILES: Final[dict[str, dict[str, tuple[int, str]]]] = {
     },
 }
 
+# The normalized diagnostic is deliberately a fresh protocol. Its mutable
+# outcome identities (completed training receipt, conversion receipt and GGUF
+# bytes) are supplied only by a final, canonical v2 experiment spec; none are
+# guessed from the currently running training job.
+NORMALIZED_CANDIDATE_ID: Final[str] = "qwen3-06b-historical7730-normalized-v7-q4-m541-py311"
+NORMALIZED_NAMESPACE: Final[str] = (
+    "qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030"
+)
+NORMALIZED_BUNDLE_ROOT: Final[Path] = Path(
+    "/dev/shm/microtensor-code/"  # noqa: S108 - declared immutable tmpfs path
+    "qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7-"
+    "q4-m541-py311-bundle"
+)
+NORMALIZED_OUTPUT_ROOTS: Final[tuple[Path, Path, Path]] = tuple(
+    Path("/dev/shm/microtensor-code/evaluations")  # noqa: S108
+    / f"{NORMALIZED_NAMESPACE}-{repeat}"
+    for repeat in REPEATS
+)
+NORMALIZED_TRAINING_RUN: Final[Path] = Path(
+    "/dev/shm/microtensor-code/runs/"  # noqa: S108
+    "qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7"
+)
+NORMALIZED_TRAINING_DATASET: Final[Path] = Path(
+    "/dev/shm/microtensor-code/dataset-historical7730-normalized-seed92-h0-v7"  # noqa: S108
+)
+NORMALIZED_TRAINING_SOURCE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json"  # noqa: S108
+)
+NORMALIZED_TRAINING_BASE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/base-qwen3-06b"  # noqa: S108
+)
+NORMALIZED_TRAINING_SCHEMA: Final[str] = "microtensor.code.training.v6"
+NORMALIZED_DATASET_SCHEMA: Final[str] = "microtensor.code.prepared.historical-normalized.v1"
+NORMALIZED_CORPUS_PROFILE: Final[str] = "historical7730-normalized-v1"
+NORMALIZED_CONVERSION_SCHEMA: Final[str] = "microtensor.code.gguf-conversion.v4"
+NORMALIZED_DATASET_FILES: Final[dict[str, dict[str, Any]]] = {
+    "manifest": {
+        "bytes": 3_209,
+        "digest": "sha256:6496d2b3e8aa125f430227061255f430d92fd667f07f2fa62c1e1c83de51ed5f",
+    },
+    "train": {
+        "bytes": 15_681_824,
+        "digest": "sha256:10fd0cc986802fc78e5ac39384fab1f109401a95fcec1af5e2ce9c3f0efa4e03",
+    },
+    "holdout": {
+        "bytes": 0,
+        "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    "excluded_refs": {
+        "bytes": 3_184,
+        "digest": "sha256:03859ad7b36efe69a3a202ad203697490c50de810a2ff51e00d2abb32d96f35d",
+    },
+}
+NORMALIZED_SOURCE_CORPUS_IDENTITY: Final[dict[str, Any]] = {
+    "bytes": 19_023_989,
+    "digest": "sha256:eb76adcaabdd11c9ce0005c22e50a8530397c32127515a4461b1340e77e2d4b5",
+    "canonical_digest": ("sha256:18fad3468cdd409b39a4786a982c098e1378445083e913e9a215669f0acbebdc"),
+}
+NORMALIZED_TOKENIZER_IDENTITY: Final[dict[str, Any]] = {
+    "bytes": 11_422_654,
+    "digest": "sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+}
+NORMALIZED_LLAMA_CPP_ROOT: Final[Path] = Path("/tmp/llama.cpp")  # noqa: S108
+NORMALIZED_CONVERTER_DIGEST: Final[str] = (
+    "sha256:e38975e1c68d98ac1664dfd530616eb35c72294382a4dd873d4746b23f27779f"
+)
+NORMALIZED_QUANTIZER_DIGEST: Final[str] = (
+    "sha256:e7d4504b4db541f9a17ae920a8b505bc07159055400319ee056f4309bd800580"
+)
+NORMALIZED_REQUIRED_SOURCE_FILES: Final[frozenset[str]] = frozenset(
+    {
+        "training/code_candidate.py",
+        "training/convert_code_gguf.py",
+        "training/evaluate_code.py",
+        "training/evaluate_code_gguf.py",
+        "training/historical_code_candidate.py",
+        "training/normalized_historical_code_candidate.py",
+        "training/train_code.py",
+    }
+)
+NORMALIZED_PINNED_IMPORTS: Final[frozenset[str]] = frozenset(
+    {
+        "training",
+        "training.code_candidate",
+        "training.evaluate_code_gguf",
+        "training.historical_code_candidate",
+        "training.normalized_historical_code_candidate",
+    }
+)
+NORMALIZED_PINNED_POST_CONTEXT_IMPORTS: Final[frozenset[str]] = frozenset(
+    {
+        *NORMALIZED_PINNED_IMPORTS,
+        "training.evaluate_code",
+        "training.train_code",
+    }
+)
+NORMALIZED_PINNED_MODULE_PATHS: Final[dict[str, str]] = {
+    **PINNED_MODULE_PATHS,
+    "training.normalized_historical_code_candidate": (
+        "training/normalized_historical_code_candidate.py"
+    ),
+}
+
 
 class ValidationRefused(ValueError):
     """The diagnostic or any of its declared bindings failed closed."""
@@ -252,6 +359,7 @@ class Toolset:
 
 
 _PINNED_TOOL_CACHE: Toolset | None = None
+_NORMALIZED_TOOL_CACHE: Toolset | None = None
 
 
 @dataclass(frozen=True)
@@ -272,12 +380,39 @@ class SpecBindings:
 
 
 @dataclass(frozen=True)
+class NormalizedSpecBindings:
+    """Final normalized-v7 inputs; every mutable outcome is content-addressed."""
+
+    path: Path
+    raw: bytes
+    payload: dict[str, Any]
+    output_roots: tuple[Path, Path, Path]
+    bundle: Path
+    dataset: Path
+    diagnostic_jsonl: Path
+    diagnostic_source: Path
+    training_arguments: tuple[Path, Path, Path, Path]
+    source_root: Path
+    source_commit: str
+    source_files: dict[str, dict[str, Any]]
+    gates: dict[str, int]
+    training_receipt: dict[str, Any]
+    merged_tree_digest: str
+    conversion_schema: str
+    conversion_receipt: dict[str, Any]
+    calibration_receipt: dict[str, Any] | None
+    load_spec: dict[str, Any]
+    artifact_contract: dict[str, Any]
+    runtime_contract: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ConversionBindings:
     """Static identities shared by all diagnostic repeats."""
 
     artifact: dict[str, Any]
     load_manifest: dict[str, Any]
-    replay_receipts: tuple[dict[str, Any], dict[str, Any]]
+    replay_receipts: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -525,6 +660,277 @@ def _nested(payload: Mapping[str, Any], *parts: str) -> Any:
     return value
 
 
+def _content_identity(value: Any, label: str, *, allow_empty: bool = False) -> dict[str, Any]:
+    identity = _mapping(value, label)
+    _exact_keys(identity, frozenset({"bytes", "digest"}), label)
+    minimum = 0 if allow_empty else 1
+    return {
+        "bytes": _integer(identity.get("bytes"), f"{label} bytes", minimum=minimum),
+        "digest": _require_digest(identity.get("digest"), f"{label} digest"),
+    }
+
+
+def _normalized_artifact_contract(value: Any) -> dict[str, Any]:
+    artifact = _mapping(value, "normalized artifact contract")
+    _exact_keys(
+        artifact,
+        frozenset({"tree_digest", "entrypoint_bytes", "entrypoint_digest"}),
+        "normalized artifact contract",
+    )
+    return {
+        "tree_digest": _require_digest(artifact.get("tree_digest"), "artifact tree digest"),
+        "entrypoint_bytes": _integer(
+            artifact.get("entrypoint_bytes"), "artifact entrypoint bytes", minimum=1
+        ),
+        "entrypoint_digest": _require_digest(
+            artifact.get("entrypoint_digest"), "artifact entrypoint digest"
+        ),
+    }
+
+
+def _normalized_artifact_use_policy(conversion_schema: str) -> dict[str, Any]:
+    """Return the permanent provenance scope implied by the conversion schema."""
+
+    if conversion_schema != NORMALIZED_CONVERSION_SCHEMA:
+        raise ValidationRefused("normalized v7 accepts only the generic v4 conversion schema")
+    return {
+        "intended_use": "local_quality_isolation_only",
+        "historical_conversion_environment": "not_recorded",
+        "historical_conversion_path": "not_recorded",
+        "historical_converter_interpreter": "not_recorded",
+        "historical_converter_dependencies": "not_recorded",
+        "historical_quantizer_library_closure": "not_recorded",
+        "conversion_runtime_closure_attested": False,
+        "publication_eligible": False,
+        "submission_eligible": False,
+        "publication_authorized": False,
+        "submission_authorized": False,
+        "limitation": (
+            "generic v4 conversion does not record its historical environment, PATH, "
+            "Python interpreter, converter dependencies, or quantizer library closure; "
+            "this artifact is permanently publication- and submission-ineligible"
+        ),
+    }
+
+
+def normalized_v7_spec_payload(
+    *,
+    source_root: Path,
+    source_commit: str,
+    source_files: Mapping[str, Mapping[str, Any]],
+    training_receipt: Mapping[str, Any],
+    merged_tree_digest: str,
+    conversion_schema: str,
+    conversion_receipt: Mapping[str, Any],
+    load_spec: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+    runtime_identity: Mapping[str, Any],
+    calibration_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the only accepted normalized-v7 final spec, without writing it.
+
+    The caller must provide final observed identities.  This function has no
+    placeholders and refuses an incomplete or provisional contract.
+    """
+
+    if not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise ValidationRefused("normalized source commit must be 40 lowercase hex characters")
+    expected_root = Path("/tmp") / f"mt92-normalized-diagnostic-{source_commit[:7]}"  # noqa: S108
+    if not source_root.is_absolute() or source_root != expected_root:
+        raise ValidationRefused(f"normalized source root must be {expected_root}")
+    if frozenset(source_files) != NORMALIZED_REQUIRED_SOURCE_FILES:
+        raise ValidationRefused("normalized source file closure changed")
+    normalized_files = {
+        relative: _content_identity(source_files[relative], f"normalized source {relative}")
+        for relative in sorted(source_files)
+    }
+    training_identity = _content_identity(training_receipt, "normalized training receipt")
+    merged_digest = _require_digest(merged_tree_digest, "normalized merged tree digest")
+    if conversion_schema != NORMALIZED_CONVERSION_SCHEMA:
+        raise ValidationRefused("normalized v7 accepts only the generic v4 conversion schema")
+    conversion_identity = _content_identity(conversion_receipt, "normalized conversion receipt")
+    load_identity = _content_identity(load_spec, "normalized load spec")
+    artifact_identity = _normalized_artifact_contract(artifact)
+    runtime = _content_identity(runtime_identity, "normalized signed runtime identity")
+    if calibration_receipt is not None:
+        raise ValidationRefused("generic normalized conversion cannot have calibration receipt")
+    calibration_identity = None
+    return {
+        "schema": NORMALIZED_SPEC_SCHEMA,
+        "status": "final",
+        "artifact_use_policy": _normalized_artifact_use_policy(conversion_schema),
+        "candidate": {
+            "id": NORMALIZED_CANDIDATE_ID,
+            "base_model": BASE_MODEL,
+            "bundle": str(NORMALIZED_BUNDLE_ROOT),
+            "entrypoint": ENTRYPOINT,
+            "quantization": QUANTIZATION,
+            "max_input_tokens": MAX_INPUT_TOKENS,
+            "tokenizer_json": dict(NORMALIZED_TOKENIZER_IDENTITY),
+        },
+        "source": {
+            "commit": source_commit,
+            "root": str(source_root),
+            "files": normalized_files,
+        },
+        "diagnostic": {
+            "dataset": str(
+                Path("/dev/shm/microtensor-code/dataset-dev-seed92-h16")  # noqa: S108
+            ),
+            "diagnostic_jsonl": str(
+                Path(
+                    "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl"  # noqa: S108
+                )
+            ),
+            "source_corpus": str(
+                Path("/dev/shm/microtensor-code/public-code-corpus-v1.json")  # noqa: S108
+            ),
+            "manifest": {
+                "bytes": 1_070,
+                "digest": EXPECTED_LINEAGE_DIGESTS["manifest"],
+            },
+            "holdout": {
+                "bytes": 23_390,
+                "digest": EXPECTED_LINEAGE_DIGESTS["holdout"],
+            },
+            "source": {
+                "bytes": 152_605,
+                "digest": EXPECTED_LINEAGE_DIGESTS["source"],
+            },
+            "refs_digest": EXPECTED_LINEAGE_DIGESTS["refs"],
+            "examples": EXPECTED_EXAMPLES,
+            "output_roots": [str(path) for path in NORMALIZED_OUTPUT_ROOTS],
+        },
+        "training_lineage": {
+            "schema": NORMALIZED_TRAINING_SCHEMA,
+            "training_run": str(NORMALIZED_TRAINING_RUN),
+            "training_dataset": str(NORMALIZED_TRAINING_DATASET),
+            "source_corpus": str(NORMALIZED_TRAINING_SOURCE),
+            "base": str(NORMALIZED_TRAINING_BASE),
+            "receipt": training_identity,
+            "merged_tree_digest": merged_digest,
+            "dataset_schema": NORMALIZED_DATASET_SCHEMA,
+            "corpus_profile": NORMALIZED_CORPUS_PROFILE,
+            "dataset_files": json.loads(_canonical_json_bytes(NORMALIZED_DATASET_FILES)),
+            "source_identity": json.loads(_canonical_json_bytes(NORMALIZED_SOURCE_CORPUS_IDENTITY)),
+        },
+        "conversion": {
+            "schema": conversion_schema,
+            "receipt": conversion_identity,
+            "calibration_receipt": calibration_identity,
+            "load_spec": load_identity,
+            "artifact": artifact_identity,
+        },
+        "runtime": {
+            "identity": runtime,
+            "interpreter": {
+                "path": "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",  # noqa: S108
+                "resolved_path": "/usr/bin/python3.12",
+                "bytes": 8_016_832,
+                "digest": (
+                    "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb"
+                ),
+            },
+        },
+        "gates": dict(EXPECTED_GATES),
+    }
+
+
+def _load_normalized_v7_spec(path: Path) -> NormalizedSpecBindings:
+    payload_value, raw = _strict_json_file(
+        path,
+        "normalized v7 diagnostic spec",
+        maximum=256 * 1024,
+    )
+    payload = dict(_mapping(payload_value, "normalized v7 diagnostic spec"))
+    expected_raw = (
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+    if raw != expected_raw:
+        raise ValidationRefused("normalized v7 diagnostic spec is not canonical sorted JSON")
+    _exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema",
+                "status",
+                "artifact_use_policy",
+                "candidate",
+                "source",
+                "diagnostic",
+                "training_lineage",
+                "conversion",
+                "runtime",
+                "gates",
+            }
+        ),
+        "normalized v7 diagnostic spec",
+    )
+    if payload.get("schema") != NORMALIZED_SPEC_SCHEMA or payload.get("status") != "final":
+        raise ValidationRefused("normalized v7 diagnostic spec is not final")
+    source = _mapping(payload.get("source"), "normalized source")
+    training = _mapping(payload.get("training_lineage"), "normalized training lineage")
+    conversion = _mapping(payload.get("conversion"), "normalized conversion")
+    runtime = _mapping(payload.get("runtime"), "normalized runtime")
+    rebuilt = normalized_v7_spec_payload(
+        source_root=Path(str(source.get("root"))),
+        source_commit=str(source.get("commit")),
+        source_files=_mapping(source.get("files"), "normalized source files"),
+        training_receipt=_mapping(training.get("receipt"), "normalized training receipt"),
+        merged_tree_digest=str(training.get("merged_tree_digest")),
+        conversion_schema=str(conversion.get("schema")),
+        conversion_receipt=_mapping(conversion.get("receipt"), "normalized conversion receipt"),
+        calibration_receipt=(
+            None
+            if conversion.get("calibration_receipt") is None
+            else _mapping(conversion.get("calibration_receipt"), "normalized calibration receipt")
+        ),
+        load_spec=_mapping(conversion.get("load_spec"), "normalized load spec"),
+        artifact=_mapping(conversion.get("artifact"), "normalized artifact"),
+        runtime_identity=_mapping(runtime.get("identity"), "normalized runtime identity"),
+    )
+    _json_exact(payload, rebuilt, "normalized v7 diagnostic spec contract")
+    diagnostic = _mapping(payload["diagnostic"], "normalized diagnostic")
+    return NormalizedSpecBindings(
+        path=path,
+        raw=raw,
+        payload=payload,
+        output_roots=NORMALIZED_OUTPUT_ROOTS,
+        bundle=NORMALIZED_BUNDLE_ROOT,
+        dataset=Path(str(diagnostic["dataset"])),
+        diagnostic_jsonl=Path(str(diagnostic["diagnostic_jsonl"])),
+        diagnostic_source=Path(str(diagnostic["source_corpus"])),
+        training_arguments=(
+            NORMALIZED_TRAINING_RUN,
+            NORMALIZED_TRAINING_DATASET,
+            NORMALIZED_TRAINING_SOURCE,
+            NORMALIZED_TRAINING_BASE,
+        ),
+        source_root=Path(str(source["root"])),
+        source_commit=str(source["commit"]),
+        source_files={
+            str(key): dict(_mapping(value, f"normalized source {key}"))
+            for key, value in _mapping(source["files"], "normalized source files").items()
+        },
+        gates=dict(EXPECTED_GATES),
+        training_receipt=dict(_mapping(training["receipt"], "normalized training receipt")),
+        merged_tree_digest=str(training["merged_tree_digest"]),
+        conversion_schema=str(conversion["schema"]),
+        conversion_receipt=dict(_mapping(conversion["receipt"], "normalized conversion receipt")),
+        calibration_receipt=(
+            None
+            if conversion["calibration_receipt"] is None
+            else dict(_mapping(conversion["calibration_receipt"], "normalized calibration receipt"))
+        ),
+        load_spec=dict(_mapping(conversion["load_spec"], "normalized load spec")),
+        artifact_contract=dict(_mapping(conversion["artifact"], "normalized artifact contract")),
+        runtime_contract=dict(_mapping(runtime, "normalized runtime")),
+    )
+
+
 def _load_spec(path: Path) -> SpecBindings:
     payload, raw = _strict_json_file(path, "v6 experiment spec", maximum=SPEC_BYTES)
     if len(raw) != SPEC_BYTES or _digest_bytes(raw) != SPEC_DIGEST:
@@ -628,7 +1034,18 @@ def _source_file_identity(path: Path, label: str) -> dict[str, Any]:
 def _git_output(source_root: Path, arguments: Sequence[str], label: str) -> bytes:
     try:
         completed = subprocess.run(
-            [GIT_EXECUTABLE, "-C", str(source_root), *arguments],
+            [
+                GIT_EXECUTABLE,
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                str(source_root),
+                *arguments,
+            ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             check=False,
@@ -636,6 +1053,8 @@ def _git_output(source_root: Path, arguments: Sequence[str], label: str) -> byte
             env={
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
                 "GIT_OPTIONAL_LOCKS": "0",
                 "LANG": "C.UTF-8",
                 "LC_ALL": "C.UTF-8",
@@ -651,6 +1070,79 @@ def _git_output(source_root: Path, arguments: Sequence[str], label: str) -> byte
     if completed.stderr:
         raise ValidationRefused(f"{label} check wrote stderr")
     return completed.stdout
+
+
+def _require_namespace_training_package(source_root: Path, package: Any | None = None) -> None:
+    """Require the signed tool tree to remain an initializer-free namespace package."""
+
+    training_root = source_root / "training"
+    try:
+        root_stat = training_root.lstat()
+    except OSError as exc:
+        raise ValidationRefused(
+            f"normalized training namespace cannot be inspected: {exc}"
+        ) from exc
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise ValidationRefused("normalized training namespace must be a non-symlink directory")
+    if os.path.lexists(training_root / "__init__.py"):
+        raise ValidationRefused("normalized training namespace gained an executable initializer")
+    if package is None:
+        return
+    package_paths = tuple(Path(item).resolve(strict=True) for item in package.__path__)
+    package_spec = getattr(package, "__spec__", None)
+    package_loader = getattr(package, "__loader__", None)
+    spec_paths = getattr(package_spec, "submodule_search_locations", None)
+    if (
+        package_paths != (training_root,)
+        or getattr(package, "__file__", None) is not None
+        or package_spec is None
+        or getattr(package_spec, "origin", object()) is not None
+        or getattr(package_spec, "loader", None) is not package_loader
+        or not isinstance(package_loader, importlib.machinery.NamespaceLoader)
+        or spec_paths is None
+        or tuple(Path(item).resolve(strict=True) for item in spec_paths) != (training_root,)
+    ):
+        raise ValidationRefused("normalized training package is not the sole signed namespace")
+
+
+def _require_no_normalized_import_shadows(source_root: Path) -> None:
+    """Reject alternate executable forms for every module in the signed import closure."""
+
+    training_root = source_root / "training"
+    root_names = {entry.name for entry in source_root.iterdir()}
+    if any(
+        name in {"training.py", "training.pyc", "training.pyd", "training.so"}
+        or (name.startswith("training.") and name.endswith((".so", ".pyd")))
+        for name in root_names
+    ):
+        raise ValidationRefused("normalized source contains a competing training module")
+    training_names = {entry.name for entry in training_root.iterdir()}
+    if "__pycache__" in training_names:
+        raise ValidationRefused("normalized source contains training bytecode shadows")
+    for relative in NORMALIZED_PINNED_MODULE_PATHS.values():
+        path = Path(relative)
+        stem = path.stem
+        for name in training_names:
+            if (
+                name == stem
+                or name == f"{stem}.pyc"
+                or (name.startswith(f"{stem}.") and name.endswith((".so", ".pyd")))
+            ):
+                raise ValidationRefused(f"normalized source contains a shadow for {path.name}")
+
+
+def _child_import_competitor(search_root: Path) -> bool:
+    if os.path.lexists(search_root / "training"):
+        return True
+    try:
+        names = {entry.name for entry in search_root.iterdir()}
+    except OSError:
+        return False
+    return any(
+        name in {"training.py", "training.pyc", "training.pyd", "training.so"}
+        or (name.startswith("training.") and name.endswith((".so", ".pyd")))
+        for name in names
+    )
 
 
 def _validate_clean_source_root(source_root: Path) -> None:
@@ -763,6 +1255,188 @@ def _load_pinned_tools(source_root: Path) -> Toolset:
     ):
         raise ValidationRefused("pinned evaluator module objects changed")
     return _PINNED_TOOL_CACHE
+
+
+def _load_normalized_v7_tools(spec: NormalizedSpecBindings) -> Toolset:
+    """Import only the final spec's clean, content-addressed static tool closure."""
+
+    global _NORMALIZED_TOOL_CACHE
+
+    try:
+        resolved = spec.source_root.resolve(strict=True)
+    except OSError as exc:
+        raise ValidationRefused(f"normalized source root cannot be resolved: {exc}") from exc
+    if resolved != spec.source_root:
+        raise ValidationRefused("normalized source root resolved elsewhere")
+    _require_namespace_training_package(resolved)
+    _require_no_normalized_import_shadows(resolved)
+    origin = _git_output(
+        resolved,
+        ("remote", "get-url", "origin"),
+        "normalized source origin",
+    )
+    try:
+        normalized_origin = origin.decode("utf-8", errors="strict").strip().rstrip("/")
+    except UnicodeDecodeError as exc:
+        raise ValidationRefused("normalized source origin is not UTF-8") from exc
+    if normalized_origin.endswith(".git"):
+        normalized_origin = normalized_origin[:-4]
+    if normalized_origin != REPOSITORY:
+        raise ValidationRefused("normalized source origin is not the authorized repository")
+    object_type = _git_output(
+        resolved,
+        ("cat-file", "-t", spec.source_commit),
+        "normalized source commit object",
+    )
+    if object_type != b"commit\n":
+        raise ValidationRefused("normalized source commit is not a Git commit object")
+    head = _git_output(resolved, ("rev-parse", "--verify", "HEAD"), "normalized source HEAD")
+    if head != (spec.source_commit + "\n").encode("ascii"):
+        raise ValidationRefused("normalized source HEAD changed")
+    _git_output(
+        resolved,
+        ("rev-parse", "--verify", f"{ADVERTISED_REMOTE_REF}^{{commit}}"),
+        "normalized advertised remote head",
+    )
+    _git_output(
+        resolved,
+        ("merge-base", "--is-ancestor", spec.source_commit, ADVERTISED_REMOTE_REF),
+        "normalized source advertised ancestry",
+    )
+    shallow = _git_output(
+        resolved,
+        ("rev-parse", "--is-shallow-repository"),
+        "normalized source shallow state",
+    )
+    if shallow != b"false\n":
+        raise ValidationRefused("normalized source ancestry is shallow")
+    if _git_output(resolved, ("replace", "-l"), "normalized source replacement refs"):
+        raise ValidationRefused("normalized source contains replacement refs")
+    graft_path_raw = _git_output(
+        resolved,
+        ("rev-parse", "--git-path", "info/grafts"),
+        "normalized source graft path",
+    )
+    try:
+        graft_path_text = graft_path_raw.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise ValidationRefused("normalized source graft path is not UTF-8") from exc
+    if not graft_path_text:
+        raise ValidationRefused("normalized source graft path is empty")
+    graft_path = Path(graft_path_text)
+    if not graft_path.is_absolute():
+        graft_path = resolved / graft_path
+    if os.path.lexists(graft_path):
+        raise ValidationRefused("normalized source contains a graft file")
+    status = _git_output(
+        resolved,
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+        "normalized source worktree",
+    )
+    ignored = _git_output(
+        resolved,
+        (
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+        ),
+        "normalized source ignored inventory",
+    )
+    if status or ignored:
+        raise ValidationRefused("normalized source worktree or import closure is not clean")
+    for relative, expected in sorted(spec.source_files.items()):
+        index_record = _git_output(
+            resolved,
+            ("ls-files", "-v", "--", relative),
+            f"normalized source index {relative}",
+        )
+        if index_record != f"H {relative}\n".encode():
+            raise ValidationRefused(f"normalized source {relative} has unusual index flags")
+        committed_raw = _git_output(
+            resolved,
+            ("show", f"{spec.source_commit}:{relative}"),
+            f"normalized source commit blob {relative}",
+        )
+        committed = {"bytes": len(committed_raw), "digest": _digest_bytes(committed_raw)}
+        if committed != expected:
+            raise ValidationRefused(f"normalized source commit blob {relative} changed")
+        actual = _source_file_identity(resolved / relative, f"normalized source {relative}")
+        if actual != expected:
+            raise ValidationRefused(f"normalized source {relative} changed")
+
+    preloaded = frozenset(
+        name for name in sys.modules if name == "training" or name.startswith("training.")
+    )
+    if preloaded:
+        if _NORMALIZED_TOOL_CACHE is None or preloaded not in {
+            NORMALIZED_PINNED_IMPORTS,
+            NORMALIZED_PINNED_POST_CONTEXT_IMPORTS,
+        }:
+            raise ValidationRefused(
+                f"normalized training package was preloaded: {sorted(preloaded)}"
+            )
+        candidate = _NORMALIZED_TOOL_CACHE.candidate
+        evaluator = _NORMALIZED_TOOL_CACHE.evaluator
+    else:
+        candidate = None
+        evaluator = None
+
+    root_text = str(resolved)
+    sanitized_path = [root_text]
+    for entry in sys.path:
+        search_root = resolved if not entry else Path(entry).resolve(strict=False)
+        if search_root == resolved:
+            continue
+        if _child_import_competitor(search_root):
+            raise ValidationRefused(
+                f"normalized evaluator child import path has a training competitor: {search_root}"
+            )
+        sanitized_path.append(entry)
+    sys.path[:] = sanitized_path
+    if candidate is None or evaluator is None:
+        try:
+            candidate = importlib.import_module("training.code_candidate")
+            evaluator = importlib.import_module("training.evaluate_code_gguf")
+        except ImportError as exc:
+            raise ValidationRefused(f"normalized evaluator import failed: {exc}") from exc
+    imported = frozenset(
+        name for name in sys.modules if name == "training" or name.startswith("training.")
+    )
+    allowed = (
+        {NORMALIZED_PINNED_IMPORTS}
+        if _NORMALIZED_TOOL_CACHE is None
+        else {NORMALIZED_PINNED_IMPORTS, NORMALIZED_PINNED_POST_CONTEXT_IMPORTS}
+    )
+    if imported not in allowed:
+        raise ValidationRefused(
+            f"normalized evaluator import closure changed: got {sorted(imported)}"
+        )
+    package = sys.modules["training"]
+    _require_namespace_training_package(resolved, package)
+    for name in sorted(imported - {"training"}):
+        relative = NORMALIZED_PINNED_MODULE_PATHS.get(name)
+        if relative is None:
+            raise ValidationRefused(f"normalized module {name} is not declared")
+        module = sys.modules[name]
+        module_path = getattr(module, "__file__", None)
+        if not isinstance(module_path, str):
+            raise ValidationRefused(f"normalized module {name} has no source path")
+        try:
+            if Path(module_path).resolve(strict=True) != resolved / relative:
+                raise ValidationRefused(f"normalized module {name} came from another tree")
+        except OSError as exc:
+            raise ValidationRefused(f"normalized module source cannot be resolved: {exc}") from exc
+    toolset = Toolset(candidate=candidate, evaluator=evaluator)
+    if _NORMALIZED_TOOL_CACHE is None:
+        _NORMALIZED_TOOL_CACHE = toolset
+    elif (
+        toolset.candidate is not _NORMALIZED_TOOL_CACHE.candidate
+        or toolset.evaluator is not _NORMALIZED_TOOL_CACHE.evaluator
+    ):
+        raise ValidationRefused("normalized evaluator module objects changed")
+    return _NORMALIZED_TOOL_CACHE
 
 
 def _validate_conversion_bundle(
@@ -985,6 +1659,239 @@ def _validate_conversion_bundles(spec: SpecBindings, tools: Toolset) -> Conversi
     )
 
 
+def _require_normalized_file(
+    path: Path,
+    expected: Mapping[str, Any],
+    label: str,
+    *,
+    maximum: int = MAX_JSON_BYTES,
+) -> bytes:
+    raw = _stable_regular_bytes(path, label, maximum=maximum)
+    if {"bytes": len(raw), "digest": _digest_bytes(raw)} != dict(expected):
+        raise ValidationRefused(f"{label} identity changed")
+    return raw
+
+
+def _canonical_receipt(raw: bytes, label: str) -> Mapping[str, Any]:
+    payload = _mapping(_strict_json(raw, label), label)
+    rendered = (
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+    if raw != rendered:
+        raise ValidationRefused(f"{label} is not canonical sorted JSON")
+    return payload
+
+
+def _validate_generic_conversion_commands(value: Any, spec: NormalizedSpecBindings) -> None:
+    commands = _sequence(value, "normalized generic conversion commands")
+    if len(commands) != 2:
+        raise ValidationRefused("normalized generic conversion requires exactly two commands")
+    parsed: list[Mapping[str, Any]] = []
+    for index, expected_name in enumerate(("convert_f16", "quantize")):
+        command = _mapping(commands[index], f"normalized generic command {index + 1}")
+        _exact_keys(
+            command,
+            frozenset({"name", "argv", "returncode", "started_at_unix_ns", "finished_at_unix_ns"}),
+            f"normalized generic command {index + 1}",
+        )
+        argv = _sequence(command.get("argv"), f"normalized generic command {index + 1} argv")
+        if (
+            command.get("name") != expected_name
+            or type(command.get("returncode")) is not int
+            or command.get("returncode") != 0
+            or not argv
+            or any(not isinstance(item, str) or not item for item in argv)
+        ):
+            raise ValidationRefused("normalized generic command order, argv, or status changed")
+        started = _integer(
+            command.get("started_at_unix_ns"),
+            f"normalized generic command {index + 1} start",
+            minimum=1,
+        )
+        finished = _integer(
+            command.get("finished_at_unix_ns"),
+            f"normalized generic command {index + 1} finish",
+            minimum=started,
+        )
+        if finished < started:
+            raise ValidationRefused("normalized generic command finished before it started")
+        parsed.append(command)
+    convert_argv = list(_sequence(parsed[0].get("argv"), "convert_f16 argv"))
+    quantize_argv = list(_sequence(parsed[1].get("argv"), "quantize argv"))
+    if (
+        len(convert_argv) != 6
+        or convert_argv[0] != str(NORMALIZED_LLAMA_CPP_ROOT / "convert_hf_to_gguf.py")
+        or convert_argv[1] != str(spec.training_arguments[0] / "merged")
+        or convert_argv[2] != "--outfile"
+        or convert_argv[4:] != ["--outtype", "f16"]
+        or len(quantize_argv) != 4
+        or quantize_argv[0] != str(NORMALIZED_LLAMA_CPP_ROOT / "build/bin/llama-quantize")
+        or quantize_argv[1] != convert_argv[3]
+        or quantize_argv[3] != QUANTIZATION
+    ):
+        raise ValidationRefused("normalized generic conversion argv contract changed")
+    f16_path = Path(convert_argv[3])
+    model_path = Path(quantize_argv[2])
+    if (
+        not f16_path.is_absolute()
+        or not model_path.is_absolute()
+        or f16_path.name != "model-f16.gguf"
+        or model_path.name != ENTRYPOINT
+        or model_path.parent.name != "artifact"
+        or f16_path.parent != model_path.parent.parent
+        or f16_path.parent.parent != spec.bundle.parent
+        or not f16_path.parent.name.startswith(".microtensor-code-gguf-")
+        or ".." in f16_path.parts
+        or ".." in model_path.parts
+    ):
+        raise ValidationRefused("normalized generic conversion staging paths changed")
+
+
+def _validate_normalized_conversion_bundle(
+    spec: NormalizedSpecBindings,
+    tools: Toolset,
+) -> ConversionBindings:
+    if spec.conversion_schema != NORMALIZED_CONVERSION_SCHEMA:
+        raise ValidationRefused("normalized v7 accepts only the generic v4 conversion schema")
+    if spec.calibration_receipt is not None:
+        raise ValidationRefused("generic normalized conversion gained calibration")
+    label = "normalized conversion bundle"
+    expected_tree = {
+        "artifact": "directory",
+        "conversion-receipt.json": "file",
+        "load-spec.json": "file",
+    }
+    _require_exact_tree(spec.bundle, expected_tree, label)
+    _require_exact_tree(spec.bundle / "artifact", {ENTRYPOINT: "file"}, f"{label} artifact")
+
+    load_raw = _require_normalized_file(
+        spec.bundle / "load-spec.json", spec.load_spec, "normalized load spec"
+    )
+    load_manifest = dict(_canonical_receipt(load_raw, "normalized load spec"))
+    expected_load = {
+        "format": "gguf",
+        "quantization": QUANTIZATION,
+        "entrypoint": ENTRYPOINT,
+        "max_input": {"tokens": MAX_INPUT_TOKENS},
+        "preprocessing": {"tokenizer": "tokenizer.json"},
+        "base_model": BASE_MODEL,
+    }
+    _json_exact(load_manifest, expected_load, "normalized load manifest")
+
+    receipt_raw = _require_normalized_file(
+        spec.bundle / "conversion-receipt.json",
+        spec.conversion_receipt,
+        "normalized conversion receipt",
+    )
+    receipt = _canonical_receipt(receipt_raw, "normalized conversion receipt")
+    _exact_keys(
+        receipt,
+        frozenset(
+            {
+                "schema",
+                "status",
+                "track",
+                "hardware_class",
+                "base_model",
+                "llama_cpp_revision",
+                "source",
+                "conversion",
+                "artifact",
+                "load_manifest",
+                "calibration_receipt_digest",
+            }
+        ),
+        "normalized conversion receipt",
+    )
+    expected_header = {
+        "schema": spec.conversion_schema,
+        "status": "complete",
+        "track": TRACK,
+        "hardware_class": HARDWARE_CLASS,
+        "base_model": BASE_MODEL,
+        "llama_cpp_revision": LLAMA_CPP_REVISION,
+    }
+    for field, expected in expected_header.items():
+        if receipt.get(field) != expected:
+            raise ValidationRefused(f"normalized conversion {field} changed")
+    _json_exact(receipt.get("load_manifest"), load_manifest, "normalized receipt load manifest")
+    source = _mapping(receipt.get("source"), "normalized conversion source")
+    expected_source = {
+        "training_schema": NORMALIZED_TRAINING_SCHEMA,
+        "dataset_schema": NORMALIZED_DATASET_SCHEMA,
+        "corpus_profile": NORMALIZED_CORPUS_PROFILE,
+        "training_metadata_digest": spec.training_receipt["digest"],
+        "merged_tree_digest": spec.merged_tree_digest,
+        "excluded_refs": dict(NORMALIZED_DATASET_FILES["excluded_refs"]),
+    }
+    _json_exact(source, expected_source, "normalized conversion source")
+
+    if receipt.get("calibration_receipt_digest") is not None:
+        raise ValidationRefused("generic normalized conversion gained calibration")
+    conversion_keys = frozenset({"converter_digest", "quantizer_digest", "commands"})
+    conversion = _mapping(receipt.get("conversion"), "normalized conversion execution")
+    _exact_keys(conversion, conversion_keys, "normalized conversion execution")
+    for field in ("converter_digest", "quantizer_digest"):
+        _require_digest(conversion.get(field), f"normalized {field}")
+    expected_tools = {
+        "converter_digest": NORMALIZED_CONVERTER_DIGEST,
+        "quantizer_digest": NORMALIZED_QUANTIZER_DIGEST,
+    }
+    if any(conversion.get(field) != digest for field, digest in expected_tools.items()):
+        raise ValidationRefused("normalized generic conversion tool digest changed")
+    _validate_generic_conversion_commands(conversion.get("commands"), spec)
+
+    try:
+        artifact = tools.evaluator.artifact_identity(
+            spec.bundle / "artifact",
+            entrypoint=ENTRYPOINT,
+            expected_digest=spec.artifact_contract["tree_digest"],
+            quantization=QUANTIZATION,
+        )
+    except Exception as exc:
+        raise ValidationRefused(f"normalized artifact validation failed: {exc}") from exc
+    entrypoint = _mapping(artifact.get("entrypoint"), "normalized artifact entrypoint")
+    gguf = _mapping(entrypoint.get("gguf"), "normalized GGUF header")
+    if (
+        gguf.get("version") != 3
+        or gguf.get("architecture") != "qwen3"
+        or gguf.get("file_type") != 15
+    ):
+        raise ValidationRefused("normalized artifact is not GGUF v3 Qwen3 Q4_K_M")
+    actual_contract = {
+        "tree_digest": artifact.get("tree_digest"),
+        "entrypoint_bytes": entrypoint.get("bytes"),
+        "entrypoint_digest": entrypoint.get("digest"),
+    }
+    _json_exact(actual_contract, spec.artifact_contract, "normalized candidate bundle identity")
+    declared_artifact = _mapping(receipt.get("artifact"), "normalized declared artifact")
+    _json_exact(
+        declared_artifact,
+        {
+            **actual_contract,
+            "quantization": QUANTIZATION,
+        },
+        "normalized conversion artifact receipt",
+    )
+    if artifact.get("root") != str(spec.bundle / "artifact"):
+        raise ValidationRefused("normalized artifact resolved outside its declared bundle")
+    receipt_record: dict[str, Any] = {
+        "root": str(spec.bundle),
+        "schema": spec.conversion_schema,
+        "conversion_receipt": dict(spec.conversion_receipt),
+        "calibration_receipt": None,
+        "load_spec": dict(spec.load_spec),
+    }
+    return ConversionBindings(
+        artifact=dict(artifact),
+        load_manifest=load_manifest,
+        replay_receipts=(receipt_record,),
+    )
+
+
 def _validate_public_lineage(lineage: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> None:
     prepared = _mapping(lineage.get("prepared_dataset"), "public prepared dataset")
     manifest_file = _mapping(prepared.get("manifest"), "public manifest identity")
@@ -1031,6 +1938,74 @@ def _validate_training_lineage(lineage: Mapping[str, Any]) -> None:
         raise ValidationRefused("v5 merged tree digest changed")
 
 
+def _validate_normalized_training_lineage(
+    lineage: Mapping[str, Any],
+    spec: NormalizedSpecBindings,
+) -> None:
+    if (
+        lineage.get("status") != "provided_and_validated"
+        or lineage.get("schema") != NORMALIZED_TRAINING_SCHEMA
+    ):
+        raise ValidationRefused("normalized training lineage is not completed v6")
+    receipt = _mapping(lineage.get("receipt"), "normalized training receipt")
+    if {
+        "bytes": receipt.get("bytes"),
+        "digest": receipt.get("digest"),
+    } != spec.training_receipt:
+        raise ValidationRefused("normalized training receipt identity changed")
+    prepared = _mapping(lineage.get("prepared_dataset"), "normalized prepared dataset")
+    expected_prepared = {
+        "manifest": NORMALIZED_DATASET_FILES["manifest"],
+        "train": NORMALIZED_DATASET_FILES["train"],
+        "holdout": NORMALIZED_DATASET_FILES["holdout"],
+        "excluded_refs": NORMALIZED_DATASET_FILES["excluded_refs"],
+    }
+    for field, expected in expected_prepared.items():
+        identity = _mapping(prepared.get(field), f"normalized prepared {field}")
+        actual = {"bytes": identity.get("bytes"), "digest": identity.get("digest")}
+        if actual != expected:
+            raise ValidationRefused(f"normalized prepared {field} identity changed")
+    manifest = _mapping(prepared.get("manifest_payload"), "normalized prepared manifest")
+    required_manifest = {
+        "schema": NORMALIZED_DATASET_SCHEMA,
+        "corpus_profile": NORMALIZED_CORPUS_PROFILE,
+        "seed": 92,
+        "source_examples": 8_000,
+        "train_examples": 7_730,
+        "holdout_examples": 0,
+        "excluded_examples": 270,
+        "excluded_refs_file": "excluded-refs.json",
+        "excluded_refs_canonical_bytes": NORMALIZED_DATASET_FILES["excluded_refs"]["bytes"],
+        "excluded_refs_digest": NORMALIZED_DATASET_FILES["excluded_refs"]["digest"],
+    }
+    for field, expected in required_manifest.items():
+        if manifest.get(field) != expected:
+            raise ValidationRefused(f"normalized prepared manifest {field} changed")
+    source = _mapping(lineage.get("source_corpus"), "normalized source corpus")
+    source_file = _mapping(source.get("file"), "normalized source corpus file")
+    actual_source = {
+        "bytes": source_file.get("bytes"),
+        "digest": source_file.get("digest"),
+        "canonical_digest": source.get("canonical_digest"),
+    }
+    if actual_source != NORMALIZED_SOURCE_CORPUS_IDENTITY:
+        raise ValidationRefused("normalized source-corpus identity changed")
+    base = _mapping(lineage.get("base_snapshot"), "normalized base snapshot")
+    files = _mapping(base.get("files"), "normalized base files")
+    tokenizer = _mapping(files.get("tokenizer.json"), "normalized tokenizer.json")
+    if (
+        base.get("base_model") != BASE_MODEL
+        or tokenizer.get("bytes") != NORMALIZED_TOKENIZER_IDENTITY["bytes"]
+        or tokenizer.get("sha256")
+        != NORMALIZED_TOKENIZER_IDENTITY["digest"].removeprefix("sha256:")
+    ):
+        raise ValidationRefused("normalized Qwen/tokenizer identity changed")
+    run = _mapping(lineage.get("run"), "normalized training run")
+    merged = _mapping(run.get("merged"), "normalized merged tree")
+    if run.get("kind") != "merged" or merged.get("digest") != spec.merged_tree_digest:
+        raise ValidationRefused("normalized completed merged tree changed")
+
+
 def _validate_runtime_identity(identity: Mapping[str, Any], spec: SpecBindings) -> None:
     python = _mapping(identity.get("python"), "signed runtime Python")
     executable = _mapping(python.get("executable"), "signed runtime Python executable")
@@ -1062,6 +2037,43 @@ def _validate_runtime_identity(identity: Mapping[str, Any], spec: SpecBindings) 
         or _digest_bytes(runtime_raw) != EXPECTED_RUNTIME_IDENTITY_DIGEST
     ):
         raise ValidationRefused("full signed runtime identity changed")
+
+
+def _validate_normalized_runtime_identity(
+    identity: Mapping[str, Any],
+    spec: NormalizedSpecBindings,
+) -> None:
+    declared = _mapping(spec.runtime_contract, "normalized runtime contract")
+    expected_interpreter = _mapping(declared.get("interpreter"), "normalized signed interpreter")
+    python = _mapping(identity.get("python"), "normalized runtime Python")
+    executable = _mapping(python.get("executable"), "normalized Python executable")
+    lexical = Path(sys.executable)
+    try:
+        resolved = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise ValidationRefused("normalized validator Python cannot be resolved") from exc
+    if (
+        str(lexical) != expected_interpreter.get("path")
+        or str(resolved) != expected_interpreter.get("resolved_path")
+        or executable.get("path") != expected_interpreter.get("resolved_path")
+        or executable.get("bytes") != expected_interpreter.get("bytes")
+        or executable.get("digest") != expected_interpreter.get("digest")
+        or python.get("version") != EXPECTED_PYTHON_VERSION
+    ):
+        raise ValidationRefused("normalized signed Python identity changed")
+    microtensor = _mapping(identity.get("microtensor"), "normalized Microtensor runtime")
+    if (
+        microtensor.get("release_version") != "0.3.0"
+        or microtensor.get("mechanism_version") != "0.3.0"
+    ):
+        raise ValidationRefused("normalized signed Microtensor identity changed")
+    expected_identity = _mapping(declared.get("identity"), "normalized runtime identity")
+    raw = _canonical_json_bytes(identity)
+    if {
+        "bytes": len(raw),
+        "digest": _digest_bytes(raw),
+    } != dict(expected_identity):
+        raise ValidationRefused("normalized full signed runtime identity changed")
 
 
 def _prepare_context(
@@ -1099,6 +2111,64 @@ def _prepare_context(
     except Exception as exc:
         raise ValidationRefused(f"signed load-manifest construction failed: {exc}") from exc
     _json_exact(manifest, conversion.load_manifest, "signed load manifest")
+    configuration = {
+        "generation": evaluator.generation_contract(MAX_INPUT_TOKENS),
+        "load_manifest": manifest,
+        "artifact_digest": conversion.artifact["tree_digest"],
+        "diagnostic_refs_digest": evaluation_dataset["diagnostic_jsonl"]["refs_digest"],
+    }
+    return ValidationContext(
+        candidate=tools.candidate,
+        evaluator=evaluator,
+        rows=tuple(dict(row) for row in rows),
+        evaluation_dataset=dict(evaluation_dataset),
+        training_lineage=dict(training_lineage),
+        runtime=runtime,
+        artifact=dict(conversion.artifact),
+        configuration=configuration,
+        configuration_digest=_digest_bytes(_canonical_json_bytes(configuration)),
+    )
+
+
+def _prepare_normalized_context(
+    spec: NormalizedSpecBindings,
+    tools: Toolset,
+    conversion: ConversionBindings,
+) -> ValidationContext:
+    evaluator = tools.evaluator
+    try:
+        rows, evaluation_dataset = evaluator.load_public_diagnostic(
+            spec.dataset,
+            spec.diagnostic_jsonl,
+            spec.diagnostic_source,
+        )
+        _validate_public_lineage(evaluation_dataset, rows)
+        training_lineage, extra_modules = evaluator.load_v6_training_lineage(
+            *spec.training_arguments
+        )
+        _validate_normalized_training_lineage(training_lineage, spec)
+        runtime = evaluator.load_signed_runtime(extra_tool_modules=extra_modules)
+    except ValidationRefused:
+        raise
+    except Exception as exc:
+        raise ValidationRefused(f"normalized static lineage/runtime replay failed: {exc}") from exc
+    _validate_normalized_runtime_identity(
+        _mapping(runtime.identity, "normalized signed runtime identity"), spec
+    )
+    try:
+        manifest = runtime.load_manifest_type(
+            format=runtime.artifact_format.GGUF,
+            quantization=QUANTIZATION,
+            entrypoint=ENTRYPOINT,
+            max_input={"tokens": MAX_INPUT_TOKENS},
+            preprocessing={"tokenizer": "tokenizer.json"},
+            base_model=BASE_MODEL,
+        ).to_dict()
+    except Exception as exc:
+        raise ValidationRefused(
+            f"normalized signed load-manifest construction failed: {exc}"
+        ) from exc
+    _json_exact(manifest, conversion.load_manifest, "normalized signed load manifest")
     configuration = {
         "generation": evaluator.generation_contract(MAX_INPUT_TOKENS),
         "load_manifest": manifest,
@@ -1575,6 +2645,93 @@ def validate_diagnostic(
     }
 
 
+def validate_normalized_v7_diagnostic(
+    experiment_spec: Path,
+    through: str,
+    *,
+    _tools: Toolset | None = None,
+) -> dict[str, Any]:
+    """Validate a final normalized-v7 diagnostic without constructing a model."""
+
+    if through not in REPEATS:
+        raise ValidationRefused(f"through must be one of {REPEATS}")
+    spec = _load_normalized_v7_spec(experiment_spec)
+    tools = _tools if _tools is not None else _load_normalized_v7_tools(spec)
+    conversion = _validate_normalized_conversion_bundle(spec, tools)
+    context = _prepare_normalized_context(spec, tools, conversion)
+    completed = REPEATS.index(through) + 1
+    _require_no_staging(spec.output_roots)
+    for root in spec.output_roots[completed:]:
+        if os.path.lexists(root):
+            raise ValidationRefused(
+                f"future normalized diagnostic root already exists before {through}: {root}"
+            )
+    receipts = [
+        _validate_repeat(
+            repeat,
+            spec.output_roots[index],
+            context=context,
+            gates=spec.gates,
+        )
+        for index, repeat in enumerate(REPEATS[:completed])
+    ]
+    aggregate = _aggregate(receipts)
+    for receipt in receipts:
+        receipt.pop("raw_output_digests")
+    conversion_record = conversion.replay_receipts[0]
+    use_policy = _mapping(spec.payload.get("artifact_use_policy"), "artifact use policy")
+    remaining_external_gates = [
+        (
+            "a fresh strengthened conversion with exact runtime closure and a fresh "
+            "diagnostic namespace is required for any publication candidate"
+        ),
+        "official validator measurement and settled rank remain external",
+    ]
+    return {
+        "schema": NORMALIZED_VALIDATION_SCHEMA,
+        "status": "validated" if completed == len(REPEATS) else "partially_validated",
+        "protocol": "normalized-v7",
+        "through": through,
+        "experiment_spec": {"bytes": len(spec.raw), "digest": _digest_bytes(spec.raw)},
+        "conversion": {
+            "schema": spec.conversion_schema,
+            "bundle": str(spec.bundle),
+            "artifact_tree_digest": conversion.artifact["tree_digest"],
+            "entrypoint_digest": conversion.artifact["entrypoint"]["digest"],
+            "load_manifest_digest": _digest_bytes(_canonical_json_bytes(conversion.load_manifest)),
+            "receipt_bindings": conversion_record,
+        },
+        "repeats": receipts,
+        "aggregate": aggregate,
+        "claim": {
+            "local_structural_diagnostics_only": True,
+            "completed_v6_training_lineage_bound": True,
+            "normalized_conversion_schema_bound": True,
+            "artifact_use_policy": dict(use_policy),
+            "quality_or_rank_claimed": False,
+            "promotion_authorized": False,
+            "remaining_local_repeats": list(REPEATS[completed:]),
+            "remaining_external_gates": remaining_external_gates,
+        },
+    }
+
+
+def validate_declared_diagnostic(experiment_spec: Path, through: str) -> dict[str, Any]:
+    """Dispatch only between the two explicit immutable diagnostic schemas."""
+
+    payload, _raw = _strict_json_file(
+        experiment_spec,
+        "diagnostic experiment spec",
+        maximum=MAX_JSON_BYTES,
+    )
+    schema = _mapping(payload, "diagnostic experiment spec").get("schema")
+    if schema == SPEC_SCHEMA:
+        return validate_diagnostic(experiment_spec, through)
+    if schema == NORMALIZED_SPEC_SCHEMA:
+        return validate_normalized_v7_diagnostic(experiment_spec, through)
+    raise ValidationRefused("diagnostic experiment schema is unsupported")
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-spec", type=Path, required=True)
@@ -1591,7 +2748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     args = _parse_args(argv)
     try:
-        report = validate_diagnostic(args.experiment_spec, args.through)
+        report = validate_declared_diagnostic(args.experiment_spec, args.through)
     except (ValidationRefused, OSError, ValueError) as exc:
         print(f"code GGUF diagnostic validation refused: {exc}", file=sys.stderr)
         return 2

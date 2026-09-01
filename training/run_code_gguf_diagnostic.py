@@ -50,7 +50,9 @@ sys.dont_write_bytecode = True
 
 SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-launch-receipt.v1"
 ATTEMPT_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-launch-attempt.v1"
+LEGACY_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v1"
 ADDENDUM_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-execution-addendum.v1"
+NORMALIZED_ADDENDUM_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-execution-addendum.v2"
 ADDENDUM_STATUS: Final[str] = "final"
 REPOSITORY: Final[str] = "https://github.com/vandungtech/mt92"
 SOURCE_COMMIT: Final[str] = "c9c4effe77271b2d70d4eee745de654af9d1e74d"
@@ -60,6 +62,13 @@ SPEC_BYTES: Final[int] = 49_270
 SPEC_DIGEST: Final[str] = "sha256:7dc168c55316b3cc378809d13f8fe3777bfa29824bc97dd603c215324b8bd97d"
 ADDENDUM_RELATIVE: Final[str] = (
     "training/experiment_specs/code-q4-imatrix128-m541-v6-diagnostic-addendum.json"
+)
+NORMALIZED_SPEC_RELATIVE: Final[str] = (
+    "training/experiment_specs/code-historical7730-normalized-v7-q4-m541-py311-diagnostic.json"
+)
+NORMALIZED_ADDENDUM_RELATIVE: Final[str] = (
+    "training/experiment_specs/"
+    "code-historical7730-normalized-v7-q4-m541-py311-diagnostic-addendum.json"
 )
 LAUNCHER_RELATIVE: Final[str] = "training/run_code_gguf_diagnostic.py"
 VALIDATOR_RELATIVE: Final[str] = "training/validate_code_gguf_diagnostic.py"
@@ -161,6 +170,42 @@ OUTPUT_ROOTS: Final[tuple[Path, Path, Path]] = tuple(
     )
     for repeat in REPEATS
 )
+NORMALIZED_NAMESPACE: Final[str] = (
+    "qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030"
+)
+NORMALIZED_REPORT_ROOT: Final[Path] = Path(
+    "/dev/shm/microtensor-code/diagnostic-launch-receipts/"  # noqa: S108
+    f"{NORMALIZED_NAMESPACE}"
+)
+NORMALIZED_OUTPUT_ROOTS: Final[tuple[Path, Path, Path]] = tuple(
+    Path("/dev/shm/microtensor-code/evaluations")  # noqa: S108
+    / f"{NORMALIZED_NAMESPACE}-{repeat}"
+    for repeat in REPEATS
+)
+NORMALIZED_BUNDLE_ROOT: Final[Path] = Path(
+    "/dev/shm/microtensor-code/"  # noqa: S108
+    "qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7-"
+    "q4-m541-py311-bundle"
+)
+NORMALIZED_TRAINING_RUN: Final[Path] = Path(
+    "/dev/shm/microtensor-code/runs/"  # noqa: S108
+    "qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7"
+)
+NORMALIZED_TRAINING_DATASET: Final[Path] = Path(
+    "/dev/shm/microtensor-code/"  # noqa: S108
+    "dataset-historical7730-normalized-seed92-h0-v7"
+)
+NORMALIZED_TRAINING_SOURCE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json"  # noqa: S108
+)
+NORMALIZED_TRAINING_BASE: Final[Path] = Path(
+    "/dev/shm/microtensor-code/base-qwen3-06b"  # noqa: S108
+)
+NORMALIZED_DATASET: Final[Path] = DATASET
+NORMALIZED_DIAGNOSTIC_JSONL: Final[Path] = DIAGNOSTIC_JSONL
+NORMALIZED_CURRENT_SOURCE: Final[Path] = CURRENT_SOURCE_CORPUS
+NORMALIZED_SPEC_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-experiment.v2"
+NORMALIZED_VALIDATION_SCHEMA: Final[str] = "microtensor.code.gguf-diagnostic-validation.v2"
 
 INSPECTION_SCOPE: Final[str] = (
     "Linux /proc fields are sampled while the PTRACE_TRACEME exec-stop is held, before "
@@ -223,6 +268,19 @@ PREFLIGHT_CHECKS: Final[list[str]] = [
     "artifact_tree_and_entrypoint",
     "public_diagnostic_dataset",
     "historical_training_lineage",
+    "signed_runtime",
+    "static_python_process_escape_scan",
+]
+NORMALIZED_PREFLIGHT_CHECKS: Final[list[str]] = [
+    "experiment_spec",
+    "public_launcher_validator_and_spec_source",
+    "pinned_normalized_source_files",
+    "pinned_normalized_source_commit_and_clean_status",
+    "signed_interpreter",
+    "completed_v6_training_lineage",
+    "normalized_v4_local_quality_isolation_conversion_bundle",
+    "candidate_artifact_tree_entrypoint_and_load_spec",
+    "public_diagnostic_dataset",
     "signed_runtime",
     "static_python_process_escape_scan",
 ]
@@ -290,6 +348,16 @@ class LaunchContract:
     environment: dict[str, str]
     report_root: Path
     invocations: tuple[Invocation, Invocation, Invocation]
+    protocol: str = "v6"
+    source_root: Path = SOURCE_ROOT
+    source_commit: str = SOURCE_COMMIT
+    experiment_spec_identity: FileIdentity = FileIdentity(SPEC_BYTES, SPEC_DIGEST)
+    artifact_tree_digest: str = ARTIFACT_TREE_DIGEST
+    artifact_entrypoint_bytes: int = ARTIFACT_ENTRYPOINT_BYTES
+    artifact_entrypoint_digest: str = ARTIFACT_ENTRYPOINT_DIGEST
+    interpreter_identity: FileIdentity = FileIdentity(INTERPRETER_BYTES, INTERPRETER_DIGEST)
+    validation_schema: str = LEGACY_VALIDATION_SCHEMA
+    artifact_use_policy: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -580,7 +648,434 @@ def _repository_root() -> Path:
     return root
 
 
+def _normalized_content_identity(value: Any, label: str) -> FileIdentity:
+    payload = _mapping(value, label)
+    _exact_keys(payload, frozenset({"bytes", "digest"}), label)
+    return FileIdentity(
+        bytes=_integer(payload.get("bytes"), f"{label} bytes", minimum=1),
+        sha256=_digest(payload.get("digest"), f"{label} digest"),
+    )
+
+
+def _normalized_artifact_use_policy() -> dict[str, Any]:
+    return {
+        "intended_use": "local_quality_isolation_only",
+        "historical_conversion_environment": "not_recorded",
+        "historical_conversion_path": "not_recorded",
+        "historical_converter_interpreter": "not_recorded",
+        "historical_converter_dependencies": "not_recorded",
+        "historical_quantizer_library_closure": "not_recorded",
+        "conversion_runtime_closure_attested": False,
+        "publication_eligible": False,
+        "submission_eligible": False,
+        "publication_authorized": False,
+        "submission_authorized": False,
+        "limitation": (
+            "generic v4 conversion does not record its historical environment, PATH, "
+            "Python interpreter, converter dependencies, or quantizer library closure; "
+            "this artifact is permanently publication- and submission-ineligible"
+        ),
+    }
+
+
+def _normalized_spec_values(raw: bytes) -> dict[str, Any]:
+    payload = _mapping(_strict_json(raw, "normalized v7 diagnostic spec"), "normalized spec")
+    if raw != _pretty_json_bytes(payload):
+        raise LaunchRefused("normalized v7 diagnostic spec is not canonical sorted JSON")
+    _exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema",
+                "status",
+                "artifact_use_policy",
+                "candidate",
+                "source",
+                "diagnostic",
+                "training_lineage",
+                "conversion",
+                "runtime",
+                "gates",
+            }
+        ),
+        "normalized v7 diagnostic spec",
+    )
+    if payload.get("schema") != NORMALIZED_SPEC_SCHEMA or payload.get("status") != "final":
+        raise LaunchRefused("normalized v7 diagnostic spec is not final")
+    candidate = _mapping(payload.get("candidate"), "normalized candidate")
+    _exact_keys(
+        candidate,
+        frozenset(
+            {
+                "id",
+                "base_model",
+                "bundle",
+                "entrypoint",
+                "quantization",
+                "max_input_tokens",
+                "tokenizer_json",
+            }
+        ),
+        "normalized candidate",
+    )
+    if (
+        candidate.get("id") != "qwen3-06b-historical7730-normalized-v7-q4-m541-py311"
+        or candidate.get("base_model") != "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca"
+        or candidate.get("bundle") != str(NORMALIZED_BUNDLE_ROOT)
+        or candidate.get("entrypoint") != "model.gguf"
+        or candidate.get("quantization") != "Q4_K_M"
+        or candidate.get("max_input_tokens") != 541
+        or candidate.get("tokenizer_json")
+        != {
+            "bytes": 11_422_654,
+            "digest": ("sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"),
+        }
+    ):
+        raise LaunchRefused("normalized Qwen/tokenizer/candidate contract changed")
+    source = _mapping(payload.get("source"), "normalized source")
+    _exact_keys(source, frozenset({"commit", "root", "files"}), "normalized source")
+    source_commit = source.get("commit")
+    if not isinstance(source_commit, str) or _COMMIT.fullmatch(source_commit) is None:
+        raise LaunchRefused("normalized source commit is malformed")
+    source_root = Path(str(source.get("root")))
+    expected_source_root = Path("/tmp") / f"mt92-normalized-diagnostic-{source_commit[:7]}"  # noqa: S108
+    if source_root != expected_source_root:
+        raise LaunchRefused(f"normalized source root must be {expected_source_root}")
+    source_files = _mapping(source.get("files"), "normalized source files")
+    required_source_files = frozenset(
+        {
+            "training/code_candidate.py",
+            "training/convert_code_gguf.py",
+            "training/evaluate_code.py",
+            "training/evaluate_code_gguf.py",
+            "training/historical_code_candidate.py",
+            "training/normalized_historical_code_candidate.py",
+            "training/train_code.py",
+        }
+    )
+    _exact_keys(source_files, required_source_files, "normalized source files")
+    for relative, identity in source_files.items():
+        _normalized_content_identity(identity, f"normalized source {relative}")
+
+    diagnostic = _mapping(payload.get("diagnostic"), "normalized diagnostic")
+    expected_diagnostic_scalars = {
+        "dataset": str(NORMALIZED_DATASET),
+        "diagnostic_jsonl": str(NORMALIZED_DIAGNOSTIC_JSONL),
+        "source_corpus": str(NORMALIZED_CURRENT_SOURCE),
+        "refs_digest": ("sha256:73edc2a7674e0c718ea4ef7ea67c638b1a2c431320789b632aad5909309e01ee"),
+        "examples": 16,
+        "output_roots": [str(item) for item in NORMALIZED_OUTPUT_ROOTS],
+    }
+    for field, expected in expected_diagnostic_scalars.items():
+        if diagnostic.get(field) != expected:
+            raise LaunchRefused(f"normalized diagnostic {field} changed")
+
+    training = _mapping(payload.get("training_lineage"), "normalized training lineage")
+    expected_training = {
+        "schema": "microtensor.code.training.v6",
+        "training_run": str(NORMALIZED_TRAINING_RUN),
+        "training_dataset": str(NORMALIZED_TRAINING_DATASET),
+        "source_corpus": str(NORMALIZED_TRAINING_SOURCE),
+        "base": str(NORMALIZED_TRAINING_BASE),
+        "dataset_schema": "microtensor.code.prepared.historical-normalized.v1",
+        "corpus_profile": "historical7730-normalized-v1",
+    }
+    for field, expected in expected_training.items():
+        if training.get(field) != expected:
+            raise LaunchRefused(f"normalized training {field} changed")
+    _normalized_content_identity(training.get("receipt"), "normalized training receipt")
+    _digest(training.get("merged_tree_digest"), "normalized merged tree digest")
+
+    conversion = _mapping(payload.get("conversion"), "normalized conversion")
+    _exact_keys(
+        conversion,
+        frozenset({"schema", "receipt", "calibration_receipt", "load_spec", "artifact"}),
+        "normalized conversion",
+    )
+    conversion_schema = conversion.get("schema")
+    if conversion_schema != "microtensor.code.gguf-conversion.v4":
+        raise LaunchRefused("normalized v7 accepts only the generic v4 conversion schema")
+    _normalized_content_identity(conversion.get("receipt"), "normalized conversion receipt")
+    _normalized_content_identity(conversion.get("load_spec"), "normalized load spec")
+    calibration = conversion.get("calibration_receipt")
+    if calibration is not None:
+        raise LaunchRefused("normalized v4 conversion gained calibration")
+    artifact = _mapping(conversion.get("artifact"), "normalized artifact")
+    _exact_keys(
+        artifact,
+        frozenset({"tree_digest", "entrypoint_bytes", "entrypoint_digest"}),
+        "normalized artifact",
+    )
+    artifact_values = {
+        "tree_digest": _digest(artifact.get("tree_digest"), "normalized artifact tree"),
+        "entrypoint_bytes": _integer(
+            artifact.get("entrypoint_bytes"), "normalized artifact bytes", minimum=1
+        ),
+        "entrypoint_digest": _digest(
+            artifact.get("entrypoint_digest"), "normalized artifact entrypoint"
+        ),
+    }
+    runtime = _mapping(payload.get("runtime"), "normalized runtime")
+    _exact_keys(runtime, frozenset({"identity", "interpreter"}), "normalized runtime")
+    _normalized_content_identity(runtime.get("identity"), "normalized runtime identity")
+    interpreter = _mapping(runtime.get("interpreter"), "normalized interpreter")
+    if interpreter != {
+        "path": str(INTERPRETER_PATH),
+        "resolved_path": str(INTERPRETER_RESOLVED),
+        "bytes": INTERPRETER_BYTES,
+        "digest": INTERPRETER_DIGEST,
+    }:
+        raise LaunchRefused("normalized signed interpreter contract changed")
+    artifact_use_policy = _mapping(
+        payload.get("artifact_use_policy"), "normalized artifact use policy"
+    )
+    expected_use_policy = _normalized_artifact_use_policy()
+    _exact_keys(
+        artifact_use_policy,
+        frozenset(expected_use_policy),
+        "normalized artifact use policy",
+    )
+    if _canonical_json_bytes(artifact_use_policy) != _canonical_json_bytes(expected_use_policy):
+        raise LaunchRefused("normalized artifact use policy changed")
+    return {
+        "payload": dict(payload),
+        "source_root": source_root,
+        "source_commit": source_commit,
+        "artifact": artifact_values,
+        "artifact_use_policy": dict(artifact_use_policy),
+    }
+
+
+def _normalized_v7_expected_invocations(
+    spec_payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    values = _normalized_spec_values(_pretty_json_bytes(spec_payload))
+    artifact = _mapping(values["artifact"], "normalized artifact")
+    records: list[dict[str, Any]] = []
+    for repeat, output_root in zip(REPEATS, NORMALIZED_OUTPUT_ROOTS, strict=True):
+        argv = [
+            str(INTERPRETER_PATH),
+            "-m",
+            "training.evaluate_code_gguf",
+            "--dataset",
+            str(NORMALIZED_DATASET),
+            "--diagnostic-jsonl",
+            str(NORMALIZED_DIAGNOSTIC_JSONL),
+            "--source-corpus",
+            str(NORMALIZED_CURRENT_SOURCE),
+            "--artifact",
+            str(NORMALIZED_BUNDLE_ROOT / "artifact"),
+            "--artifact-digest",
+            str(artifact["tree_digest"]),
+            "--entrypoint",
+            "model.gguf",
+            "--quantization",
+            "Q4_K_M",
+            "--max-input-tokens",
+            "541",
+            "--training-run",
+            str(NORMALIZED_TRAINING_RUN),
+            "--training-dataset",
+            str(NORMALIZED_TRAINING_DATASET),
+            "--training-source-corpus",
+            str(NORMALIZED_TRAINING_SOURCE),
+            "--training-base",
+            str(NORMALIZED_TRAINING_BASE),
+            "--out",
+            str(output_root),
+        ]
+        argv_raw = _canonical_json_bytes(argv)
+        records.append(
+            {
+                "repeat": repeat,
+                "argv": argv,
+                "argv_canonical_json_bytes": len(argv_raw),
+                "argv_canonical_json_sha256": _digest_bytes(argv_raw),
+                "output_root": str(output_root),
+            }
+        )
+    return records[0], records[1], records[2]
+
+
+def normalized_v7_addendum_payload(
+    *,
+    experiment_spec_raw: bytes,
+    public_commit: str,
+    public_files: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build a final v7 addendum deterministically; never invent missing hashes."""
+
+    values = _normalized_spec_values(experiment_spec_raw)
+    if _COMMIT.fullmatch(public_commit) is None:
+        raise LaunchRefused("normalized public commit must be 40 lowercase hex characters")
+    required_public_files = frozenset(
+        {LAUNCHER_RELATIVE, VALIDATOR_RELATIVE, NORMALIZED_SPEC_RELATIVE}
+    )
+    if frozenset(public_files) != required_public_files:
+        raise LaunchRefused("normalized public source file closure changed")
+    normalized_files = {
+        relative: _parse_identity(public_files[relative], f"normalized public {relative}").as_dict()
+        for relative in sorted(public_files)
+    }
+    spec_identity = FileIdentity(len(experiment_spec_raw), _digest_bytes(experiment_spec_raw))
+    if normalized_files[NORMALIZED_SPEC_RELATIVE] != spec_identity.as_dict():
+        raise LaunchRefused("normalized public spec identity differs from supplied bytes")
+    artifact = _mapping(values["artifact"], "normalized artifact")
+    artifact_use_policy = _mapping(values["artifact_use_policy"], "normalized artifact use policy")
+    source_root = Path(str(values["source_root"]))
+    source_commit = str(values["source_commit"])
+    return {
+        "schema": NORMALIZED_ADDENDUM_SCHEMA,
+        "status": ADDENDUM_STATUS,
+        "public_source": {
+            "repository": REPOSITORY,
+            "commit": public_commit,
+            "raw_readback_verified": True,
+            "files": normalized_files,
+        },
+        "experiment_spec": {
+            "path": NORMALIZED_SPEC_RELATIVE,
+            **spec_identity.as_dict(),
+        },
+        "artifact_use_policy": dict(artifact_use_policy),
+        "interpreter": {
+            "path": str(INTERPRETER_PATH),
+            "resolved_path": str(INTERPRETER_RESOLVED),
+            "bytes": INTERPRETER_BYTES,
+            "sha256": INTERPRETER_DIGEST,
+        },
+        "execution": {
+            "cwd": str(source_root),
+            "shell": False,
+            "stdin": "/dev/null",
+            "umask": UMASK_TEXT,
+            "close_fds": True,
+            "new_session": True,
+            "parent_death_signal": "SIGKILL",
+            "timeout_seconds": TIMEOUT_SECONDS,
+            "environment_exact": dict(EXACT_ENVIRONMENT),
+            "environment_canonical_json_bytes": ENVIRONMENT_CANONICAL_BYTES,
+            "environment_canonical_json_sha256": ENVIRONMENT_CANONICAL_DIGEST,
+            "parent_environment_exact": True,
+            "report_root": str(NORMALIZED_REPORT_ROOT),
+            "post_exec_inspection": dict(POST_EXEC_INSPECTION),
+            "containment": dict(CONTAINMENT_CONTRACT),
+            "repeat_policy": dict(REPEAT_POLICY),
+        },
+        "preflight": {
+            "validator_path": VALIDATOR_RELATIVE,
+            "validator_mode": "in_process_static_only",
+            "model_engine_construction_permitted": False,
+            "required_checks": list(NORMALIZED_PREFLIGHT_CHECKS),
+            "source_commit": source_commit,
+            "artifact_tree_sha256": artifact["tree_digest"],
+            "artifact_entrypoint_bytes": artifact["entrypoint_bytes"],
+            "artifact_entrypoint_sha256": artifact["entrypoint_digest"],
+        },
+        "invocations": list(_normalized_v7_expected_invocations(values["payload"])),
+    }
+
+
+def _load_normalized_v7_contract(path: Path) -> LaunchContract:
+    repository_root = _repository_root()
+    expected_path = repository_root / NORMALIZED_ADDENDUM_RELATIVE
+    try:
+        if path.resolve(strict=True) != expected_path:
+            raise LaunchRefused(f"normalized addendum must be repository file {expected_path}")
+    except OSError as exc:
+        raise LaunchRefused(f"normalized diagnostic addendum cannot be resolved: {exc}") from exc
+    raw = _stable_regular_bytes(path, "normalized diagnostic addendum", maximum=MAX_ADDENDUM_BYTES)
+    payload = _mapping(_strict_json(raw, "normalized diagnostic addendum"), "addendum")
+    if raw != _pretty_json_bytes(payload):
+        raise LaunchRefused("normalized diagnostic addendum is not canonical sorted JSON")
+    public_source = _mapping(payload.get("public_source"), "normalized public source")
+    public_commit = public_source.get("commit")
+    if not isinstance(public_commit, str):
+        raise LaunchRefused("normalized public commit is absent")
+    public_files = _mapping(public_source.get("files"), "normalized public files")
+    spec_path = repository_root / NORMALIZED_SPEC_RELATIVE
+    spec_raw = _stable_regular_bytes(
+        spec_path,
+        "normalized diagnostic spec",
+        maximum=MAX_ADDENDUM_BYTES,
+    )
+    expected_payload = normalized_v7_addendum_payload(
+        experiment_spec_raw=spec_raw,
+        public_commit=public_commit,
+        public_files=public_files,
+    )
+    if _canonical_json_bytes(payload) != _canonical_json_bytes(expected_payload):
+        raise LaunchRefused("normalized diagnostic addendum contract changed")
+    declared_identities = {
+        relative: _parse_identity(public_files[relative], f"normalized public {relative}")
+        for relative in public_files
+    }
+    for relative, expected in declared_identities.items():
+        _require_identity(
+            _file_identity(repository_root / relative, f"normalized public {relative}"),
+            expected,
+            f"normalized public {relative}",
+        )
+    public_git = _validate_public_git_binding(
+        repository_root,
+        public_commit,
+        declared_identities,
+    )
+    values = _normalized_spec_values(spec_raw)
+    artifact = _mapping(values["artifact"], "normalized artifact")
+    invocations: list[Invocation] = []
+    for record in _normalized_v7_expected_invocations(values["payload"]):
+        invocations.append(
+            Invocation(
+                repeat=str(record["repeat"]),
+                argv=tuple(str(item) for item in record["argv"]),
+                output_root=Path(str(record["output_root"])),
+                argv_canonical_json_bytes=int(record["argv_canonical_json_bytes"]),
+                argv_canonical_json_sha256=str(record["argv_canonical_json_sha256"]),
+            )
+        )
+    spec_identity = FileIdentity(len(spec_raw), _digest_bytes(spec_raw))
+    return LaunchContract(
+        path=expected_path,
+        raw=raw,
+        digest=_digest_bytes(raw),
+        public_commit=public_commit,
+        public_git=public_git,
+        repository_root=repository_root,
+        experiment_spec=spec_path,
+        validator_path=repository_root / VALIDATOR_RELATIVE,
+        interpreter_path=INTERPRETER_PATH,
+        interpreter_resolved=INTERPRETER_RESOLVED,
+        environment=dict(EXACT_ENVIRONMENT),
+        report_root=NORMALIZED_REPORT_ROOT,
+        invocations=(invocations[0], invocations[1], invocations[2]),
+        protocol="normalized-v7",
+        source_root=Path(str(values["source_root"])),
+        source_commit=str(values["source_commit"]),
+        experiment_spec_identity=spec_identity,
+        artifact_tree_digest=str(artifact["tree_digest"]),
+        artifact_entrypoint_bytes=int(artifact["entrypoint_bytes"]),
+        artifact_entrypoint_digest=str(artifact["entrypoint_digest"]),
+        interpreter_identity=FileIdentity(INTERPRETER_BYTES, INTERPRETER_DIGEST),
+        validation_schema=NORMALIZED_VALIDATION_SCHEMA,
+        artifact_use_policy=tuple(sorted(values["artifact_use_policy"].items())),
+    )
+
+
 def _load_contract(path: Path) -> LaunchContract:
+    repository_root = _repository_root()
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise LaunchRefused(f"diagnostic addendum cannot be resolved: {exc}") from exc
+    if resolved == repository_root / ADDENDUM_RELATIVE:
+        return _load_v6_contract(path)
+    if resolved == repository_root / NORMALIZED_ADDENDUM_RELATIVE:
+        return _load_normalized_v7_contract(path)
+    raise LaunchRefused("diagnostic addendum is outside both declared immutable protocols")
+
+
+def _load_v6_contract(path: Path) -> LaunchContract:
     repository_root = _repository_root()
     expected_path = repository_root / ADDENDUM_RELATIVE
     try:
@@ -836,8 +1331,7 @@ def _signed_interpreter_identity(contract: LaunchContract) -> dict[str, Any]:
             f"got {resolved}"
         )
     identity = _file_identity(resolved, "signed interpreter", maximum=16 * 1024 * 1024)
-    expected = FileIdentity(INTERPRETER_BYTES, INTERPRETER_DIGEST)
-    _require_identity(identity, expected, "signed interpreter")
+    _require_identity(identity, contract.interpreter_identity, "signed interpreter")
     try:
         path_stat_after = contract.interpreter_path.lstat()
     except OSError as exc:
@@ -1009,16 +1503,16 @@ def _validate_public_git_binding(
     }
 
 
-def _git_source_identity() -> dict[str, Any]:
+def _git_source_identity(contract: LaunchContract) -> dict[str, Any]:
     try:
-        resolved = SOURCE_ROOT.resolve(strict=True)
+        resolved = contract.source_root.resolve(strict=True)
     except OSError as exc:
         raise LaunchRefused(f"pinned source root cannot be resolved: {exc}") from exc
-    if resolved != SOURCE_ROOT:
+    if resolved != contract.source_root:
         raise LaunchRefused("pinned source root resolved elsewhere")
     head = (
         _git_output(
-            SOURCE_ROOT,
+            contract.source_root,
             ("rev-parse", "--verify", "HEAD"),
             "pinned source HEAD",
             maximum=64,
@@ -1026,10 +1520,12 @@ def _git_source_identity() -> dict[str, Any]:
         .decode("ascii", errors="strict")
         .strip()
     )
-    if head != SOURCE_COMMIT:
-        raise LaunchRefused(f"pinned source commit changed: expected {SOURCE_COMMIT}, got {head}")
+    if head != contract.source_commit:
+        raise LaunchRefused(
+            f"pinned source commit changed: expected {contract.source_commit}, got {head}"
+        )
     status = _git_output(
-        SOURCE_ROOT,
+        contract.source_root,
         ("status", "--porcelain=v1", "--untracked-files=all"),
         "pinned source status",
     )
@@ -1051,9 +1547,10 @@ def _load_validator(contract: LaunchContract) -> ModuleType:
     except Exception as exc:
         sys.modules.pop(module_name, None)
         raise LaunchRefused(f"static validator could not be loaded: {exc}") from exc
-    if getattr(module, "VALIDATION_SCHEMA", None) != (
-        "microtensor.code.gguf-diagnostic-validation.v1"
-    ):
+    schema_name = (
+        "VALIDATION_SCHEMA" if contract.protocol == "v6" else ("NORMALIZED_VALIDATION_SCHEMA")
+    )
+    if getattr(module, schema_name, None) != contract.validation_schema:
         raise LaunchRefused("static validator schema changed")
     return module
 
@@ -1194,14 +1691,20 @@ def _static_process_escape_scan(context: Any) -> dict[str, Any]:
 
 
 def _static_preflight(contract: LaunchContract) -> Preflight:
-    source = _git_source_identity()
+    source = _git_source_identity(contract)
     interpreter = _signed_interpreter_identity(contract)
     validator = _load_validator(contract)
     try:
-        spec = validator._load_spec(contract.experiment_spec)
-        tools = validator._load_pinned_tools(spec.source_root)
-        conversion = validator._validate_conversion_bundles(spec, tools)
-        context = validator._prepare_context(spec, tools, conversion)
+        if contract.protocol == "v6":
+            spec = validator._load_spec(contract.experiment_spec)
+            tools = validator._load_pinned_tools(spec.source_root)
+            conversion = validator._validate_conversion_bundles(spec, tools)
+            context = validator._prepare_context(spec, tools, conversion)
+        else:
+            spec = validator._load_normalized_v7_spec(contract.experiment_spec)
+            tools = validator._load_normalized_v7_tools(spec)
+            conversion = validator._validate_normalized_conversion_bundle(spec, tools)
+            context = validator._prepare_normalized_context(spec, tools, conversion)
         process_escape_scan = _static_process_escape_scan(context)
         canonical = validator._canonical_json_bytes
         digest = validator._digest_bytes
@@ -1214,16 +1717,16 @@ def _static_preflight(contract: LaunchContract) -> Preflight:
         "entrypoint_sha256": entrypoint.get("digest"),
     }
     expected_artifact = {
-        "tree_sha256": ARTIFACT_TREE_DIGEST,
-        "entrypoint_bytes": ARTIFACT_ENTRYPOINT_BYTES,
-        "entrypoint_sha256": ARTIFACT_ENTRYPOINT_DIGEST,
+        "tree_sha256": contract.artifact_tree_digest,
+        "entrypoint_bytes": contract.artifact_entrypoint_bytes,
+        "entrypoint_sha256": contract.artifact_entrypoint_digest,
     }
     if _canonical_json_bytes(actual_artifact) != _canonical_json_bytes(expected_artifact):
         raise LaunchRefused("static preflight artifact identity changed")
     report = {
         "source": source,
         "interpreter": interpreter,
-        "experiment_spec": {"bytes": SPEC_BYTES, "sha256": SPEC_DIGEST},
+        "experiment_spec": contract.experiment_spec_identity.as_dict(),
         "artifact": actual_artifact,
         "configuration_sha256": context.configuration_digest,
         "evaluation_dataset_sha256": digest(canonical(context.evaluation_dataset)),
@@ -1231,7 +1734,9 @@ def _static_preflight(contract: LaunchContract) -> Preflight:
         "runtime_sha256": digest(canonical(context.runtime.identity)),
         "conversion_replays_sha256": digest(canonical(list(conversion.replay_receipts))),
         "process_escape_scan": process_escape_scan,
-        "checks": list(PREFLIGHT_CHECKS),
+        "checks": list(
+            PREFLIGHT_CHECKS if contract.protocol == "v6" else NORMALIZED_PREFLIGHT_CHECKS
+        ),
         "model_engine_constructed": False,
     }
     return Preflight(report=report, validator=validator)
@@ -1243,7 +1748,12 @@ def _validate_through(
     repeat: str,
 ) -> tuple[dict[str, Any], str]:
     try:
-        report = validator.validate_diagnostic(contract.experiment_spec, repeat)
+        validation = (
+            validator.validate_diagnostic
+            if contract.protocol == "v6"
+            else validator.validate_normalized_v7_diagnostic
+        )
+        report = validation(contract.experiment_spec, repeat)
         raw = validator._canonical_json_bytes(report)
     except Exception as exc:
         raise LaunchRefused(
@@ -1255,8 +1765,41 @@ def _validate_through(
     expected_remaining = list(REPEATS[completed:])
     aggregate = _mapping(report.get("aggregate"), "validation aggregate")
     claim = _mapping(report.get("claim"), "validation claim")
+    if contract.protocol == "normalized-v7":
+        expected_policy = dict(contract.artifact_use_policy)
+        expected_claim_keys = frozenset(
+            {
+                "local_structural_diagnostics_only",
+                "completed_v6_training_lineage_bound",
+                "normalized_conversion_schema_bound",
+                "artifact_use_policy",
+                "quality_or_rank_claimed",
+                "promotion_authorized",
+                "remaining_local_repeats",
+                "remaining_external_gates",
+            }
+        )
+        _exact_keys(claim, expected_claim_keys, "normalized validation claim")
+        policy = _mapping(claim.get("artifact_use_policy"), "validation artifact use policy")
+        expected_external = [
+            (
+                "a fresh strengthened conversion with exact runtime closure and a fresh "
+                "diagnostic namespace is required for any publication candidate"
+            ),
+            "official validator measurement and settled rank remain external",
+        ]
+        if (
+            _canonical_json_bytes(policy) != _canonical_json_bytes(expected_policy)
+            or claim.get("local_structural_diagnostics_only") is not True
+            or claim.get("completed_v6_training_lineage_bound") is not True
+            or claim.get("normalized_conversion_schema_bound") is not True
+            or claim.get("quality_or_rank_claimed") is not False
+            or claim.get("promotion_authorized") is not False
+            or claim.get("remaining_external_gates") != expected_external
+        ):
+            raise LaunchRefused("normalized validation artifact-use claim changed")
     if (
-        report.get("schema") != "microtensor.code.gguf-diagnostic-validation.v1"
+        report.get("schema") != contract.validation_schema
         or report.get("status") != expected_status
         or report.get("through") != repeat
         or aggregate.get("validated_repeat_hard_gates_passed") is not True
@@ -1265,6 +1808,20 @@ def _validate_through(
     ):
         raise LaunchRefused(f"static diagnostic validation through {repeat} was incomplete")
     return report, _digest_bytes(raw)
+
+
+def _launch_receipt_claim(contract: LaunchContract) -> dict[str, Any]:
+    claim: dict[str, Any] = {
+        "local_structural_diagnostic_only": True,
+        "generated_or_corpus_code_executed_by_validator": False,
+        "official_quality_or_rank_claimed": False,
+        "publication_authorized_by_receipt": False,
+        "submission_authorized_by_receipt": False,
+        "transaction_authorized_by_receipt": False,
+    }
+    if contract.protocol == "normalized-v7":
+        claim["artifact_use_policy"] = dict(contract.artifact_use_policy)
+    return claim
 
 
 def _require_directory(path: Path, label: str, *, mode: int | None = None) -> os.stat_result:
@@ -1536,7 +2093,7 @@ def _validate_prior_process(
         or environ.get("keys") != sorted(EXACT_ENVIRONMENT)
         or environ.get("canonical_json_bytes") != ENVIRONMENT_CANONICAL_BYTES
         or environ.get("canonical_json_sha256") != ENVIRONMENT_CANONICAL_DIGEST
-        or cwd != {"matched": True, "path": str(SOURCE_ROOT)}
+        or cwd != {"matched": True, "path": str(contract.source_root)}
         or executable != {"matched": True, "path": str(contract.interpreter_resolved)}
         or fd0.get("matched_dev_null") is not True
         or inspection.get("open_fds") != [0, 1, 2]
@@ -1683,17 +2240,23 @@ def _validate_prior_preflight(contract: LaunchContract, value: Any) -> None:
         _integer(record.get("bytes"), f"prior scan file {index} bytes")
         _digest(record.get("sha256"), f"prior scan file {index} digest")
     if (
-        source != {"root": str(SOURCE_ROOT), "commit": SOURCE_COMMIT, "status_empty": True}
+        source
+        != {
+            "root": str(contract.source_root),
+            "commit": contract.source_commit,
+            "status_empty": True,
+        }
         or interpreter.get("path") != str(contract.interpreter_path)
         or interpreter.get("resolved_path") != str(contract.interpreter_resolved)
-        or preflight.get("experiment_spec") != {"bytes": SPEC_BYTES, "sha256": SPEC_DIGEST}
+        or preflight.get("experiment_spec") != contract.experiment_spec_identity.as_dict()
         or preflight.get("artifact")
         != {
-            "tree_sha256": ARTIFACT_TREE_DIGEST,
-            "entrypoint_bytes": ARTIFACT_ENTRYPOINT_BYTES,
-            "entrypoint_sha256": ARTIFACT_ENTRYPOINT_DIGEST,
+            "tree_sha256": contract.artifact_tree_digest,
+            "entrypoint_bytes": contract.artifact_entrypoint_bytes,
+            "entrypoint_sha256": contract.artifact_entrypoint_digest,
         }
-        or preflight.get("checks") != PREFLIGHT_CHECKS
+        or preflight.get("checks")
+        != (PREFLIGHT_CHECKS if contract.protocol == "v6" else NORMALIZED_PREFLIGHT_CHECKS)
         or preflight.get("model_engine_constructed") is not False
         or scan.get("schema") != "microtensor.code.python-process-escape-scan.v1"
         or scan.get("status") != "passed"
@@ -1719,7 +2282,7 @@ def _validate_prior_receipt_details(
         "argv": list(invocation.argv),
         "argv_canonical_json_bytes": invocation.argv_canonical_json_bytes,
         "argv_canonical_json_sha256": invocation.argv_canonical_json_sha256,
-        "cwd": str(SOURCE_ROOT),
+        "cwd": str(contract.source_root),
         "shell": False,
         "stdin": "/dev/null",
         "umask": UMASK_TEXT,
@@ -1757,7 +2320,11 @@ def _validate_prior_receipt_details(
     )
     if (
         _mapping(post.get("source"), "prior post-run source")
-        != {"root": str(SOURCE_ROOT), "commit": SOURCE_COMMIT, "status_empty": True}
+        != {
+            "root": str(contract.source_root),
+            "commit": contract.source_commit,
+            "status_empty": True,
+        }
         or _mapping(post.get("interpreter"), "prior post-run interpreter")
         != _mapping(receipt.get("preflight"), "prior preflight").get("interpreter")
         or post.get("public_git") != contract.public_git
@@ -1800,14 +2367,7 @@ def _validate_prior_receipt_details(
             raise LaunchRefused("prior receipt previous validation evidence changed")
 
     claim = _mapping(receipt.get("claim"), "prior receipt claim")
-    expected_claim = {
-        "local_structural_diagnostic_only": True,
-        "generated_or_corpus_code_executed_by_validator": False,
-        "official_quality_or_rank_claimed": False,
-        "publication_authorized_by_receipt": False,
-        "submission_authorized_by_receipt": False,
-        "transaction_authorized_by_receipt": False,
-    }
+    expected_claim = _launch_receipt_claim(contract)
     _exact_keys(claim, frozenset(expected_claim), "prior receipt claim")
     if claim != expected_claim:
         raise LaunchRefused("prior receipt claim changed")
@@ -2072,7 +2632,7 @@ def _inspect_stopped_child(
         executable = (process_root / "exe").resolve(strict=True)
     except OSError as exc:
         raise LaunchRefused(f"post-exec cwd or executable cannot be resolved: {exc}") from exc
-    if cwd != SOURCE_ROOT:
+    if cwd != contract.source_root:
         raise LaunchRefused(f"post-exec child cwd changed: {cwd}")
     if executable != contract.interpreter_resolved:
         raise LaunchRefused(f"post-exec child executable changed: {executable}")
@@ -2201,7 +2761,7 @@ def _child_exec(
         stage = "new_session"
         os.setsid()
         stage = "cwd"
-        os.chdir(SOURCE_ROOT)
+        os.chdir(contract.source_root)
         stage = "umask"
         os.umask(UMASK_VALUE)
         stage = "stdin"
@@ -3072,7 +3632,7 @@ def _launch_repeat(
                 "addendum or public source binding changed during the evaluator run"
             )
         post_control = {
-            "source": _git_source_identity(),
+            "source": _git_source_identity(post_contract),
             "interpreter": _signed_interpreter_identity(post_contract),
             "public_git": post_contract.public_git,
             "addendum_unchanged": True,
@@ -3129,7 +3689,7 @@ def _launch_repeat(
             "argv": list(invocation.argv),
             "argv_canonical_json_bytes": invocation.argv_canonical_json_bytes,
             "argv_canonical_json_sha256": invocation.argv_canonical_json_sha256,
-            "cwd": str(SOURCE_ROOT),
+            "cwd": str(contract.source_root),
             "shell": False,
             "stdin": "/dev/null",
             "umask": UMASK_TEXT,
@@ -3155,14 +3715,7 @@ def _launch_repeat(
         },
         "post_control": post_control,
         "validation": validation_payload,
-        "claim": {
-            "local_structural_diagnostic_only": True,
-            "generated_or_corpus_code_executed_by_validator": False,
-            "official_quality_or_rank_claimed": False,
-            "publication_authorized_by_receipt": False,
-            "submission_authorized_by_receipt": False,
-            "transaction_authorized_by_receipt": False,
-        },
+        "claim": _launch_receipt_claim(contract),
     }
     try:
         _atomic_publish_noreplace(_receipt_path(contract, repeat), receipt)

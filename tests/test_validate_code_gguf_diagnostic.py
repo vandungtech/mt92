@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# ruff: noqa: S101, S108 -- assertions and fixed /tmp identities are test fixtures.
 import ast
 import copy
 import io
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -19,6 +21,43 @@ from training import validate_code_gguf_diagnostic as validator
 
 def _digest(raw: bytes) -> str:
     return validator._digest_bytes(raw)
+
+
+def _v7_identity(character: str, size: int = 1) -> dict[str, object]:
+    return {"bytes": size, "digest": "sha256:" + character * 64}
+
+
+def _v7_spec_payload(
+    conversion_schema: str = "microtensor.code.gguf-conversion.v4",
+) -> dict[str, object]:
+    commit = "a" * 40
+    return validator.normalized_v7_spec_payload(
+        source_root=Path("/tmp") / f"mt92-normalized-diagnostic-{commit[:7]}",
+        source_commit=commit,
+        source_files={
+            relative: _v7_identity("1") for relative in validator.NORMALIZED_REQUIRED_SOURCE_FILES
+        },
+        training_receipt=_v7_identity("2"),
+        merged_tree_digest="sha256:" + "3" * 64,
+        conversion_schema=conversion_schema,
+        conversion_receipt=_v7_identity("4"),
+        calibration_receipt=(_v7_identity("5") if conversion_schema.endswith(".v5") else None),
+        load_spec=_v7_identity("6"),
+        artifact={
+            "tree_digest": "sha256:" + "7" * 64,
+            "entrypoint_bytes": 42,
+            "entrypoint_digest": "sha256:" + "8" * 64,
+        },
+        runtime_identity=_v7_identity("9"),
+    )
+
+
+def _write_v7_spec(path: Path, payload: dict[str, object]) -> validator.NormalizedSpecBindings:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return validator._load_normalized_v7_spec(path)
 
 
 def _source_row(index: int, sentinel: Path) -> dict[str, object]:
@@ -744,7 +783,10 @@ class StaticContextTests(unittest.TestCase):
                 validator._validate_runtime_identity(changed, spec)
 
     def test_source_import_isolated_before_any_pinned_module_executes(self) -> None:
-        with self.assertRaisesRegex(validator.ValidationRefused, "preloaded"):
+        with (
+            mock.patch.object(validator, "_validate_clean_source_root"),
+            self.assertRaisesRegex(validator.ValidationRefused, "preloaded"),
+        ):
             validator._load_pinned_tools(validator.SOURCE_ROOT)
 
         clean = (
@@ -754,7 +796,7 @@ class StaticContextTests(unittest.TestCase):
         )
         with mock.patch.object(validator, "_git_output", side_effect=clean):
             validator._validate_clean_source_root(validator.SOURCE_ROOT)
-        dirty = (clean[0], b"?? training/shadow.so\0", b"")
+        dirty = (clean[0], b"?? training/shadow.so\0")
         with (
             mock.patch.object(validator, "_git_output", side_effect=dirty),
             self.assertRaisesRegex(validator.ValidationRefused, "not clean"),
@@ -1031,6 +1073,508 @@ class CrossRepeatTests(unittest.TestCase):
                 validator._require_no_staging(roots)
 
 
+class NormalizedV7ContractTests(unittest.TestCase):
+    def test_spec_construction_is_deterministic_and_nonfinal_or_schema_swap_refuses(self) -> None:
+        first = _v7_spec_payload()
+        self.assertEqual(
+            validator._canonical_json_bytes(first),
+            validator._canonical_json_bytes(_v7_spec_payload()),
+        )
+        self.assertNotIn(b"placeholder", validator._canonical_json_bytes(first).lower())
+        expected_policy = validator._normalized_artifact_use_policy(
+            validator.NORMALIZED_CONVERSION_SCHEMA
+        )
+        self.assertEqual(first["artifact_use_policy"], expected_policy)
+        self.assertEqual(expected_policy["intended_use"], "local_quality_isolation_only")
+        self.assertIs(expected_policy["conversion_runtime_closure_attested"], False)
+        self.assertIs(expected_policy["publication_eligible"], False)
+        self.assertIs(expected_policy["submission_eligible"], False)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "spec.json"
+            loaded = _write_v7_spec(path, first)
+            self.assertEqual(loaded.conversion_schema, "microtensor.code.gguf-conversion.v4")
+            for field, value in (
+                ("status", "awaiting-training"),
+                ("schema", "microtensor.code.gguf-diagnostic-experiment.v1"),
+            ):
+                tampered = copy.deepcopy(first)
+                tampered[field] = value
+                path.write_text(
+                    json.dumps(tampered, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(validator.ValidationRefused):
+                    validator._load_normalized_v7_spec(path)
+            for field, value in (
+                ("publication_eligible", True),
+                ("conversion_runtime_closure_attested", 0),
+                ("historical_conversion_path", "/attacker"),
+            ):
+                tampered = copy.deepcopy(first)
+                policy = tampered["artifact_use_policy"]
+                assert isinstance(policy, dict)
+                policy[field] = value
+                path.write_text(
+                    json.dumps(tampered, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                with (
+                    self.subTest(policy_field=field),
+                    self.assertRaises(validator.ValidationRefused),
+                ):
+                    validator._load_normalized_v7_spec(path)
+            missing = copy.deepcopy(first)
+            missing.pop("artifact_use_policy")
+            path.write_text(
+                json.dumps(missing, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(validator.ValidationRefused):
+                validator._load_normalized_v7_spec(path)
+        with self.assertRaisesRegex(validator.ValidationRefused, "only the generic v4"):
+            _v7_spec_payload("microtensor.code.gguf-conversion.v3")
+        with self.assertRaisesRegex(validator.ValidationRefused, "only the generic v4"):
+            _v7_spec_payload("microtensor.code.gguf-conversion.v5")
+
+    def test_source_commit_namespace_and_git_execution_closure_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source_root = Path(temporary)
+            training_root = source_root / "training"
+            training_root.mkdir()
+            source_files: dict[str, dict[str, object]] = {}
+            source_raw: dict[str, bytes] = {}
+            for relative in validator.NORMALIZED_REQUIRED_SOURCE_FILES:
+                raw = (relative + "\n").encode()
+                target = source_root / relative
+                target.write_bytes(raw)
+                source_raw[relative] = raw
+                source_files[relative] = {"bytes": len(raw), "digest": _digest(raw)}
+            with tempfile.TemporaryDirectory() as spec_temporary:
+                declared = _write_v7_spec(
+                    Path(spec_temporary) / "spec.json",
+                    _v7_spec_payload(),
+                )
+            spec = replace(
+                declared,
+                source_root=source_root,
+                source_commit="a" * 40,
+                source_files=source_files,
+            )
+
+            def git_result(
+                _root: Path,
+                arguments: object,
+                _label: str,
+                *,
+                bad_origin: bool = False,
+                bad_blob: bool = False,
+                ignored: bool = False,
+            ) -> bytes:
+                command = tuple(arguments)  # type: ignore[arg-type]
+                if command == ("remote", "get-url", "origin"):
+                    return (
+                        b"https://attacker.invalid/repo\n"
+                        if bad_origin
+                        else b"https://github.com/vandungtech/mt92\n"
+                    )
+                if command[:2] == ("cat-file", "-t"):
+                    return b"commit\n"
+                if command[:3] == ("rev-parse", "--verify", "HEAD"):
+                    return ("a" * 40 + "\n").encode()
+                if command[:2] == ("rev-parse", "--verify"):
+                    return ("b" * 40 + "\n").encode()
+                if command[:2] == ("merge-base", "--is-ancestor"):
+                    return b""
+                if command == ("rev-parse", "--is-shallow-repository"):
+                    return b"false\n"
+                if command == ("replace", "-l"):
+                    return b""
+                if command[:2] == ("rev-parse", "--git-path"):
+                    return b"/tmp/no-normalized-grafts\n"
+                if command[:2] == ("status", "--porcelain=v1"):
+                    return (
+                        b"!! microtensor.py\0"
+                        if ignored and "--ignored=matching" in command
+                        else b""
+                    )
+                if command[:2] == ("ls-files", "-v"):
+                    return f"H {command[-1]}\n".encode()
+                if command[0] == "show":
+                    relative = str(command[1]).split(":", 1)[1]
+                    return b"changed\n" if bad_blob else source_raw[relative]
+                raise AssertionError(f"unexpected Git command: {command}")
+
+            with (
+                mock.patch.object(validator, "_git_output", side_effect=git_result),
+                self.assertRaisesRegex(validator.ValidationRefused, "preloaded"),
+            ):
+                validator._load_normalized_v7_tools(spec)
+            for label, options, message in (
+                ("origin", {"bad_origin": True}, "authorized repository"),
+                ("commit blob", {"bad_blob": True}, "commit blob"),
+                ("ignored root shadow", {"ignored": True}, "import closure"),
+            ):
+                with (
+                    self.subTest(label=label),
+                    mock.patch.object(
+                        validator,
+                        "_git_output",
+                        side_effect=lambda root, args, git_label, options=options: git_result(
+                            root, args, git_label, **options
+                        ),
+                    ),
+                    self.assertRaisesRegex(validator.ValidationRefused, message),
+                ):
+                    validator._load_normalized_v7_tools(spec)
+
+            (training_root / "__init__.py").write_text("raise AssertionError\n", encoding="utf-8")
+            with self.assertRaisesRegex(validator.ValidationRefused, "initializer"):
+                validator._require_namespace_training_package(source_root)
+            (training_root / "__init__.py").unlink()
+            (training_root / "code_candidate").mkdir()
+            with self.assertRaisesRegex(validator.ValidationRefused, "shadow"):
+                validator._require_no_normalized_import_shadows(source_root)
+            self.assertTrue(validator._child_import_competitor(source_root))
+
+        completed = SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        with mock.patch.object(validator.subprocess, "run", return_value=completed) as run:
+            validator._git_output(Path("/tmp/source"), ("status",), "synthetic Git")
+        argv = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertIn("core.fsmonitor=false", argv)
+        self.assertIn("core.hooksPath=/dev/null", argv)
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+
+    def test_normalized_validation_report_repeats_permanent_local_only_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            spec = _write_v7_spec(parent / "spec.json", _v7_spec_payload())
+            spec = replace(
+                spec,
+                output_roots=tuple(parent / repeat for repeat in validator.REPEATS),
+            )
+            conversion = validator.ConversionBindings(
+                artifact={
+                    "tree_digest": "sha256:" + "1" * 64,
+                    "entrypoint": {"digest": "sha256:" + "2" * 64},
+                },
+                load_manifest={},
+                replay_receipts=({"schema": validator.NORMALIZED_CONVERSION_SCHEMA},),
+            )
+            with (
+                mock.patch.object(validator, "_load_normalized_v7_spec", return_value=spec),
+                mock.patch.object(
+                    validator,
+                    "_validate_normalized_conversion_bundle",
+                    return_value=conversion,
+                ),
+                mock.patch.object(validator, "_prepare_normalized_context", return_value=object()),
+                mock.patch.object(
+                    validator,
+                    "_validate_repeat",
+                    return_value={"raw_output_digests": []},
+                ),
+                mock.patch.object(
+                    validator,
+                    "_aggregate",
+                    return_value={
+                        "validated_repeat_hard_gates_passed": True,
+                        "all_declared_local_gates_passed": False,
+                    },
+                ),
+            ):
+                report = validator.validate_normalized_v7_diagnostic(
+                    spec.path,
+                    "r1",
+                    _tools=validator.Toolset(
+                        candidate=SimpleNamespace(), evaluator=SimpleNamespace()
+                    ),
+                )
+        claim = report["claim"]
+        self.assertEqual(
+            claim["artifact_use_policy"],
+            validator._normalized_artifact_use_policy(validator.NORMALIZED_CONVERSION_SCHEMA),
+        )
+        self.assertNotIn("authorized immutable publication", claim["remaining_external_gates"])
+
+    def test_completed_v6_lineage_binds_receipt_dataset_exclusions_and_tokenizer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            spec = _write_v7_spec(Path(temporary) / "spec.json", _v7_spec_payload())
+        lineage: dict[str, object] = {
+            "status": "provided_and_validated",
+            "schema": validator.NORMALIZED_TRAINING_SCHEMA,
+            "receipt": {**spec.training_receipt, "path": "/training_metadata.json"},
+            "prepared_dataset": {
+                field: {**identity, "path": f"/{field}"}
+                for field, identity in validator.NORMALIZED_DATASET_FILES.items()
+            },
+            "source_corpus": {
+                "file": {
+                    "bytes": validator.NORMALIZED_SOURCE_CORPUS_IDENTITY["bytes"],
+                    "digest": validator.NORMALIZED_SOURCE_CORPUS_IDENTITY["digest"],
+                },
+                "canonical_digest": validator.NORMALIZED_SOURCE_CORPUS_IDENTITY["canonical_digest"],
+            },
+            "base_snapshot": {
+                "base_model": validator.BASE_MODEL,
+                "files": {
+                    "tokenizer.json": {
+                        "bytes": validator.NORMALIZED_TOKENIZER_IDENTITY["bytes"],
+                        "sha256": validator.NORMALIZED_TOKENIZER_IDENTITY["digest"].removeprefix(
+                            "sha256:"
+                        ),
+                    }
+                },
+            },
+            "run": {"kind": "merged", "merged": {"digest": spec.merged_tree_digest}},
+        }
+        manifest = {
+            "schema": validator.NORMALIZED_DATASET_SCHEMA,
+            "corpus_profile": validator.NORMALIZED_CORPUS_PROFILE,
+            "seed": 92,
+            "source_examples": 8_000,
+            "train_examples": 7_730,
+            "holdout_examples": 0,
+            "excluded_examples": 270,
+            "excluded_refs_file": "excluded-refs.json",
+            "excluded_refs_canonical_bytes": validator.NORMALIZED_DATASET_FILES["excluded_refs"][
+                "bytes"
+            ],
+            "excluded_refs_digest": validator.NORMALIZED_DATASET_FILES["excluded_refs"]["digest"],
+        }
+        prepared = lineage["prepared_dataset"]
+        assert isinstance(prepared, dict)
+        prepared["manifest_payload"] = manifest
+        validator._validate_normalized_training_lineage(lineage, spec)
+
+        def receipt_tamper(item: dict[str, object]) -> None:
+            receipt = item["receipt"]
+            assert isinstance(receipt, dict)
+            receipt["digest"] = "sha256:" + "f" * 64
+
+        def exclusion_tamper(item: dict[str, object]) -> None:
+            prepared_item = item["prepared_dataset"]
+            assert isinstance(prepared_item, dict)
+            excluded = prepared_item["excluded_refs"]
+            assert isinstance(excluded, dict)
+            excluded["bytes"] = 3_185
+
+        def tokenizer_tamper(item: dict[str, object]) -> None:
+            base = item["base_snapshot"]
+            assert isinstance(base, dict)
+            files = base["files"]
+            assert isinstance(files, dict)
+            tokenizer = files["tokenizer.json"]
+            assert isinstance(tokenizer, dict)
+            tokenizer["sha256"] = "f" * 64
+
+        def merged_tamper(item: dict[str, object]) -> None:
+            run = item["run"]
+            assert isinstance(run, dict)
+            merged = run["merged"]
+            assert isinstance(merged, dict)
+            merged["digest"] = "sha256:" + "e" * 64
+
+        mutations = (
+            ("running receipt", lambda item: item.update(status="running")),
+            ("training receipt", receipt_tamper),
+            ("excluded refs", exclusion_tamper),
+            ("tokenizer", tokenizer_tamper),
+            ("merged artifact lineage", merged_tamper),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                tampered = copy.deepcopy(lineage)
+                mutate(tampered)
+                with self.assertRaises(validator.ValidationRefused):
+                    validator._validate_normalized_training_lineage(tampered, spec)
+
+    def test_v4_bundle_is_static_and_source_schema_or_artifact_tamper_refuses(self) -> None:
+        class StaticEvaluator:
+            def __init__(self, artifact: dict[str, object]) -> None:
+                self.artifact = artifact
+
+            @property
+            def engine_type(self) -> object:
+                raise AssertionError("model engine must never be constructed")
+
+            def artifact_identity(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+                return copy.deepcopy(self.artifact)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            loaded = _write_v7_spec(parent / "spec.json", _v7_spec_payload())
+            bundle = parent / "bundle"
+            (bundle / "artifact").mkdir(parents=True)
+            (bundle / "artifact" / "model.gguf").write_bytes(b"not-a-real-model")
+            load_manifest = {
+                "format": "gguf",
+                "quantization": "Q4_K_M",
+                "entrypoint": "model.gguf",
+                "max_input": {"tokens": 541},
+                "preprocessing": {"tokenizer": "tokenizer.json"},
+                "base_model": validator.BASE_MODEL,
+            }
+            load_raw = json.dumps(load_manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+            (bundle / "load-spec.json").write_bytes(load_raw)
+            artifact_contract = dict(loaded.artifact_contract)
+            receipt = {
+                "schema": "microtensor.code.gguf-conversion.v4",
+                "status": "complete",
+                "track": validator.TRACK,
+                "hardware_class": validator.HARDWARE_CLASS,
+                "base_model": validator.BASE_MODEL,
+                "llama_cpp_revision": validator.LLAMA_CPP_REVISION,
+                "source": {
+                    "training_schema": validator.NORMALIZED_TRAINING_SCHEMA,
+                    "dataset_schema": validator.NORMALIZED_DATASET_SCHEMA,
+                    "corpus_profile": validator.NORMALIZED_CORPUS_PROFILE,
+                    "training_metadata_digest": loaded.training_receipt["digest"],
+                    "merged_tree_digest": loaded.merged_tree_digest,
+                    "excluded_refs": dict(validator.NORMALIZED_DATASET_FILES["excluded_refs"]),
+                },
+                "conversion": {
+                    "converter_digest": validator.NORMALIZED_CONVERTER_DIGEST,
+                    "quantizer_digest": validator.NORMALIZED_QUANTIZER_DIGEST,
+                    "commands": [
+                        {
+                            "name": "convert_f16",
+                            "argv": [
+                                str(validator.NORMALIZED_LLAMA_CPP_ROOT / "convert_hf_to_gguf.py"),
+                                str(loaded.training_arguments[0] / "merged"),
+                                "--outfile",
+                                str(parent / ".microtensor-code-gguf-test/model-f16.gguf"),
+                                "--outtype",
+                                "f16",
+                            ],
+                            "returncode": 0,
+                            "started_at_unix_ns": 1,
+                            "finished_at_unix_ns": 2,
+                        },
+                        {
+                            "name": "quantize",
+                            "argv": [
+                                str(
+                                    validator.NORMALIZED_LLAMA_CPP_ROOT / "build/bin/llama-quantize"
+                                ),
+                                str(parent / ".microtensor-code-gguf-test/model-f16.gguf"),
+                                str(parent / ".microtensor-code-gguf-test/artifact/model.gguf"),
+                                validator.QUANTIZATION,
+                            ],
+                            "returncode": 0,
+                            "started_at_unix_ns": 3,
+                            "finished_at_unix_ns": 4,
+                        },
+                    ],
+                },
+                "artifact": {**artifact_contract, "quantization": validator.QUANTIZATION},
+                "load_manifest": load_manifest,
+                "calibration_receipt_digest": None,
+            }
+
+            def write_receipt(value: dict[str, object]) -> bytes:
+                raw = json.dumps(value, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+                (bundle / "conversion-receipt.json").write_bytes(raw)
+                return raw
+
+            receipt_raw = write_receipt(receipt)
+            spec = replace(
+                loaded,
+                bundle=bundle,
+                load_spec={"bytes": len(load_raw), "digest": _digest(load_raw)},
+                conversion_receipt={
+                    "bytes": len(receipt_raw),
+                    "digest": _digest(receipt_raw),
+                },
+            )
+            artifact = {
+                "root": str(bundle / "artifact"),
+                "tree_digest": artifact_contract["tree_digest"],
+                "entrypoint": {
+                    "bytes": artifact_contract["entrypoint_bytes"],
+                    "digest": artifact_contract["entrypoint_digest"],
+                    "gguf": {"version": 3, "architecture": "qwen3", "file_type": 15},
+                },
+            }
+            tools = validator.Toolset(
+                candidate=SimpleNamespace(), evaluator=StaticEvaluator(artifact)
+            )
+            result = validator._validate_normalized_conversion_bundle(spec, tools)
+            self.assertEqual(result.artifact["tree_digest"], artifact_contract["tree_digest"])
+
+            def excluded_tamper(item: dict[str, object]) -> None:
+                source = item["source"]
+                assert isinstance(source, dict)
+                excluded = source["excluded_refs"]
+                assert isinstance(excluded, dict)
+                excluded["bytes"] = 3_185
+
+            for label, mutate in (
+                ("excluded refs", excluded_tamper),
+                (
+                    "schema swap",
+                    lambda item: item.update(schema="microtensor.code.gguf-conversion.v5"),
+                ),
+            ):
+                with self.subTest(label=label):
+                    tampered = copy.deepcopy(receipt)
+                    mutate(tampered)
+                    raw = write_receipt(tampered)
+                    changed = replace(
+                        spec,
+                        conversion_receipt={"bytes": len(raw), "digest": _digest(raw)},
+                    )
+                    with self.assertRaises(validator.ValidationRefused):
+                        validator._validate_normalized_conversion_bundle(changed, tools)
+            receipt_raw = write_receipt(receipt)
+            self.assertEqual(spec.conversion_receipt["digest"], _digest(receipt_raw))
+            drifted_artifact = copy.deepcopy(artifact)
+            drifted_artifact["tree_digest"] = "sha256:" + "f" * 64
+            drifted_tools = validator.Toolset(
+                candidate=SimpleNamespace(), evaluator=StaticEvaluator(drifted_artifact)
+            )
+            with self.assertRaisesRegex(validator.ValidationRefused, "candidate bundle"):
+                validator._validate_normalized_conversion_bundle(spec, drifted_tools)
+
+    def test_runtime_identity_is_recomputed_and_tamper_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            spec = _write_v7_spec(Path(temporary) / "spec.json", _v7_spec_payload())
+        identity = {
+            "python": {
+                "version": validator.EXPECTED_PYTHON_VERSION,
+                "executable": {
+                    "path": "/usr/bin/python3.12",
+                    "bytes": 8_016_832,
+                    "digest": (
+                        "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb"
+                    ),
+                },
+            },
+            "microtensor": {"release_version": "0.3.0", "mechanism_version": "0.3.0"},
+        }
+        raw = validator._canonical_json_bytes(identity)
+        spec = replace(
+            spec,
+            runtime_contract={
+                **spec.runtime_contract,
+                "identity": {"bytes": len(raw), "digest": _digest(raw)},
+            },
+        )
+        with mock.patch.object(
+            validator.sys,
+            "executable",
+            "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+        ):
+            validator._validate_normalized_runtime_identity(identity, spec)
+            tampered = copy.deepcopy(identity)
+            microtensor = tampered["microtensor"]
+            assert isinstance(microtensor, dict)
+            microtensor["release_version"] = "0.3.1"
+            with self.assertRaises(validator.ValidationRefused):
+                validator._validate_normalized_runtime_identity(tampered, spec)
+
+
 class StaticSafetyAndEntrypointTests(unittest.TestCase):
     def test_validator_has_no_dynamic_execution_or_model_engine_calls(self) -> None:
         source_path = Path(validator.__file__)
@@ -1056,7 +1600,7 @@ class StaticSafetyAndEntrypointTests(unittest.TestCase):
         with (
             mock.patch.object(validator, "__package__", "training"),
             mock.patch.object(validator, "_parse_args") as parse_args,
-            mock.patch.object(validator, "validate_diagnostic") as validate,
+            mock.patch.object(validator, "validate_declared_diagnostic") as validate,
             redirect_stderr(stderr),
         ):
             result = validator.main(["--not-even-parsed"])
@@ -1075,7 +1619,7 @@ class StaticSafetyAndEntrypointTests(unittest.TestCase):
                 "_parse_args",
                 return_value=SimpleNamespace(experiment_spec=Path("spec"), through="r1"),
             ),
-            mock.patch.object(validator, "validate_diagnostic", return_value=report),
+            mock.patch.object(validator, "validate_declared_diagnostic", return_value=report),
             redirect_stdout(stdout),
         ):
             result = validator.main([])
@@ -1092,7 +1636,7 @@ class StaticSafetyAndEntrypointTests(unittest.TestCase):
             ),
             mock.patch.object(
                 validator,
-                "validate_diagnostic",
+                "validate_declared_diagnostic",
                 side_effect=validator.ValidationRefused("tampered"),
             ),
             redirect_stderr(stderr),
