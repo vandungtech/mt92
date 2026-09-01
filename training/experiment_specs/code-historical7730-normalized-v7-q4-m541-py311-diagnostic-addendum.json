@@ -1,0 +1,262 @@
+{
+  "artifact_use_policy": {
+    "conversion_runtime_closure_attested": false,
+    "historical_conversion_environment": "not_recorded",
+    "historical_conversion_path": "not_recorded",
+    "historical_converter_dependencies": "not_recorded",
+    "historical_converter_interpreter": "not_recorded",
+    "historical_quantizer_library_closure": "not_recorded",
+    "intended_use": "local_quality_isolation_only",
+    "limitation": "generic v4 conversion does not record its historical environment, PATH, Python interpreter, converter dependencies, or quantizer library closure; this artifact is permanently publication- and submission-ineligible",
+    "publication_authorized": false,
+    "publication_eligible": false,
+    "submission_authorized": false,
+    "submission_eligible": false
+  },
+  "execution": {
+    "close_fds": true,
+    "containment": {
+      "adopted_child_pidfd_signaling_used_when_observed": true,
+      "adopted_children_killed_and_terminally_reaped": true,
+      "cgroup_v2_used": false,
+      "cgroup_v2_writable": false,
+      "default_sigchld_disposition_required": true,
+      "direct_pid_and_process_group_killed_on_failure": true,
+      "empty_blocked_signal_mask_required": true,
+      "evidence_scope": "The cgroup v2 mount is read-only on this host, so the launcher uses a temporary Linux child-subreaper boundary, an isolated process group, /proc adopted-child discovery, and kernel waitpid ECHILD proofs. The launcher itself must have the exact declared environment, one task, default SIGCHLD handling, and no children before consumption. It kills and reaps observed descendants, then requires waitpid(-1, WNOHANG|__WALL) to report ECHILD before local validation. The pinned Python source closure is statically rejected if it imports or calls declared process/session primitives. This does not attest native extensions or transitive native imports against undisclosed process creation, and it does not claim full descendant containment if the launcher itself is abruptly killed.",
+      "inspection_monotonic_deadline_alarm_required": true,
+      "launcher_crash_containment": false,
+      "mechanism": "linux-subreaper-process-group-waitpid-echild-v1",
+      "native_process_escape_attested": false,
+      "observed_descendant_permanently_rejects_repeat": true,
+      "parent_environment_exact_required": true,
+      "prior_launcher_children_must_be_empty": true,
+      "single_launcher_task_required": true,
+      "static_python_process_escape_scan_required": true,
+      "terminal_waitpid_echild_proof_required": true
+    },
+    "cwd": "/tmp/mt92-normalized-diagnostic-e1df022",
+    "environment_canonical_json_bytes": 429,
+    "environment_canonical_json_sha256": "sha256:9103f1e3ef395e681510f8044ab3f4861352748c8ff8efb928266a0b81a7ce94",
+    "environment_exact": {
+      "CUDA_VISIBLE_DEVICES": "",
+      "HF_DATASETS_OFFLINE": "1",
+      "HF_HUB_OFFLINE": "1",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "PATH": "/tmp/microtensor-v030-verify.5rMSRW/venv/bin:/usr/bin:/bin",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "0",
+      "PYTHONNOUSERSITE": "1",
+      "TRANSFORMERS_OFFLINE": "1",
+      "VECLIB_MAXIMUM_THREADS": "1",
+      "WANDB_MODE": "disabled"
+    },
+    "new_session": true,
+    "parent_death_signal": "SIGKILL",
+    "parent_environment_exact": true,
+    "post_exec_inspection": {
+      "evidence_scope": "Linux /proc fields are sampled while the PTRACE_TRACEME exec-stop is held, before this launcher detaches the declared child; this proves only that post-exec launch boundary and does not attest later evaluator or model state.",
+      "fields": [
+        "cmdline",
+        "environ",
+        "cwd",
+        "exe",
+        "fd0",
+        "open_fds",
+        "umask"
+      ],
+      "mechanism": "linux-ptrace-traceme-exec-stop",
+      "required": true,
+      "subsequent_runtime_attested": false
+    },
+    "repeat_policy": {
+      "attempts_per_repeat": 1,
+      "maximum_repeat": "r3",
+      "order": [
+        "r1",
+        "r2",
+        "r3"
+      ],
+      "previous_static_validation_required": true,
+      "retry_after_consumption": false,
+      "stop_after_failure": true
+    },
+    "report_root": "/dev/shm/microtensor-code/diagnostic-launch-receipts/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030",
+    "shell": false,
+    "stdin": "/dev/null",
+    "timeout_seconds": 900,
+    "umask": "0077"
+  },
+  "experiment_spec": {
+    "bytes": 7098,
+    "path": "training/experiment_specs/code-historical7730-normalized-v7-q4-m541-py311-diagnostic.json",
+    "sha256": "sha256:3b3ed06d892ea0564f7b90dd833d564aa2035a66ac5da7f620c6997fdf9f699d"
+  },
+  "interpreter": {
+    "bytes": 8016832,
+    "path": "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+    "resolved_path": "/usr/bin/python3.12",
+    "sha256": "sha256:1319c137ea5d30f1d7599943cb0e72666648c20a94cf5932dd095364d07dafeb"
+  },
+  "invocations": [
+    {
+      "argv": [
+        "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+        "-m",
+        "training.evaluate_code_gguf",
+        "--dataset",
+        "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+        "--diagnostic-jsonl",
+        "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl",
+        "--source-corpus",
+        "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+        "--artifact",
+        "/dev/shm/microtensor-code/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7-q4-m541-py311-bundle/artifact",
+        "--artifact-digest",
+        "sha256:e8c58f7b6174316224941d50ae26565b674cb7f74b39b9ab60974dd32c5fb83e",
+        "--entrypoint",
+        "model.gguf",
+        "--quantization",
+        "Q4_K_M",
+        "--max-input-tokens",
+        "541",
+        "--training-run",
+        "/dev/shm/microtensor-code/runs/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7",
+        "--training-dataset",
+        "/dev/shm/microtensor-code/dataset-historical7730-normalized-seed92-h0-v7",
+        "--training-source-corpus",
+        "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+        "--training-base",
+        "/dev/shm/microtensor-code/base-qwen3-06b",
+        "--out",
+        "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r1"
+      ],
+      "argv_canonical_json_bytes": 1118,
+      "argv_canonical_json_sha256": "sha256:19684a48fcce36d654356661e2583af17a62c3c874cd5ba130d35b7831235bb1",
+      "output_root": "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r1",
+      "repeat": "r1"
+    },
+    {
+      "argv": [
+        "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+        "-m",
+        "training.evaluate_code_gguf",
+        "--dataset",
+        "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+        "--diagnostic-jsonl",
+        "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl",
+        "--source-corpus",
+        "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+        "--artifact",
+        "/dev/shm/microtensor-code/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7-q4-m541-py311-bundle/artifact",
+        "--artifact-digest",
+        "sha256:e8c58f7b6174316224941d50ae26565b674cb7f74b39b9ab60974dd32c5fb83e",
+        "--entrypoint",
+        "model.gguf",
+        "--quantization",
+        "Q4_K_M",
+        "--max-input-tokens",
+        "541",
+        "--training-run",
+        "/dev/shm/microtensor-code/runs/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7",
+        "--training-dataset",
+        "/dev/shm/microtensor-code/dataset-historical7730-normalized-seed92-h0-v7",
+        "--training-source-corpus",
+        "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+        "--training-base",
+        "/dev/shm/microtensor-code/base-qwen3-06b",
+        "--out",
+        "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r2"
+      ],
+      "argv_canonical_json_bytes": 1118,
+      "argv_canonical_json_sha256": "sha256:045fcb8ca8b9f7179d21537beb1bb863597e7a687cdc7f97549b92b24555ccc5",
+      "output_root": "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r2",
+      "repeat": "r2"
+    },
+    {
+      "argv": [
+        "/tmp/microtensor-v030-verify.5rMSRW/venv/bin/python",
+        "-m",
+        "training.evaluate_code_gguf",
+        "--dataset",
+        "/dev/shm/microtensor-code/dataset-dev-seed92-h16",
+        "--diagnostic-jsonl",
+        "/dev/shm/microtensor-code/dataset-dev-seed92-h16/holdout.jsonl",
+        "--source-corpus",
+        "/dev/shm/microtensor-code/public-code-corpus-v1.json",
+        "--artifact",
+        "/dev/shm/microtensor-code/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7-q4-m541-py311-bundle/artifact",
+        "--artifact-digest",
+        "sha256:e8c58f7b6174316224941d50ae26565b674cb7f74b39b9ab60974dd32c5fb83e",
+        "--entrypoint",
+        "model.gguf",
+        "--quantization",
+        "Q4_K_M",
+        "--max-input-tokens",
+        "541",
+        "--training-run",
+        "/dev/shm/microtensor-code/runs/qwen3-06b-historical7730-normalized-final-r64-e2-b1ga16-seed92-v7",
+        "--training-dataset",
+        "/dev/shm/microtensor-code/dataset-historical7730-normalized-seed92-h0-v7",
+        "--training-source-corpus",
+        "/dev/shm/microtensor-code/public-code-corpus-7299bd7c.json",
+        "--training-base",
+        "/dev/shm/microtensor-code/base-qwen3-06b",
+        "--out",
+        "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r3"
+      ],
+      "argv_canonical_json_bytes": 1118,
+      "argv_canonical_json_sha256": "sha256:c8ac3b89fe23579e129967d9f13cc6e4db2dec4e389e8f5a6834b95e9f79042c",
+      "output_root": "/dev/shm/microtensor-code/evaluations/qwen3-06b-historical7730-normalized-b1ga16-v7-q4-m541-py311-current16-signed-v030-r3",
+      "repeat": "r3"
+    }
+  ],
+  "preflight": {
+    "artifact_entrypoint_bytes": 396704448,
+    "artifact_entrypoint_sha256": "sha256:dd30372a9c844cc7924682557e003b0bd5473998f05a47bdeb243d15c4ffbb7f",
+    "artifact_tree_sha256": "sha256:e8c58f7b6174316224941d50ae26565b674cb7f74b39b9ab60974dd32c5fb83e",
+    "model_engine_construction_permitted": false,
+    "required_checks": [
+      "experiment_spec",
+      "public_launcher_validator_and_spec_source",
+      "pinned_normalized_source_files",
+      "pinned_normalized_source_commit_and_clean_status",
+      "signed_interpreter",
+      "completed_v6_training_lineage",
+      "normalized_v4_local_quality_isolation_conversion_bundle",
+      "candidate_artifact_tree_entrypoint_and_load_spec",
+      "public_diagnostic_dataset",
+      "signed_runtime",
+      "static_python_process_escape_scan"
+    ],
+    "source_commit": "e1df0222196401291c6488996cabbce6e9ff16a7",
+    "validator_mode": "in_process_static_only",
+    "validator_path": "training/validate_code_gguf_diagnostic.py"
+  },
+  "public_source": {
+    "commit": "32d963b016d99317408b6fee692ef4246d5a378c",
+    "files": {
+      "training/experiment_specs/code-historical7730-normalized-v7-q4-m541-py311-diagnostic.json": {
+        "bytes": 7098,
+        "sha256": "sha256:3b3ed06d892ea0564f7b90dd833d564aa2035a66ac5da7f620c6997fdf9f699d"
+      },
+      "training/run_code_gguf_diagnostic.py": {
+        "bytes": 150909,
+        "sha256": "sha256:cb21b16fdce71744f298a9f92ad2fa3b6626217736123268816941c7cf7c0141"
+      },
+      "training/validate_code_gguf_diagnostic.py": {
+        "bytes": 114827,
+        "sha256": "sha256:51b42230fe0901ed86ac393b8cdc36d7429535d4dc602775985d6beeaeec5a3a"
+      }
+    },
+    "raw_readback_verified": true,
+    "repository": "https://github.com/vandungtech/mt92"
+  },
+  "schema": "microtensor.code.gguf-diagnostic-execution-addendum.v2",
+  "status": "final"
+}
