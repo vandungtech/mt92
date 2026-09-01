@@ -1,0 +1,3 @@
+# Exact publication SDK; separate from the immutable recorded training environment.
+# Install only in the isolated provenance-publication environment.
+wandb==0.29.0
