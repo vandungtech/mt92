@@ -223,6 +223,30 @@ class SuccessfulConversionTests(ConversionFixture):
         )
         self.assertEqual(identity["entrypoint"]["gguf"]["file_type"], 15)
 
+    def test_q5_k_m_load_manifest_receipt_and_header_are_consistent(self) -> None:
+        self.request = converter.replace(self.request, quantization="Q5_K_M")
+        self.run_conversion()
+        load = json.loads((self.output / converter.LOAD_SPEC_NAME).read_bytes())
+        receipt = json.loads((self.output / converter.RECEIPT_NAME).read_bytes())
+        self.assertEqual(load["quantization"], "Q5_K_M")
+        self.assertEqual(receipt["artifact"]["quantization"], "Q5_K_M")
+        self.assertEqual(receipt["load_manifest"], load)
+        self.assertEqual(self.calls[1][0][3], "Q5_K_M")
+        identity = evaluator.artifact_identity(
+            self.output / converter.ARTIFACT_NAME,
+            entrypoint=converter.ENTRYPOINT,
+            expected_digest=receipt["artifact"]["tree_digest"],
+            quantization="Q5_K_M",
+        )
+        self.assertEqual(identity["entrypoint"]["gguf"]["file_type"], 17)
+        provenance._validate_generic_conversion(
+            receipt,
+            training_lineage=self.lineage,
+            artifact=identity,
+            load_manifest=load,
+            calibration_digest=None,
+        )
+
 
 class FailureTests(ConversionFixture):
     def test_quantizer_failure_publishes_nothing_and_cleans_only_staging(self) -> None:
@@ -274,7 +298,10 @@ class FailureTests(ConversionFixture):
 
     def test_unsupported_contract_values_are_refused(self) -> None:
         for request, message in (
-            (converter.replace(self.request, quantization="Q5_K_M"), "Q8_0 or Q4_K_M"),
+            (
+                converter.replace(self.request, quantization="Q6_K"),
+                "Q8_0, Q5_K_M, or Q4_K_M",
+            ),
             (converter.replace(self.request, max_input_tokens=511), "must be in"),
             (converter.replace(self.request, max_input_tokens=True), "must be an integer"),
         ):

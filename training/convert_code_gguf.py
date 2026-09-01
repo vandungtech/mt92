@@ -50,7 +50,7 @@ LOAD_SPEC_NAME: Final[str] = "load-spec.json"
 RECEIPT_NAME: Final[str] = "conversion-receipt.json"
 ARTIFACT_NAME: Final[str] = "artifact"
 F16_NAME: Final[str] = "model-f16.gguf"
-SUPPORTED_QUANTIZATIONS: Final[frozenset[str]] = frozenset({"Q8_0", "Q4_K_M"})
+SUPPORTED_QUANTIZATIONS: Final[frozenset[str]] = frozenset({"Q8_0", "Q5_K_M", "Q4_K_M"})
 _AT_FDCWD: Final[int] = -100
 _RENAME_NOREPLACE: Final[int] = 1
 _STAGING_MARKER: Final[str] = ".microtensor-code-gguf-"
@@ -368,7 +368,7 @@ def _official_tree_digest(root: Path) -> str:
 
 def _validate_request(request: ConversionRequest) -> ConversionRequest:
     if request.quantization not in SUPPORTED_QUANTIZATIONS:
-        raise ConversionRefused("quantization must be exactly Q8_0 or Q4_K_M")
+        raise ConversionRefused("quantization must be exactly Q8_0, Q5_K_M, or Q4_K_M")
     tokens = request.max_input_tokens
     if isinstance(tokens, bool) or not isinstance(tokens, int):
         raise ConversionRefused("max-input-tokens must be an integer")

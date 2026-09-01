@@ -302,6 +302,11 @@ consulted by packaging, upload, provenance, publication, or chain-verification c
 Public API failure therefore cannot block or authorise a submission. One-shot and
 preflight commands do not start the periodic observer.
 
+The host deployment also runs a credential-free observer for the target
+`code/mt-3g` board, independently of any legacy or waiting submission profile. Its
+latest snapshot is written to `runtime/code-rank/rank.json`; this observer can only
+perform public HTTPS reads and local state writes.
+
 ## Round and restart behavior
 
 The accepted coordinator window is persisted. The controller refuses a later response
