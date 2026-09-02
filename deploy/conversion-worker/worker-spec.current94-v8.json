@@ -59,6 +59,11 @@
           "digest": "sha256:9452eb1c721ee0971c1ecce1202ca4da7db18c8f7960fa0a43b029c7627a699c"
         },
         {
+          "path": "opt/microtensor-miner/training/evaluate_code.py",
+          "bytes": 51409,
+          "digest": "sha256:33cfc842b2c64ee6af4275752ff53317785012398f0c7a98402b3c0bc876d1b4"
+        },
+        {
           "path": "opt/microtensor-miner/training/evaluate_code_gguf.py",
           "bytes": 89431,
           "digest": "sha256:323a27985c035b621a2025457f0392eacefa7e21013abb5656da3e31c36b806e"
@@ -77,6 +82,11 @@
           "path": "opt/microtensor-miner/training/publish_code_provenance.py",
           "bytes": 160975,
           "digest": "sha256:7179aea2dcea474ddf5d08e361fddd9a7e365add582d7258e188e9c474af6bd5"
+        },
+        {
+          "path": "opt/microtensor-miner/training/train_code.py",
+          "bytes": 54031,
+          "digest": "sha256:9d7d2837e0dccd1d8172652a4796d0ffa983cfcfa7a247f3c252fb59cc1ad37b"
         },
         {
           "path": "opt/python/bin/python3.11",
