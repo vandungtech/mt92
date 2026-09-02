@@ -1395,11 +1395,18 @@ def _validate_current_loaded_lineage(lineage: Mapping[str, Any]) -> None:
         "current training source-corpus identity",
     )
     source_file = _mapping(source.get("file"), "current training source file identity")
-    _exact_keys(source_file, frozenset({"bytes", "digest"}), "current training source file")
-    if source_file != {
-        "bytes": gguf.CURRENT94_PUBLIC_CORPUS_BYTES,
-        "digest": gguf.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST,
-    }:
+    # The loader (evaluate_code_gguf.file_identity) emits a full host identity: bytes and
+    # digest alongside path, inode, device, mode, mtime_ns and ctime_ns. Those extra fields
+    # are host-specific and cannot be pinned, so require the identity to CONTAIN the pinned
+    # values rather than to equal a two-key mapping. The corpus must still be exactly the
+    # current94 bytes and SHA-256; nothing else is relaxed.
+    missing = frozenset({"bytes", "digest"}) - frozenset(source_file)
+    if missing:
+        raise ConversionRefused(f"current training source file is missing {sorted(missing)}")
+    if (
+        source_file.get("bytes") != gguf.CURRENT94_PUBLIC_CORPUS_BYTES
+        or source_file.get("digest") != gguf.CURRENT94_PUBLIC_CORPUS_RAW_DIGEST
+    ):
         raise ConversionRefused("current training source is not the exact current94 raw response")
     if source.get("corpus_version") != candidate.CORPUS_VERSION:
         raise ConversionRefused("current training source corpus version changed")
