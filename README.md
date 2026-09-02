@@ -257,7 +257,10 @@ Only after the one-shot reaches verified health should continuous submission be 
 observer before the miner and assumes:
 
 - miner repository and virtualenv at `/workspace/microtensor-miner`;
-- audited subnet checkout at `/workspace/microtensor-subnet`;
+- inert, service-owned observer checkout at
+  `/var/lib/microtensor-miner/upstream-checkout`, detached at the audited head (the
+  observer fetches and writes `refs/microtensor-observer/candidate-main`, so it needs
+  its own writable clone; it is never imported, installed, or executed);
 - protected configuration at `/etc/microtensor-miner`, owned `root:microtensor` mode 0640;
 - dedicated service account `microtensor` with a `nologin` shell and no privileged
   supplemental group; and
