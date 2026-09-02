@@ -1,39 +1,67 @@
 # Microtensor miner launch TODO
 
-Status snapshot: 2026-09-02 UTC
+Status snapshot: 2026-09-02 11:05 UTC
 
 Target: Finney `netuid 92`, wallet `you-cold/you-hot1`, SS58
-`5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r`, expected UID `32`,
-competition `code/mt-3g`.
+`5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r`, registration confirmed at UID `32`
+(256 neurons, block 8,979,170), competition `code/mt-3g`.
 
 This checklist distinguishes a process that is merely running from a miner that is
 actually eligible to submit. Do not describe the launch as complete until every item
 under **Launch acceptance** passes.
 
+## Architecture
+
+The deployment is now split across two hosts:
+
+- **Miner host** — `dung-dev2` (address in the operator's records, not published
+  here). Bare metal, Ubuntu
+  22.04.2, Xeon E5-2667 v4, 64 GiB (`MemTotal` 67,303,641,088), 219 GB free on `/` plus
+  two 880 GB NVMe. Runs the miner service and will host the rootless OCI conversion
+  runner. Chosen because it can create user namespaces and therefore can regenerate
+  `selfcheck.json`.
+- **Training host** — the original GPU VPS. Retains the RTX 5090 (32 GiB, driver
+  590.48.01, CUDA 13) and the training tree. Training only; its miner programs are
+  stopped. It **cannot** host the miner long term: `unshare --user` and `unshare --net`
+  both return EPERM, cgroup v2 is mounted read-only, `CAP_SYS_ADMIN` is absent, and `/`
+  has under 2 GB free.
+
 ## Current state
 
-- `microtensor-miner` is intentionally **STOPPED**. It was stopped after upstream drift
-  caused a Supervisor restart loop.
-- `microtensor-upstream` and `microtensor-code-rank` are running, currently as `root`.
-- The dedicated `microtensor` system account and `/var/lib/microtensor-miner` layout do
-  not yet exist.
-- The non-root code migration is partially implemented and uncommitted. The protected
-  file reader, its tests, deployment templates, documentation, and full regression run
-  still need to be completed and reviewed.
-- Upstream `main` is
-  `53e4df648a89fad6586e1ac69916b20e747fd972`. An independent static review gave a
-  **conditional GO** to advance only the observer audit head while retaining the exact
-  signed v0.3.2 wheel SHA-256
-  `3629a48b248365070bf5bf190c1584498019c4e1e5ced7c3d175472ff0749e71`.
-- `MT_RESULT_WORKER` must remain absent/blank. Its new opt-in behavior is neither
-  published nor anchored and can cause validators to recompute different weights.
-- The current artifact is bound to `extract/mt-3g`, while the controller targets
+- Sections 1 and 2 are **COMPLETE** on the miner host.
+- `microtensor-upstream` and `microtensor-code-rank` run as the dedicated non-root
+  `microtensor` account (uid 996). `microtensor-miner` is installed with
+  `autostart=false` and is deliberately stopped, per section 2's last item.
+- The upstream audit gate is **green**: `ok=true`, `phase=current`,
+  `review_required=false`, `miner_impact_review_required=false`,
+  `local_checkout_at_origin=true`, `commits_since_audit=0`, origin head
+  `53e4df648a89fad6586e1ac69916b20e747fd972`, release `0.3.2`,
+  `provenance_required=false`.
+- The installed runtime tree matches the pinned signed v0.3.2 wheel exactly
+  (137 files, 901,899 bytes, `sha256:f93d75ef…`). Keep `PYTHONDONTWRITEBYTECODE=1` on
+  every invocation: bytecode caches under `microtensor/`, `neurons/` or the
+  `microtensor_subnet-0.3.2.dist-info/` tree break this digest and hard-fail preflight.
+- Only `you-hot1` and public metadata are in the service wallet; the copied hotkey was
+  verified to derive the authorized SS58. No private coldkey exists on either host.
+- Preflight and one `run --once` cycle both reach the intended fail-closed refusal:
+  `artifact competition binding targets extract/mt-3g, but the controller targets
+  code/mt-3g`. Exit 2, no authorization latch, no pending marker.
+- The repository work is committed and pushed to `origin/main` at
+  `65a6687637f8a649c2610436090fa9ae6105d485`.
+- The 35 pinned conversion inputs (6,392,237,563 bytes, aggregate
+  `sha256:323e2b10…`) are being copied off the training host's volatile tmpfs to
+  `/nvme0n1-disk/microtensor/inputs-snapshot` on the miner host, with a full
+  per-file digest re-verification on arrival.
+- The current artifact is still bound to `extract/mt-3g` while the controller targets
   `code/mt-3g`. This mismatch is intentional and fail-closed. It is **not** a launchable
   code submission.
+- `MT_RESULT_WORKER` is absent, and `ControllerConfig.from_env` now refuses to load if it
+  is ever set. `tests/test_result_worker_guard.py` scans the tracked and untracked-not-
+  ignored tree to keep it out.
 - No model/artifact upload, signature, GitHub release, W&B upload, or chain transaction
   is pending or authorized by this checklist.
-- The separate runner `administrator@93.127.134.170` is reachable with its existing
-  pinned SSH host keys, but it does not yet satisfy the conversion worker requirements.
+- The former runner candidate `administrator@93.127.134.170` is **retired**: it is
+  707,244,032 bytes below the memory gate and the operator declined to resize it.
 
 ## Non-negotiable safety rules
 
@@ -52,7 +80,7 @@ under **Launch acceptance** passes.
 - No staking, transfer, registration, re-registration, cloud purchase, or other paid
   action is authorized.
 
-## 1. Finish and review the repository migration
+## 1. Finish and review the repository migration — COMPLETE
 
 - [ ] Finish the root-controlled service-file policy for:
   - `/etc/microtensor-miner/miner.env`
@@ -93,7 +121,7 @@ git status --short
 - [ ] Commit only the intended migration/audit files.
 - [ ] Push the reviewed commit to `https://github.com/vandungtech/mt92.git`.
 
-## 2. Provision the dedicated local service account
+## 2. Provision the dedicated service account — COMPLETE (on the miner host)
 
 Run these interactively as an administrator only after the repository tests pass:
 
@@ -156,7 +184,7 @@ WANDB_API_KEY=
 - [ ] Keep the miner program disabled/stopped until Sections 3 and 4 are complete.
 - [ ] Keep the original root wallet and workspace runtime unchanged for rollback.
 
-## 3. Provision the separate rootless OCI conversion runner
+## 3. Provision the rootless OCI conversion runner — IN PROGRESS (on the miner host)
 
 Runner: `administrator@93.127.134.170` (Linux/amd64).
 
