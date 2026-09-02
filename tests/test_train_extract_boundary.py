@@ -95,7 +95,7 @@ class BoundarySplitTests(unittest.TestCase):
             for index in range(4_816)
         ]
         expected = list(rows)
-        random.Random(92).shuffle(expected)
+        random.Random(92).shuffle(expected)  # noqa: S311 - deterministic fixture shuffle, not cryptographic
 
         outer, remaining = boundary_outer_partition(rows)
 

@@ -15,7 +15,6 @@ from training.prepare_imatrix import (
     prepare_calibration,
 )
 
-
 TEMPLATE = (
     "{% set enable_thinking = enable_thinking %}"
     "<|im_start|>{{ role }}<|im_end|>"
@@ -145,7 +144,7 @@ class PrepareImatrixTests(unittest.TestCase):
     def test_seed92_reserve_then_cap_matches_training_shuffle(self) -> None:
         rows = [make_row(index) for index in range(400)]
         expected = list(rows)
-        random.Random(92).shuffle(expected)
+        random.Random(92).shuffle(expected)  # noqa: S311 - deterministic fixture shuffle, not cryptographic
         expected_refs = [row["ref"] for row in expected[384:387]]
 
         first = self.root / "first.txt"

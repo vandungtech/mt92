@@ -6,12 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from helpers import base_env
+
 from microtensor_miner_controller.binding import validate_binding, write_binding
 from microtensor_miner_controller.config import ControllerConfig
 from microtensor_miner_controller.envfile import load_env_file
 from microtensor_miner_controller.errors import ConfigError
-
-from helpers import base_env
 
 
 class EnvFileTests(unittest.TestCase):

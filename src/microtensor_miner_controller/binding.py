@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -129,10 +130,8 @@ def write_binding(config: ControllerConfig) -> dict[str, Any]:
     payload = expected_binding(config)
     destination = config.selfcheck_binding_path
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
+    with contextlib.suppress(OSError):
         destination.parent.chmod(0o700)
-    except OSError:
-        pass
     descriptor, temporary = tempfile.mkstemp(prefix=".selfcheck-binding-", dir=destination.parent)
     try:
         os.fchmod(descriptor, 0o600)
@@ -144,13 +143,9 @@ def write_binding(config: ControllerConfig) -> dict[str, Any]:
         os.replace(temporary, destination)
         destination.chmod(0o600)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.close(descriptor)
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(temporary)
-        except OSError:
-            pass
         raise
     return payload

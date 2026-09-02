@@ -254,10 +254,7 @@ class GitHubReleasePublisher:
                 self._verify_asset_set(listed, prepared, require_complete=True)
                 return self._result(release_id, prepared, already_published=True)
 
-            if existing is None:
-                release = self._create_draft()
-            else:
-                release = existing
+            release = self._create_draft() if existing is None else existing
             release_id = self._validate_draft_release(release)
 
             listed = self._list_assets(release_id)

@@ -45,3 +45,7 @@ id_dsa
 id_ecdsa
 id_ed25519
 *.log
+
+# Tool-created patch backups; keep real copies under the gitignored runtime/ tree.
+*.orig
+*.rej

@@ -105,14 +105,16 @@ rejected when `MMC_V030_ACTIVATION_BLOCK` is set.
 Copy `.env.example` outside the repository:
 
 ```bash
-sudo install -d -m 0750 /etc/microtensor-miner
-sudo install -m 0600 .env.example /etc/microtensor-miner/miner.env
+sudo install -d -o root -g microtensor -m 0750 /etc/microtensor-miner
+sudo install -o root -g microtensor -m 0640 .env.example /etc/microtensor-miner/miner.env
 sudoedit /etc/microtensor-miner/miner.env
 ```
 
 Replace every placeholder value. Do not quote or add shell commands: the controller
 parses a deliberately small `UPPER_CASE_NAME=value` data format and never sources it as
-shell code. Keep it owned by the service user or root and mode 0600.
+shell code. Keep it owned `root:microtensor` and mode exactly 0640: the controller reads
+it through `protected_file.read_root_service_file`, which refuses any other owner, mode,
+hard-link count, or a symlink, so the service account can read it but never rewrite it.
 
 The service user must be the wallet owner or have read access to only the required
 wallet tree. Do not copy wallet material into this Git repository or an image.
@@ -121,7 +123,8 @@ Create the separate artifact/competition authorization binding as root. It is in
 not generated or updated by the controller:
 
 ```bash
-sudo install -o root -g root -m 0600 /dev/null /etc/microtensor-miner/artifact-competition.binding.json
+sudo install -o root -g microtensor -m 0640 /dev/null \
+  /etc/microtensor-miner/artifact-competition.binding.json
 sudoedit /etc/microtensor-miner/artifact-competition.binding.json
 ```
 
@@ -179,7 +182,7 @@ the complete 128-byte chain encoding before it performs an external upload.
 Create the token as a separate file, never as an environment value or command argument:
 
 ```bash
-sudo install -o SERVICE_USER -g SERVICE_GROUP -m 0600 /dev/null \
+sudo install -o root -g microtensor -m 0640 /dev/null \
   /etc/microtensor-miner/github.token
 sudoedit /etc/microtensor-miner/github.token
 ```
@@ -187,7 +190,7 @@ sudoedit /etc/microtensor-miner/github.token
 The file must contain only the token, with at most one final newline. The fine-grained
 token needs Contents write to manage releases and Administration write to enable
 immutable releases. Preflight rejects a symlink, non-regular or multiply linked file,
-wrong owner, any mode other than 0600, malformed content, or a file that changes while read.
+wrong owner, any mode other than 0640, malformed content, or a file that changes while read.
 
 After publishing, the normal source verifier downloads and hashes the complete artifact
 through the public HTTPS locator. GitHub credentials are not used for that fetch, so a
@@ -255,14 +258,18 @@ observer before the miner and assumes:
 
 - miner repository and virtualenv at `/workspace/microtensor-miner`;
 - audited subnet checkout at `/workspace/microtensor-subnet`;
-- environment at `/workspace/microtensor-miner/runtime/miner.env`;
-- service user `microtensor`; and
-- writable state below `/workspace/microtensor-miner/runtime`.
+- protected configuration at `/etc/microtensor-miner`, owned `root:microtensor` mode 0640;
+- dedicated service account `microtensor` with a `nologin` shell and no privileged
+  supplemental group; and
+- writable state below `/var/lib/microtensor-miner`, logs below
+  `/var/log/microtensor-miner`, cache below `/var/cache/microtensor-miner`.
 
-Change `user=` on both programs to the same wallet-owning OS account before enabling
-it. The observer's 0600 status must be owned by the miner's effective user. Supervisor
-retries unexpected exits three times, forwards SIGTERM to the process groups, and sends
-logs to stdout. The controller itself handles transient coordinator/chain failures
+All three programs run as `microtensor` with explicit `HOME`, `USER`, `LOGNAME`,
+`XDG_CACHE_HOME`, `TMPDIR`, `PYTHONSAFEPATH` and `PYTHONDONTWRITEBYTECODE`. The
+`microtensor-miner` program ships `autostart=false` on purpose: enable it only after the
+read-only launch rehearsal in `launch_todo.md` passes. The observer's 0600 status must be
+owned by the miner's effective user. Supervisor forwards SIGTERM to the process groups and
+sends logs to stdout. The controller itself handles transient coordinator/chain failures
 without ever turning an unverified state green.
 
 No inbound network port is required. The process uses outbound HTTPS/WSS for Finney,

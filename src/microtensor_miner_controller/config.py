@@ -41,6 +41,14 @@ FINNEY_TRANSACTION_VERSION = 1
 FINNEY_RUNTIME_CODE_HASH = "0x40a8c3c99a47d6739b086236308535fab26d5fd4cc5c88eb83f6a3c8b928f7cc"
 TRANSACTION_AUTHORIZATION = "netuid92-uid32-you-hot1-commitment-fee0-deposit0-v1"
 AUTHORIZED_GITHUB_REPOSITORY = "vandungtech/mt92"
+
+# Upstream 53e4df6 added an opt-in coordinator override, MT_RESULT_WORKER, that collapses
+# reconciliation to a single named worker's report. It is unpublished, unanchored, and not
+# covered by the signed v0.3.2 runtime or any on-chain commitment. A miner that carried it
+# in its environment could contribute to validators computing different weights for the same
+# round, so this controller refuses to load while it is set. See
+# docs/upstream-audits/53e4df648a89fad6586e1ac69916b20e747fd972.md.
+FORBIDDEN_ENVIRONMENT_VARIABLES: tuple[str, ...] = ("MT_RESULT_WORKER",)
 AUTHORIZED_HOTKEY_SS58 = "5HgeNAYMw7piRNCNgGuRyaDnJUsoazZpxEbT7G7RukHSNw3r"
 EXPECTED_ENTRYPOINT = "model.gguf"
 EXPECTED_FORMAT = "gguf"
@@ -55,6 +63,23 @@ _GITHUB_RELEASE_SOURCE = re.compile(
     r"releases/download/"
     r"([A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?)$"
 )
+
+
+def _reject_forbidden(env: Mapping[str, str]) -> None:
+    """Refuse to build a configuration while a forbidden variable is set.
+
+    Presence with an empty or whitespace-only value is tolerated so an operator can
+    keep an explicit ``MT_RESULT_WORKER=`` placeholder that proves the override is
+    off. Any non-empty value is a hard refusal.
+    """
+
+    for name in FORBIDDEN_ENVIRONMENT_VARIABLES:
+        value = env.get(name)
+        if value is not None and value.strip():
+            raise ConfigError(
+                f"{name} must never be set for this miner; it is an unpublished, unanchored "
+                "upstream override that can make validators compute different weights"
+            )
 
 
 def _text(env: Mapping[str, str], key: str, default: str = "", *, required: bool = False) -> str:
@@ -184,6 +209,7 @@ class ControllerConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ControllerConfig:
         source = dict(os.environ if env is None else env)
+        _reject_forbidden(source)
         v030_activation_block = _optional_integer(source, "MMC_V030_ACTIVATION_BLOCK", minimum=0)
         signed_v030 = v030_activation_block is not None
         upstream_home = _path(source, "MT_HOME", "/var/lib/microtensor-miner/upstream")

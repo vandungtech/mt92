@@ -177,7 +177,7 @@ class EvaluationSelectionTests(unittest.TestCase):
             legacy_examples=64,
         )
         expected = list(rows)
-        random.Random(92).shuffle(expected)
+        random.Random(92).shuffle(expected)  # noqa: S311 - deterministic fixture shuffle, not cryptographic
 
         self.assertEqual(
             [row["ref"] for row in result.rows],

@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from microtensor.scoring.extraction import micro_f1
+
 from training.evaluate_gguf import entity_confusion_counts
 
 

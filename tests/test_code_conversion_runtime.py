@@ -22,7 +22,11 @@ class IdentityTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.root.chmod(0o700)
-        self.python = Path(sys.executable).resolve()
+        # Attest the interpreter actually in use, not its resolved base. `.resolve()`
+        # follows the venv symlink out to the bare uv CPython build, whose sys.path has
+        # no venv site-packages, so a distribution probe there finds nothing installed.
+        # attest_file records the symlink chain, so the unresolved path attests fine.
+        self.python = Path(sys.executable)
 
     def test_file_identity_records_symlink_and_rejects_mutable_target(self) -> None:
         target = self.root / "tool"

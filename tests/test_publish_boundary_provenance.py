@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import io
 import json
 import math
 import os
 import tempfile
 import unittest
+from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any
 from unittest import mock
 
 from training import boundary_contrastive as boundary

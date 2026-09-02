@@ -16,7 +16,6 @@ from unittest import mock
 
 from training import publish_provenance as provenance
 
-
 ARTIFACT_DIGEST = "sha256:" + "a" * 64
 CORPUS_FILE_DIGEST = "sha256:" + "b" * 64
 

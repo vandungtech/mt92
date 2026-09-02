@@ -216,7 +216,7 @@ class EntitySubstitutionTests(unittest.TestCase):
             ),
             public_row(
                 "unsafe-unicode",
-                "ACE and αACE.",
+                "ACE and αACE.",  # noqa: RUF001 - the ambiguous character is the subject of this unsafe-unicode test
                 [("ACE", "Chemical")],
             ),
             public_row("safe-a", "Aspirin.", [("Aspirin", "Chemical")]),
