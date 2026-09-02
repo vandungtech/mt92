@@ -15,11 +15,11 @@ from helpers import base_env
 
 
 class EnvFileTests(unittest.TestCase):
-    def test_mode_0600_data_file_loads_without_shell_evaluation(self) -> None:
+    def test_root_service_mode_0640_data_file_loads_without_shell_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "miner.env"
             path.write_text("MMC_DRY_RUN=true\nMMC_SOURCE_TEMPLATE=s3:bucket/round-{round}\n")
-            path.chmod(0o600)
+            path.chmod(0o640)
             destination: dict[str, str] = {}
             loaded = load_env_file(path, destination)
             self.assertEqual(destination["MMC_DRY_RUN"], "true")
@@ -29,12 +29,12 @@ class EnvFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "miner.env"
             path.write_text("TOKEN=$(id)\n")
-            path.chmod(0o600)
+            path.chmod(0o640)
             with self.assertRaisesRegex(ConfigError, "forbidden"):
                 load_env_file(path, {})
             path.write_text("TOKEN=value\n")
             path.chmod(0o644)
-            with self.assertRaisesRegex(ConfigError, "0600"):
+            with self.assertRaisesRegex(ConfigError, "0640"):
                 load_env_file(path, {})
 
 

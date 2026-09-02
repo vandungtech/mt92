@@ -43,7 +43,7 @@ class ArtifactCompetitionBindingTests(unittest.TestCase):
             def root_owned(metadata: os.stat_result) -> os.stat_result:
                 fields = list(metadata)
                 fields[4] = 0
-                fields[5] = 0
+                fields[5] = os.getegid()
                 return os.stat_result(fields)
 
             self.metadata_patchers = [
@@ -62,7 +62,7 @@ class ArtifactCompetitionBindingTests(unittest.TestCase):
             patcher.stop()
         self.temporary.cleanup()
 
-    def _write(self, payload: bytes, *, mode: int = 0o600) -> None:
+    def _write(self, payload: bytes, *, mode: int = 0o640) -> None:
         self.config.artifact_competition_binding_path.write_bytes(payload)
         self.config.artifact_competition_binding_path.chmod(mode)
 
@@ -149,23 +149,23 @@ class ArtifactCompetitionBindingTests(unittest.TestCase):
             validate_artifact_competition_binding(self.config)
         hardlink.unlink()
 
-        binding.chmod(0o640)
-        with self.assertRaisesRegex(ArtifactCompetitionBindingError, "exactly 0600"):
-            validate_artifact_competition_binding(self.config)
         binding.chmod(0o600)
+        with self.assertRaisesRegex(ArtifactCompetitionBindingError, "exactly 0640"):
+            validate_artifact_competition_binding(self.config)
+        binding.chmod(0o640)
 
     @unittest.skipUnless(
         os.geteuid() == 0 and os.getegid() == 0,
-        "exact root:root ownership mutation requires a root test process",
+        "exact root/service-group ownership mutation requires a root test process",
     )
-    def test_exact_root_user_and_group_ownership_are_enforced(self) -> None:
+    def test_exact_root_user_and_service_group_ownership_are_enforced(self) -> None:
         binding = self.config.artifact_competition_binding_path
         try:
             for uid, gid in ((1, 0), (0, 1)):
                 with self.subTest(uid=uid, gid=gid):
                     os.chown(binding, uid, gid)
                     with self.assertRaisesRegex(
-                        ArtifactCompetitionBindingError, "root:root"
+                        ArtifactCompetitionBindingError, "owned by root|service group"
                     ):
                         validate_artifact_competition_binding(self.config)
         finally:

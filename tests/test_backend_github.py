@@ -29,7 +29,7 @@ class GitHubBackendTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.token_file = self.root / "github.token"
         self.token_file.write_text(TOKEN + "\n", encoding="ascii")
-        self.token_file.chmod(0o600)
+        self.token_file.chmod(0o640)
         artifact_dir = self.root / "artifact"
         artifact_dir.mkdir()
         (artifact_dir / "model.gguf").write_bytes(b"model")
@@ -59,7 +59,7 @@ class GitHubBackendTests(unittest.TestCase):
         for suffix in (b"", b"\n"):
             with self.subTest(final_newline=bool(suffix)):
                 self.token_file.write_bytes(TOKEN.encode("ascii") + suffix)
-                self.token_file.chmod(0o600)
+                self.token_file.chmod(0o640)
                 backend = MicrotensorBackend(self.config)
 
                 self.assertEqual(backend._read_github_token(), TOKEN)
@@ -69,14 +69,14 @@ class GitHubBackendTests(unittest.TestCase):
             ("empty", b"", "invalid token"),
             ("crlf", TOKEN.encode("ascii") + b"\r\n", "exactly one token"),
             ("multiple", TOKEN.encode("ascii") + b"\nsecond", "exactly one token"),
-            ("oversized", b"x" * 4097, "size limit"),
+            ("oversized", b"x" * 4097, "4096-byte limit"),
             ("non-ascii", b"\xff" * 8, "ASCII"),
             ("whitespace", b" " + TOKEN.encode("ascii"), "invalid token"),
         )
         for label, payload, message in cases:
             with self.subTest(label=label):
                 self.token_file.write_bytes(payload)
-                self.token_file.chmod(0o600)
+                self.token_file.chmod(0o640)
                 with self.assertRaisesRegex(PreflightError, message) as raised:
                     MicrotensorBackend(self.config)._read_github_token()
                 self.assertNotIn(TOKEN, str(raised.exception))
@@ -94,12 +94,12 @@ class GitHubBackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(PreflightError, message):
                     MicrotensorBackend(config)._read_github_token()
 
-    def test_token_file_must_be_exact_mode_0600(self) -> None:
-        for mode in (0o400, 0o640, 0o644):
+    def test_token_file_must_be_exact_mode_0640(self) -> None:
+        for mode in (0o400, 0o600, 0o644):
             with self.subTest(mode=oct(mode)):
                 self.token_file.chmod(mode)
                 backend = MicrotensorBackend(self.config)
-                with self.assertRaisesRegex(PreflightError, "exactly 0600"):
+                with self.assertRaisesRegex(PreflightError, "exactly 0640"):
                     backend._read_github_token()
 
     def test_token_file_symlink_is_refused(self) -> None:
@@ -118,7 +118,7 @@ class GitHubBackendTests(unittest.TestCase):
             MicrotensorBackend(self.config)._read_github_token()
 
     def test_live_preflight_checks_token_before_wallet_or_network(self) -> None:
-        self.token_file.chmod(0o640)
+        self.token_file.chmod(0o600)
         backend = MicrotensorBackend(self.config)
 
         with (
@@ -132,7 +132,7 @@ class GitHubBackendTests(unittest.TestCase):
                 "_verify_upstream",
                 return_value=(UPSTREAM_COMMIT, UPSTREAM_RELEASE),
             ),
-            self.assertRaisesRegex(PreflightError, "exactly 0600"),
+            self.assertRaisesRegex(PreflightError, "exactly 0640"),
         ):
             backend.preflight()
         binding_gate.assert_called_once_with()

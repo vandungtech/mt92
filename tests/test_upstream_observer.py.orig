@@ -173,14 +173,6 @@ class UpstreamObserverTests(unittest.TestCase):
         )
         self.assertNotEqual(AUDITED_UPSTREAM_HEAD, LEGACY_V032_HEAD)
 
-    def test_local_service_templates_do_not_configure_result_worker(self) -> None:
-        variable = "MT_RESULT_" + "WORKER"
-        templates = sorted((REPOSITORY_ROOT / "deploy").glob("supervisor*.conf"))
-        self.assertTrue(templates)
-        for template in templates:
-            with self.subTest(template=template.name):
-                self.assertNotIn(variable, template.read_text(encoding="utf-8"))
-
     def test_d77_statically_accepts_legacy_digest_only_with_equal_source(self) -> None:
         # This is an inert fixture/reimplementation of the two digest branches in
         # d77's manifest blob. It deliberately does not import, compile, or execute

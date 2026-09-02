@@ -56,6 +56,7 @@ from .models import (
     PublishReceipt,
     RoundWindow,
 )
+from .protected_file import ProtectedFileError, read_root_service_file
 from .upstream_gate import UpstreamGateError, verify_upstream_observer_status
 
 log = logging.getLogger(__name__)
@@ -549,52 +550,14 @@ class MicrotensorBackend:
         if path is None:
             raise PreflightError("GitHub token file is required for live HTTPS upload")
 
-        descriptor = -1
         try:
-            before = path.lstat()
-            self._validate_github_token_metadata(before)
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(path, flags)
-            opened = os.fstat(descriptor)
-            self._validate_github_token_metadata(opened)
-            if before.st_dev != opened.st_dev or before.st_ino != opened.st_ino:
-                raise PreflightError("GitHub token file changed while it was opened")
-            fingerprint = (
-                opened.st_dev,
-                opened.st_ino,
-                opened.st_mode,
-                opened.st_uid,
-                opened.st_nlink,
-                opened.st_size,
-                opened.st_mtime_ns,
-                opened.st_ctime_ns,
+            raw = read_root_service_file(
+                path,
+                label="GitHub token file",
+                maximum_bytes=4096,
             )
-            with os.fdopen(descriptor, "rb") as token_stream:
-                descriptor = -1
-                raw = token_stream.read(4097)
-                after = os.fstat(token_stream.fileno())
-            self._validate_github_token_metadata(after)
-            if fingerprint != (
-                after.st_dev,
-                after.st_ino,
-                after.st_mode,
-                after.st_uid,
-                after.st_nlink,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            ):
-                raise PreflightError("GitHub token file changed while it was read")
-        except PreflightError:
-            raise
-        except OSError:
-            raise PreflightError("GitHub token file is unavailable or unsafe") from None
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
-        if len(raw) > 4096:
-            raise PreflightError("GitHub token file exceeds the size limit")
+        except ProtectedFileError as exc:
+            raise PreflightError(str(exc)) from None
         try:
             token = raw.decode("ascii")
         except UnicodeDecodeError:
@@ -610,17 +573,6 @@ class MicrotensorBackend:
         except (ImportError, ReleasePublishError):
             raise PreflightError("GitHub token file contains an invalid token") from None
         return token
-
-    @staticmethod
-    def _validate_github_token_metadata(metadata: os.stat_result) -> None:
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise PreflightError("GitHub token file must be a regular non-symlink")
-        if metadata.st_uid != os.geteuid():
-            raise PreflightError("GitHub token file must be owned by the effective user")
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise PreflightError("GitHub token file mode must be exactly 0600")
-        if metadata.st_nlink != 1:
-            raise PreflightError("GitHub token file must have exactly one hard link")
 
     def _validate_wallet_permissions(self) -> None:
         hotkey_file = (
@@ -644,6 +596,10 @@ class MicrotensorBackend:
         if stat.S_IMODE(metadata.st_mode) & 0o077:
             raise PreflightError(
                 f"hotkey file must not grant group/world permissions: {hotkey_file}"
+            )
+        if metadata.st_nlink != 1:
+            raise PreflightError(
+                f"hotkey file must have exactly one hard link: {hotkey_file}"
             )
 
     def _declared(self) -> Any:

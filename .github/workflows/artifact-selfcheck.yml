@@ -1,0 +1,251 @@
+name: Immutable Q8 artifact self-check
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  selfcheck:
+    name: Official v0.3 mt-3g self-check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+      PYTHONNOUSERSITE: "1"
+
+    steps:
+      - name: Download exact immutable release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="${RUNNER_TEMP}/mt92-selfcheck"
+          mkdir -p "${root}/artifact"
+
+          curl --disable --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --silent --show-error \
+            --output "${root}/conversion-receipt.json" \
+            'https://github.com/vandungtech/mt92/releases/download/mt92-code-v0.3-q8-c4dff694/conversion-receipt.json'
+          curl --disable --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --silent --show-error \
+            --output "${root}/load-spec.json" \
+            'https://github.com/vandungtech/mt92/releases/download/mt92-code-v0.3-q8-c4dff694/load-spec.json'
+          curl --disable --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --silent --show-error \
+            --output "${root}/artifact/model.gguf" \
+            'https://github.com/vandungtech/mt92/releases/download/mt92-code-v0.3-q8-c4dff694/model.gguf'
+          curl --disable --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --silent --show-error \
+            --output "${root}/microtensor_subnet-0.3.0-py3-none-any.whl" \
+            'https://github.com/microtensor-io/microtensor-subnet/releases/download/v0.3.0/microtensor_subnet-0.3.0-py3-none-any.whl'
+
+      - name: Verify every downloaded byte before use
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mt92-selfcheck"
+
+          verify_file() {
+            local path="$1"
+            local expected_bytes="$2"
+            local expected_sha256="$3"
+            local actual_bytes
+            local actual_sha256
+
+            test -f "${path}"
+            test ! -L "${path}"
+            actual_bytes="$(stat --format='%s' -- "${path}")"
+            actual_sha256="$(sha256sum --binary -- "${path}")"
+            actual_sha256="${actual_sha256%% *}"
+
+            if [[ "${actual_bytes}" != "${expected_bytes}" ]]; then
+              echo "size mismatch for ${path}: expected ${expected_bytes}, got ${actual_bytes}" >&2
+              return 1
+            fi
+            if [[ "${actual_sha256}" != "${expected_sha256}" ]]; then
+              echo "SHA-256 mismatch for ${path}" >&2
+              return 1
+            fi
+          }
+
+          verify_file \
+            "${root}/conversion-receipt.json" \
+            2308 \
+            0bc8c27d17362c1d4886c539bd815eca363b94f5fea0c20a6810e309a3d53ebe
+          verify_file \
+            "${root}/load-spec.json" \
+            255 \
+            68e3633ae7e20268e2097e3883bc0ca734915fbfc629f1bf12b7ce5618691433
+          verify_file \
+            "${root}/artifact/model.gguf" \
+            639446720 \
+            4d5ecb8d9b1f419b1acadec03882c0a98908f5e80d75ce1820c72ce6c63538d3
+          verify_file \
+            "${root}/microtensor_subnet-0.3.0-py3-none-any.whl" \
+            300844 \
+            742a25240a4a95f272c2894f5176a4f084b4b4eb5fb2af24dc8f7b464c2d0133
+
+      - name: Install the pinned official v0.3 GGUF environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mt92-selfcheck"
+          venv="${root}/venv"
+
+          python3 -m venv "${venv}"
+          "${venv}/bin/python" -m pip install \
+            "${root}/microtensor_subnet-0.3.0-py3-none-any.whl[gguf]"
+
+          "${venv}/bin/python" - <<'PY'
+          from importlib.metadata import version
+
+          expected = {
+              "llama-cpp-python": "0.3.35",
+              "microtensor-subnet": "0.3.0",
+          }
+          for distribution, wanted in expected.items():
+              actual = version(distribution)
+              if actual != wanted:
+                  raise SystemExit(
+                      f"installed {distribution} version mismatch: expected {wanted}, got {actual}"
+                  )
+              print(f"installed {distribution}=={actual}")
+          PY
+
+      - name: Verify manifest, receipt, and official artifact-tree digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mt92-selfcheck"
+          venv="${root}/venv"
+
+          SELFCHECK_ROOT="${root}" "${venv}/bin/python" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from microtensor.core.hashing import digest_file, digest_tree, tree_size_bytes
+
+          root = Path(os.environ["SELFCHECK_ROOT"])
+          artifact = root / "artifact"
+          model = artifact / "model.gguf"
+          load = json.loads((root / "load-spec.json").read_text(encoding="utf-8"))
+          receipt = json.loads(
+              (root / "conversion-receipt.json").read_text(encoding="utf-8")
+          )
+
+          expected_load = {
+              "base_model": "Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca",
+              "entrypoint": "model.gguf",
+              "format": "gguf",
+              "max_input": {"tokens": 541},
+              "preprocessing": {"tokenizer": "tokenizer.json"},
+              "quantization": "Q8_0",
+          }
+          expected_artifact = {
+              "entrypoint_bytes": 639446720,
+              "entrypoint_digest": (
+                  "sha256:4d5ecb8d9b1f419b1acadec03882c0a98908f5e80d75ce1820c72ce6c63538d3"
+              ),
+              "quantization": "Q8_0",
+              "tree_digest": (
+                  "sha256:c4dff69435bf6593894fd585f2bf1ad6cabaab2b188948f7ff7da8dfc3be7bff"
+              ),
+          }
+
+          checks = {
+              "load specification": (load, expected_load),
+              "receipt load manifest": (receipt.get("load_manifest"), expected_load),
+              "receipt artifact": (receipt.get("artifact"), expected_artifact),
+              "receipt status": (receipt.get("status"), "complete"),
+              "receipt schema": (
+                  receipt.get("schema"),
+                  "microtensor.code.gguf-conversion.v1",
+              ),
+              "receipt track": (receipt.get("track"), "code"),
+              "receipt hardware class": (receipt.get("hardware_class"), "mt-3g"),
+              "model digest": (digest_file(model), expected_artifact["entrypoint_digest"]),
+              "artifact tree digest": (
+                  digest_tree(artifact),
+                  expected_artifact["tree_digest"],
+              ),
+              "artifact tree size": (
+                  tree_size_bytes(artifact),
+                  expected_artifact["entrypoint_bytes"],
+              ),
+          }
+          for label, (actual, expected) in checks.items():
+              if actual != expected or type(actual) is not type(expected):
+                  raise SystemExit(f"{label} mismatch")
+              print(f"verified {label}")
+          PY
+
+      - name: Prove user and network namespaces are enforceable
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mt92-selfcheck"
+
+          unshare --user --map-root-user --net true
+          "${root}/venv/bin/python" - <<'PY'
+          from microtensor.harness.limits import drop_network, interfaces
+
+          drop_network()
+          remaining = [name for name in interfaces() if name != "lo"]
+          if remaining:
+              raise SystemExit(f"network namespace leaked interfaces: {remaining}")
+          print("official v0.3 network-isolation probe passed")
+          PY
+
+      - name: Run the official v0.3 mt-3g self-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mt92-selfcheck"
+          runner="${root}/run-selfcheck.py"
+
+          cat >"${runner}" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from microtensor.core.protocol import ArtifactFormat, LoadManifest
+          from microtensor.miner.selfcheck import selfcheck
+
+
+          def main() -> None:
+              root = Path(os.environ["SELFCHECK_ROOT"])
+              payload = json.loads(
+                  (root / "load-spec.json").read_text(encoding="utf-8")
+              )
+              manifest = LoadManifest(
+                  format=ArtifactFormat(payload["format"]),
+                  quantization=payload["quantization"],
+                  entrypoint=payload["entrypoint"],
+                  max_input=payload["max_input"],
+                  preprocessing=payload["preprocessing"],
+                  base_model=payload["base_model"],
+              )
+              result = selfcheck(
+                  artifact=root / "artifact",
+                  load=manifest,
+                  hardware_class="mt-3g",
+                  seed="mt92-code-q8-c4dff694",
+                  profile_seconds=60,
+                  allow_unsandboxed=False,
+              )
+              print(result.report(), flush=True)
+              if not result.admissible:
+                  raise SystemExit("official v0.3 self-check result: INADMISSIBLE")
+              print("official v0.3 self-check result: ADMISSIBLE", flush=True)
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+
+          SELFCHECK_ROOT="${root}" PYTHONUNBUFFERED=1 \
+            "${root}/venv/bin/python" "${runner}"

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
 from pathlib import Path
 from typing import Any
 
 from .binding import artifact_digest
 from .config import ControllerConfig
 from .errors import ArtifactCompetitionBindingError, PreflightError
+from .protected_file import ProtectedFileError, read_root_service_file
 
 ARTIFACT_COMPETITION_BINDING_SCHEMA_VERSION = 1
 MAX_ARTIFACT_COMPETITION_BINDING_BYTES = 4096
@@ -25,86 +24,18 @@ _FIELDS = frozenset(
 )
 
 
-def _metadata_fingerprint(metadata: os.stat_result) -> tuple[int, ...]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_uid,
-        metadata.st_gid,
-        metadata.st_nlink,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
-    )
-
-
-def _validate_metadata(metadata: os.stat_result) -> None:
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise ArtifactCompetitionBindingError(
-            "artifact competition binding must be a regular non-symlink"
-        )
-    if metadata.st_nlink != 1:
-        raise ArtifactCompetitionBindingError(
-            "artifact competition binding must have exactly one hard link"
-        )
-    if metadata.st_uid != 0 or metadata.st_gid != 0:
-        raise ArtifactCompetitionBindingError(
-            "artifact competition binding must be owned by root:root"
-        )
-    if stat.S_IMODE(metadata.st_mode) != 0o600:
-        raise ArtifactCompetitionBindingError(
-            "artifact competition binding must have mode exactly 0600"
-        )
-    if metadata.st_size < 1:
-        raise ArtifactCompetitionBindingError("artifact competition binding must not be empty")
-    if metadata.st_size > MAX_ARTIFACT_COMPETITION_BINDING_BYTES:
-        raise ArtifactCompetitionBindingError(
-            "artifact competition binding exceeds the 4096-byte limit"
-        )
-
-
 def _read_private_binding(path: Path) -> bytes:
-    descriptor = -1
-    payload = bytearray()
     try:
-        before = path.lstat()
-        _validate_metadata(before)
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        _validate_metadata(opened)
-        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-            raise ArtifactCompetitionBindingError(
-                "artifact competition binding changed while it was opened"
-            )
-        fingerprint = _metadata_fingerprint(opened)
-        while True:
-            remaining = MAX_ARTIFACT_COMPETITION_BINDING_BYTES + 1 - len(payload)
-            chunk = os.read(descriptor, remaining)
-            if not chunk:
-                break
-            payload.extend(chunk)
-            if len(payload) > MAX_ARTIFACT_COMPETITION_BINDING_BYTES:
-                raise ArtifactCompetitionBindingError(
-                    "artifact competition binding exceeds the 4096-byte limit"
-                )
-        after = os.fstat(descriptor)
-        _validate_metadata(after)
-        if fingerprint != _metadata_fingerprint(after) or len(payload) != opened.st_size:
-            raise ArtifactCompetitionBindingError(
-                "artifact competition binding changed while it was read"
-            )
-    except ArtifactCompetitionBindingError:
-        raise
-    except OSError:
-        raise ArtifactCompetitionBindingError(
-            "artifact competition binding is unavailable or unsafe"
-        ) from None
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    return bytes(payload)
+        payload = read_root_service_file(
+            path,
+            label="artifact competition binding",
+            maximum_bytes=MAX_ARTIFACT_COMPETITION_BINDING_BYTES,
+        )
+    except ProtectedFileError as exc:
+        raise ArtifactCompetitionBindingError(str(exc)) from None
+    if not payload:
+        raise ArtifactCompetitionBindingError("artifact competition binding must not be empty")
+    return payload
 
 
 def _strict_json_object(raw: str) -> dict[str, Any]:

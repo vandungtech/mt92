@@ -28,7 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         default=Path(os.environ["MMC_ENV_FILE"]) if os.environ.get("MMC_ENV_FILE") else None,
-        help="strict mode-0600 dotenv file (parsed as data, never sourced as shell)",
+        help=(
+            "strict root-owned, service-group-readable mode-0640 dotenv file "
+            "(parsed as data, never sourced as shell)"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

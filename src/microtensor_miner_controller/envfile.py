@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 import re
-import stat
 from collections.abc import MutableMapping
 from pathlib import Path
 
 from .errors import ConfigError
+from .protected_file import ProtectedFileError, read_root_service_file
 
 _NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _FORBIDDEN_VALUE_CHARS = frozenset("\r\n\x00`$")
@@ -26,24 +26,17 @@ def load_env_file(
     destination = os.environ if environ is None else environ
     resolved = Path(path).expanduser().absolute()
     try:
-        metadata = resolved.lstat()
-    except OSError as exc:
-        raise ConfigError(f"environment file is unavailable: {resolved}: {exc}") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise ConfigError(f"environment file must be a regular non-symlink: {resolved}")
-    if stat.S_IMODE(metadata.st_mode) != 0o600:
-        raise ConfigError(f"environment file must have mode 0600: {resolved}")
-    if metadata.st_uid != os.geteuid():
-        raise ConfigError(
-            f"environment file must be owned by effective UID {os.geteuid()}: {resolved}"
+        encoded = read_root_service_file(
+            resolved,
+            label="environment file",
+            maximum_bytes=64 * 1024,
         )
-
+    except ProtectedFileError as exc:
+        raise ConfigError(str(exc)) from None
     try:
-        raw = resolved.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ConfigError(f"environment file is unreadable UTF-8: {resolved}: {exc}") from exc
-    if len(raw.encode("utf-8")) > 64 * 1024:
-        raise ConfigError("environment file exceeds 64 KiB")
+        raw = encoded.decode("utf-8", errors="strict")
+    except UnicodeError:
+        raise ConfigError("environment file is not valid UTF-8") from None
 
     loaded: list[str] = []
     seen: set[str] = set()

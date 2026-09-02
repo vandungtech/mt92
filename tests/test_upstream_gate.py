@@ -68,7 +68,7 @@ class UpstreamGateTests(unittest.TestCase):
     def test_gate_is_pinned_to_exact_compatibility_reviewed_head(self) -> None:
         self.assertEqual(
             AUDITED_ORIGIN_HEAD,
-            "d77adc945de763f8b3b2d71fef8193090ede7001",
+            "53e4df648a89fad6586e1ac69916b20e747fd972",
         )
 
     def test_accepts_exact_current_fresh_audited_status(self) -> None:

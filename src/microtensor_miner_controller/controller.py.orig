@@ -597,9 +597,7 @@ class Controller:
             message="source, provenance policy, and exact on-chain commitment verified",
         )
 
-    def _assert_packaged_artifact_competition_binding(
-        self, packaged: PackagedArtifact
-    ) -> None:
+    def _assert_packaged_artifact_competition_binding(self, packaged: PackagedArtifact) -> None:
         bound_artifact_digest = self.backend.validate_artifact_competition_binding()
         if packaged.artifact_digest != bound_artifact_digest:
             raise ArtifactCompetitionBindingError(

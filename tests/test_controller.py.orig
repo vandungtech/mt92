@@ -50,7 +50,6 @@ class FakeBackend:
         self.publish_binding_error = publish_binding_error
         self.registration_error = registration_error
         self.anchor_error = anchor_error
-        self.preflight_error = preflight_error
         self.binding_error_on_call = binding_error_on_call
         self.bound_artifact_digest = bound_artifact_digest
         self.binding_checks = 0
@@ -60,8 +59,6 @@ class FakeBackend:
 
     def preflight(self) -> PreflightSnapshot:
         self.operations.append("preflight")
-        if self.preflight_error is not None:
-            raise self.preflight_error
         self.validate_artifact_competition_binding()
         return PreflightSnapshot("5Hotkey", 32, 150, UPSTREAM_RELEASE, UPSTREAM_COMMIT)
 
@@ -463,55 +460,6 @@ class ControllerTests(unittest.TestCase):
             self.assertNotIn("package", backend.operations)
             self.assertNotIn("upload", backend.operations)
             self.assertNotIn("publish", backend.operations)
-
-    def test_continuous_startup_preflight_refusal_retries_in_process(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            backend = FakeBackend(preflight_error=PreflightError("upstream drift detected"))
-            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
-            stop = mock.Mock()
-            stop.wait.side_effect = (False, True)
-            controller.stop_event = stop
-
-            self.assertEqual(controller.run(), 0)
-            self.assertEqual(backend.operations.count("preflight"), 2)
-            self.assertEqual(
-                stop.wait.call_args_list,
-                [
-                    mock.call(controller.config.retry_seconds),
-                    mock.call(controller.config.retry_seconds),
-                ],
-            )
-            self.assertEqual(state.read_status()["phase"], "stopped")
-            self.assertNotIn("package", backend.operations)
-            self.assertNotIn("upload", backend.operations)
-            self.assertNotIn("publish", backend.operations)
-
-    def test_once_startup_preflight_refusal_exits_two_without_retry(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            backend = FakeBackend(preflight_error=PreflightError("upstream drift detected"))
-            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
-            stop = mock.Mock()
-            controller.stop_event = stop
-
-            self.assertEqual(controller.run(once=True), 2)
-            self.assertEqual(backend.operations.count("preflight"), 1)
-            stop.wait.assert_not_called()
-            self.assertEqual(state.read_status()["phase"], "preflight_refused")
-
-    def test_startup_authorization_refusal_exits_three_without_retry(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            backend = FakeBackend(
-                preflight_error=AuthorizationRefused("hotkey registration changed")
-            )
-            controller, state = self._build(Path(temporary), dry_run=False, backend=backend)
-            stop = mock.Mock()
-            controller.stop_event = stop
-
-            self.assertEqual(controller.run(), 3)
-            self.assertEqual(backend.operations.count("preflight"), 1)
-            stop.wait.assert_not_called()
-            self.assertEqual(state.read_status()["phase"], "authorization_refused")
-            self.assertTrue(state.read_authorization_refusal()["authorization_latched"])
 
     def test_live_success_requires_all_proofs_and_readback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
