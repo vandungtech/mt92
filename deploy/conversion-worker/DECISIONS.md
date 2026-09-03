@@ -80,6 +80,36 @@ pinned, enforced LSM profile. The profile is installed by root at provisioning t
 (`apparmor_parser` needs `CAP_MAC_ADMIN`) and pinned by exact bytes and SHA-256
 afterwards.
 
+## 5a. UNRESOLVED: the rootful/rootless conflict is not satisfiable as pinned
+
+Decision 5 chose userns-remapped rootful Podman so a named AppArmor profile could be
+enforced. Running the conversion exposed that this cannot satisfy the verifier, because
+two of its requirements are mutually exclusive on Podman:
+
+- `_validate_runner_preflight_evidence` refuses unless
+  `runtime.host_effective_uid >= 1`, i.e. the container runtime is not root.
+- `_validate_worker_spec` requires `security.profiles.lsm` to be a named identity with a
+  filename, byte count and SHA-256, which is re-checked against the evidence.
+
+Measured on the runner: rootful `sudo podman` gives effective UID 0 and refuses the first
+check. Rootless Podman as `mtconv` gives UID 998 but refuses any named profile outright —
+`Apparmor profile "microtensor-conversion-v8" specified, but Apparmor is not enabled on
+this system` — because an unprivileged user cannot read the AppArmor interface, so only
+`unconfined` is accepted. There is no configuration that satisfies both.
+
+Reporting the administrator account's UID (1000) instead of Podman's effective UID would
+pass the check, and is rejected here: the `runtime` block describes the container runtime,
+so that value would be a false attestation of the kind decision 1 exists to avoid.
+
+This is recorded as OPEN. It blocks the runner preflight evidence document and therefore
+the launch gate, and it needs an operator decision between: running rootless with
+`apparmor=unconfined` and amending `security.profiles.lsm` (loses the LSM layer, and the
+verifier's `_validate_named_identity` would also need to change); amending the
+`host_effective_uid` check on the grounds that `--userns=auto` already provides a genuinely
+private user namespace (verified: the staging tree is owned by mapped uid 400000); or
+escalating it as a defect in the pinned spec/verifier pair. The conversion itself is
+unaffected — the model is deterministic, so only the attestation differs.
+
 ## 6. Source closure corrected
 
 `image.source_closure.files` was missing `training/train_code.py` (54,031 bytes) and
