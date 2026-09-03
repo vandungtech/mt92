@@ -1436,7 +1436,12 @@ def _validate_current_loaded_lineage(lineage: Mapping[str, Any]) -> None:
         (train_identity, "current prepared train"),
         (holdout_identity, "current prepared holdout"),
     ):
-        _exact_keys(identity, frozenset({"bytes", "digest"}), f"{label} identity")
+        # Same reason as the source-corpus identity above: the loader emits a full host
+        # identity, so require bytes and digest to be present and well formed rather than
+        # to be the only keys. The value checks below are unchanged.
+        absent = frozenset({"bytes", "digest"}) - frozenset(identity)
+        if absent:
+            raise ConversionRefused(f"{label} identity is missing {sorted(absent)}")
         if (
             isinstance(identity.get("bytes"), bool)
             or not isinstance(identity.get("bytes"), int)
@@ -1480,7 +1485,15 @@ def _validate_current_loaded_lineage(lineage: Mapping[str, Any]) -> None:
         "current deep-validated training metadata identity",
     )
     metrics = _mapping(run.get("metrics"), "current training metrics identity")
-    if dict(receipt) != dict(training_metadata):
+    # The loader deliberately builds these two the same logical identity in different
+    # shapes: `receipt` from file_identity() (full host identity) and the deep-validated
+    # one as bytes+digest only. It reconciles them with _same_content_identity
+    # (evaluate_code_gguf.py:329), which compares content and ignores the host fields.
+    # Mirror that contract exactly; strict dict equality can never hold here.
+    if (
+        receipt.get("bytes") != training_metadata.get("bytes")
+        or receipt.get("digest") != training_metadata.get("digest")
+    ):
         raise ConversionRefused("current training receipt differs from deep validation")
     if not _valid_digest(metrics.get("digest")):
         raise ConversionRefused("current training metrics digest is malformed")
@@ -4142,6 +4155,21 @@ def _convert_calibrated(request: ConversionRequest) -> dict[str, Any]:
         _assert_private_command_tree(staging, "primary calibrated staging before cleanup")
         _assert_child_pycache_absent(replay_root, "replay calibrated staging before cleanup")
         _assert_private_command_tree(replay_root, "replay calibrated staging before cleanup")
+        # torch resolves its inductor cache through tempfile.gettempdir(), which tests /tmp
+        # for writability. The rootfs is read-only by contract and the pinned child
+        # environment carries no TMPDIR, so the fallback lands an empty
+        # "torchinductor_<user>" directory in each command's working directory. It holds no
+        # files -- the bundle file-set checks above compare equal -- but it would otherwise
+        # break the replay rmdir and, worse, be published into the exported bundle, which
+        # the export verifier refuses as an unexpected entry. Remove it only when empty, so
+        # anything that actually wrote content still surfaces as a refusal.
+        for _root in (staging, replay_root):
+            for _stray in sorted(_root.glob("torchinductor_*")):
+                if _stray.is_symlink() or not _stray.is_dir():
+                    raise ConversionRefused(f"unexpected {_stray.name} entry in {_root.name}")
+                if any(_stray.iterdir()):
+                    raise ConversionRefused(f"{_stray.name} in {_root.name} is not empty")
+                _stray.rmdir()
         for private_path in (f16_path, corpus_path, imatrix_path):
             if private_path.is_symlink() or not private_path.is_file():
                 raise ConversionRefused("private calibrated intermediate changed before cleanup")
@@ -4166,6 +4194,14 @@ def _convert_calibrated(request: ConversionRequest) -> dict[str, Any]:
             log_path.unlink()
         replay_log_root.rmdir()
         replay_artifact_root.rmdir()
+        # rmdir on a non-empty directory raises a bare OSError that names the directory but
+        # not what is in it, which destroys the evidence: the error path then unwinds the
+        # whole staging tree. Name the residue so an unexpected artefact is actionable.
+        leftover = sorted(p.name for p in replay_root.iterdir())
+        if leftover:
+            raise ConversionRefused(
+                f"determinism replay directory still holds {leftover} after cleanup"
+            )
         replay_root.rmdir()
         _fsync_path(artifact_root, directory=True)
         _fsync_path(staging, directory=True)

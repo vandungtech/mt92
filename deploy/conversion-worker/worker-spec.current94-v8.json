@@ -55,8 +55,8 @@
         },
         {
           "path": "opt/microtensor-miner/training/convert_code_gguf.py",
-          "bytes": 191762,
-          "digest": "sha256:ee5083ddb38cac973c10ab9743c172ed6eecf163a82057c52bcc859c5575bd8b"
+          "bytes": 194231,
+          "digest": "sha256:5dd150f05485dd71e800eec16f6b7b88cf9d8dc6870508a9973244a85cfcbadb"
         },
         {
           "path": "opt/microtensor-miner/training/evaluate_code.py",
